@@ -1,0 +1,137 @@
+---
+name: diagram-usecase
+description: |
+  生成用例图（UML Use Case Diagram）。当用户需要以下功能时触发：
+  - 生成用例图、UML 用例图
+  - 创建用户功能关系图
+  - 可视化 Actor 与 UseCase 关系
+  - 绘制参与者与用例的关联图
+  
+  使用本项目的 CLI 工具 `python -m scripts.cli` 生成用例图。
+---
+
+# 用例图生成 Skill
+
+## 工作流程
+
+生成用例图的标准流程：
+
+1. **获取用例信息**
+   - 确定系统的参与者（Actor）
+   - 收集该参与者的所有用例（UseCase）
+
+2. **创建 JSON 文件**
+   - 路径：`docs/usecase/json/<usecase_name>.json`
+   - 使用简洁格式（单参与者）
+
+3. **生成用例图**
+   - 使用本项目的 CLI 工具生成 PNG 图片
+   - 输出路径：`docs/usecase/diagram/<usecase_name>.png`
+
+## 目录结构
+
+```
+docs/usecase/
+├── json/       # JSON 数据文件
+└── diagram/    # 生成的用例图 PNG
+```
+
+## JSON 文件规范
+
+### 简洁格式（推荐，单参与者）
+```json
+{
+  "actor": "用户",
+  "usecases": ["登录系统", "重置密码", "商品下单", "退出系统"]
+}
+```
+
+### 字段说明
+- `actor`: 参与者名称（单数，如"用户"、"管理员"）
+- `usecases`: 用例名称数组，建议 4-8 个用例
+
+## 样式说明
+
+- **参与者（Actor）**：火柴人图标 + 下方名称
+- **用例（UseCase）**：水平椭圆 + 内部居中文字
+- **关联**：带箭头的直线（从参与者指向用例）
+- **学术风格**：黑白配色，清晰简洁
+
+## 学术规范
+
+本科论文中，**一个用例图只展示一个参与者**（Actor）及其相关用例：
+- 保持图表简洁清晰
+- 每图聚焦一个用户角色
+- 多个角色分多个图展示
+
+## 用例图生成命令
+
+```bash
+python -m scripts.cli \
+  --json-file docs/usecase/json/<usecase_name>.json \
+  --out docs/usecase/diagram/<usecase_name>.png
+```
+
+## 示例
+
+### 用户用例
+```json
+{
+  "actor": "用户",
+  "usecases": ["登录系统", "重置密码", "商品下单", "退出系统"]
+}
+```
+
+生成命令：
+```bash
+python -m scripts.cli \
+  --json-file docs/usecase/json/user.json \
+  --out docs/usecase/diagram/user.png
+```
+
+### 管理员用例（另一个图）
+```json
+{
+  "actor": "管理员",
+  "usecases": ["用户管理", "订单审核", "数据统计", "系统配置"]
+}
+```
+
+生成命令：
+```bash
+python -m scripts.cli \
+  --json-file docs/usecase/json/admin.json \
+  --out docs/usecase/diagram/admin.png
+```
+
+## 简化格式（直接使用）
+
+也可以直接使用简化格式，省略 `--out` 参数：
+
+```bash
+python -m scripts.cli --json-file usecase.json
+```
+
+默认输出到 `docs/usecase/diagram.png`
+
+## 多参与者格式（向后兼容）
+
+如需多参与者，使用完整格式：
+
+```json
+{
+  "actors": ["用户", "管理员"],
+  "usecases": ["登录系统", "重置密码", "商品下单", "退出系统"],
+  "relations": [
+    ["用户", "登录系统"],
+    ["用户", "重置密码"],
+    ["管理员", "商品下单"]
+  ]
+}
+```
+
+## 依赖安装
+
+```bash
+pip install -r requirements.txt
+```

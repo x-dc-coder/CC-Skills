@@ -1,0 +1,38 @@
+# uv 虚拟环境（由 uv.lock + pyproject.toml 重建）
+.venv/
+
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# 生成物（ER 图、流程图 PNG 等）
+*.png
+*.jpg
+*.jpeg
+*.pdf
+*.svg
+
+# 本地导出文件
+*.docx
+*.md.docx
+*.zip
+*.tar.gz
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# 日志
+*.log

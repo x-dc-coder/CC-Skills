@@ -1,0 +1,100 @@
+---
+name: diagram-er
+description: |
+  生成数据库单表 ER 图（实体关系图）。当用户需要以下功能时触发：
+  - 生成单表 ER 图、数据库表结构图
+  - 为单个数据库表创建可视化图表
+  - 可视化表的字段结构
+  - 生成 Chen 风格的单表 ER 图
+  
+  使用本项目的 CLI 工具 `python -m scripts.cli` 生成 Chen 风格 ER 图。
+---
+
+# ER 图生成 Skill
+
+## 工作流程
+
+生成单表 ER 图的标准流程：
+
+1. **获取表结构**
+   - 优先使用 MCP 工具（如数据库连接工具）读取准确的表结构
+   - 如无 MCP，可基于用户提供的表结构信息或 SQL DDL
+
+2. **创建 SQL 文件**
+   - 路径：`docs/er/sql/<table_name>.sql`
+   - 为每个字段添加简短的注释（COMMENT），说明字段用途
+   - 使用标准 MySQL DDL 语法
+
+3. **生成 ER 图**
+   - 使用本项目的 CLI 工具生成 PNG 图片
+   - 输出路径：`docs/er/diagram/<table_name>.png`
+
+## 目录结构
+
+```
+docs/er/
+├── sql/       # SQL DDL 文件
+└── diagram/   # 生成的 ER 图 PNG
+```
+
+## SQL 文件规范
+
+### 基本结构
+```sql
+CREATE TABLE users (
+    id INT PRIMARY KEY COMMENT '用户ID',
+    username VARCHAR(50) NOT NULL COMMENT '用户名',
+    email VARCHAR(100) COMMENT '邮箱地址',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间'
+);
+```
+
+### 字段注释原则
+- 简短清晰（2-10 个字符为佳）
+- 说明字段的业务含义
+
+### 支持的语法
+- `CREATE TABLE` 语句
+- 列级约束：`PRIMARY KEY` / `UNIQUE` / `NOT NULL` / `DEFAULT`
+- 列注释：`COMMENT '...'`
+- 表级约束：`PRIMARY KEY (...)`
+
+## ER 图生成命令
+
+```bash
+python -m scripts.cli \
+  --sql-file docs/er/sql/<table_name>.sql \
+  --out docs/er/diagram/<table_name>.png
+```
+
+## 主键显示规则
+
+- 列级主键：`id INT PRIMARY KEY` —— 属性名自动加下划线
+- 表级主键：`PRIMARY KEY (id)` —— 同样会加下划线
+- 有 `COMMENT` 的字段优先显示注释内容
+
+## 示例
+
+### 用户表
+```sql
+-- docs/er/sql/users.sql
+CREATE TABLE users (
+    id INT PRIMARY KEY COMMENT '用户ID',
+    name VARCHAR(50) COMMENT '姓名',
+    email VARCHAR(100) COMMENT '邮箱',
+    created_at TIMESTAMP COMMENT '创建时间'
+);
+```
+
+生成命令：
+```bash
+python -m scripts.cli \
+  --sql-file docs/er/sql/users.sql \
+  --out docs/er/diagram/users.png
+```
+
+## 依赖安装
+
+```bash
+pip install -r requirements.txt
+```
