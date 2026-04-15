@@ -36,3 +36,7 @@ Thumbs.db
 
 # 日志
 *.log
+
+# Windows Alternate Data Streams (WSL 与 Windows 交互产生的元数据)
+*:*
+*Zone.Identifier
