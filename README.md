@@ -24,6 +24,14 @@
 │   ├── SKILL.md
 │   ├── .venv -> ../.venv
 │   └── scripts/
+├── diagram-ers/
+│   ├── SKILL.md
+│   ├── .venv -> ../.venv
+│   └── scripts/
+├── diagram-sequence/
+│   ├── SKILL.md
+│   ├── .venv -> ../.venv
+│   └── scripts/
 ├── diagram-flow/
 │   └── SKILL.md
 └── thesis-writing/
@@ -62,7 +70,7 @@ uv run python -c "import PIL, sqlglot; print('OK')"
 
 ## 符号链接机制
 
-包含 Python 脚本的 Skill 目录（`diagram-er`、`diagram-module`、`diagram-usecase`）内包含一个指向统一环境的符号链接 `.venv`。这使得：
+包含 Python 脚本的 Skill 目录（`diagram-er`、`diagram-module`、`diagram-usecase`、`diagram-ers`、`diagram-sequence`）内包含一个指向统一环境的符号链接 `.venv`。这使得：
 
 - 各 Skill 的 `SKILL.md` 中可以直接写 `uv run python -m scripts.cli ...`
 - `uv` 在子目录执行时能够自动找到虚拟环境
@@ -74,6 +82,9 @@ uv run python -c "import PIL, sqlglot; print('OK')"
 |------|------|
 | `Pillow` | 图片生成与处理（diagram 系列） |
 | `sqlglot` | SQL 解析（diagram-er） |
+
+Node 工具（非 Python 依赖）：
+- `@mermaid-js/mermaid-cli`：用于 `diagram-sequence` 渲染 Mermaid 到 PNG（推荐用 `npx` 调用，避免全局安装）。
 
 ## 新增含 Python 的 Skill 时的 checklist
 

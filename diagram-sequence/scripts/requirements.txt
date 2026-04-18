@@ -1,3 +1,5 @@
-# No Python dependencies required
-# mmdc (mermaid-cli) must be installed globally via npm:
-#   npm install -g @mermaid-js/mermaid-cli
+# Deprecated for local use.
+# Environment is managed centrally at ~/.claude/skills via:
+#   uv sync
+# Use npx for Mermaid CLI instead of global install:
+#   npx -y @mermaid-js/mermaid-cli

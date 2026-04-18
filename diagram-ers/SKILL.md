@@ -7,7 +7,7 @@ description: |
   - 展示数据库表之间的关系（1:1、1:n、m:n）
   - 可视化系统数据模型
 
-  使用本项目的 CLI 工具 `python -m scripts.cli` 生成 ER 图。
+  使用本项目的 CLI 工具 `uv run python -m scripts.cli` 生成 ER 图。
 ---
 
 # ER 图生成 Skill
@@ -184,7 +184,7 @@ docs/er/
 ## ER 图生成命令
 
 ```bash
-python -m scripts.cli \
+uv run python -m scripts.cli \
   --json-file docs/er/json/<name>.json \
   --out docs/er/diagram/<name>.png
 ```
@@ -227,7 +227,7 @@ python -m scripts.cli \
 生成命令：
 
 ```bash
-python -m scripts.cli \
+uv run python -m scripts.cli \
   --json-file docs/er/json/simple.json \
   --out docs/er/diagram/simple.png
 ```
@@ -235,16 +235,20 @@ python -m scripts.cli \
 ### 简化格式（直接使用）
 
 ```bash
-python -m scripts.cli --json-file er.json
+uv run python -m scripts.cli --json-file er.json
 ```
 
 默认输出到 `docs/er/diagram.png`
 
-## 依赖安装
+## 环境管理（统一规范）
 
 ```bash
-pip install -r requirements.txt
+cd ~/.claude/skills
+uv sync
 ```
+
+- 本 Skill 目录应包含 `.venv -> ~/.claude/skills/.venv` 符号链接
+- Python 依赖统一在根目录 `pyproject.toml` 管理，不在子目录单独安装
 
 ## 自检清单
 

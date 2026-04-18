@@ -58,13 +58,13 @@ sequenceDiagram
 ### 方式一：直接渲染 .mmd 文件
 
 ```bash
-mmdc -i sequence.mmd -o sequence.png -b white
+npx -y @mermaid-js/mermaid-cli -i sequence.mmd -o sequence.png -b white
 ```
 
 ### 方式二：使用本项目的 CLI 工具（推荐）
 
 ```bash
-python -m scripts.cli \
+uv run python -m scripts.cli \
   --json-file docs/sequence/json/<name>.json \
   --out docs/sequence/diagram/<name>.png
 ```
@@ -121,7 +121,7 @@ docs/sequence/
 ## 时序图生成命令
 
 ```bash
-python -m scripts.cli \
+uv run python -m scripts.cli \
   --json-file docs/sequence/json/login.json \
   --out docs/sequence/diagram/login.png
 ```
@@ -159,7 +159,7 @@ python -m scripts.cli \
 生成命令：
 
 ```bash
-python -m scripts.cli \
+uv run python -m scripts.cli \
   --json-file docs/sequence/json/seat-select.json \
   --out docs/sequence/diagram/seat-select.png
 ```
@@ -187,15 +187,16 @@ python -m scripts.cli \
 }
 ```
 
-## 依赖安装
+## 环境管理（统一规范）
 
 ```bash
-# 安装 mermaid-cli（必须）
-npm install -g @mermaid-js/mermaid-cli
-
-# 安装 Python 依赖（可选，用于 JSON 转 Mermaid）
-pip install -r requirements.txt
+cd ~/.claude/skills
+uv sync
 ```
+
+- 本 Skill 目录应包含 `.venv -> ~/.claude/skills/.venv` 符号链接
+- Python 依赖统一在根目录 `pyproject.toml` 管理，不在子目录单独安装
+- Mermaid CLI 推荐通过 `npx -y @mermaid-js/mermaid-cli` 调用，避免全局安装
 
 ## 自检清单
 
