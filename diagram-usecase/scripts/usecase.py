@@ -259,6 +259,13 @@ def _parse_model(data: dict) -> UseCaseModel:
     2. 完整格式（多参与者）：
        {"actors": [...], "usecases": [...], "relations": [...]}
     """
+    usecase_list = data.get("usecases", [])
+    if len(usecase_list) < 3 or len(usecase_list) > 6:
+        raise ValueError(
+            f"用例数量限制为 3-6 个，当前提供了 {len(usecase_list)} 个。"
+            "请调整 usecases 列表，确保数量不低于 3 个且不超过 6 个。"
+        )
+
     model = UseCaseModel()
 
     # 优先使用简洁格式（单参与者）
