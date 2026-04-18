@@ -47,3 +47,21 @@ logs/
 venv/
 .coverage
 dist/
+
+# md-to-thesis-latex 输出产物（避免仓库污染）
+thesis/
+
+# LaTeX 编译中间文件
+*.aux
+*.bbl
+*.bcf
+*.blg
+*.fdb_latexmk
+*.fls
+*.lof
+*.lot
+*.out
+*.run.xml
+*.synctex.gz
+*.toc
+*.xdv
