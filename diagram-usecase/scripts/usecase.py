@@ -432,7 +432,7 @@ def _draw_actor(draw: ImageDraw.ImageDraw, actor: Actor, font: ImageFont.ImageFo
         ),
         fill="#FFFFFF",
         outline="#000000",
-        width=2,
+        width=2 * scale,
     )
 
     # 绘制身体（竖线）
@@ -444,7 +444,7 @@ def _draw_actor(draw: ImageDraw.ImageDraw, actor: Actor, font: ImageFont.ImageFo
             (cx * scale, body_bottom * scale),
         ),
         fill="#000000",
-        width=2,
+        width=2 * scale,
     )
 
     # 绘制手臂（横线）
@@ -455,7 +455,7 @@ def _draw_actor(draw: ImageDraw.ImageDraw, actor: Actor, font: ImageFont.ImageFo
             ((cx + ACTOR_ARM_WIDTH // 2) * scale, arm_y * scale),
         ),
         fill="#000000",
-        width=2,
+        width=2 * scale,
     )
 
     # 垂直线连接到手臂
@@ -465,7 +465,7 @@ def _draw_actor(draw: ImageDraw.ImageDraw, actor: Actor, font: ImageFont.ImageFo
             (cx * scale, arm_y * scale),
         ),
         fill="#000000",
-        width=2,
+        width=2 * scale,
     )
 
     # 绘制腿部（分叉线）
@@ -477,7 +477,7 @@ def _draw_actor(draw: ImageDraw.ImageDraw, actor: Actor, font: ImageFont.ImageFo
             ((cx - ACTOR_ARM_WIDTH // 2) * scale, leg_bottom * scale),
         ),
         fill="#000000",
-        width=2,
+        width=2 * scale,
     )
     # 右腿
     draw.line(
@@ -486,7 +486,7 @@ def _draw_actor(draw: ImageDraw.ImageDraw, actor: Actor, font: ImageFont.ImageFo
             ((cx + ACTOR_ARM_WIDTH // 2) * scale, leg_bottom * scale),
         ),
         fill="#000000",
-        width=2,
+        width=2 * scale,
     )
 
     # 绘制名称（Actor下方）
@@ -520,7 +520,7 @@ def _draw_usecase(draw: ImageDraw.ImageDraw, usecase: UseCase, font: ImageFont.I
         ),
         fill="#FFFFFF",
         outline="#000000",
-        width=2,
+        width=2 * scale,
     )
 
     # 绘制文字（居中）
@@ -584,7 +584,7 @@ def _draw_relation(
             (int(usecase_edge_x * scale), int(usecase_edge_y * scale)),
         ),
         fill="#000000",
-        width=1,
+        width=1 * scale,
     )
 
     # 绘制箭头（在UseCase端）
@@ -641,7 +641,7 @@ def _draw_arrow(
             (int(ax1 * scale), int(ay1 * scale)),
         ),
         fill="#000000",
-        width=1,
+        width=1 * scale,
     )
     draw.line(
         (
@@ -649,7 +649,7 @@ def _draw_arrow(
             (int(ax2 * scale), int(ay2 * scale)),
         ),
         fill="#000000",
-        width=1,
+        width=1 * scale,
     )
 
 
