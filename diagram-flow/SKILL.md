@@ -28,10 +28,11 @@ description: |
 所有流程图必须包含以下样式定义，确保白色背景和白色节点：
 
 ```mermaid
+%%{init: {'themeVariables': { 'edgeLabelBackground': '#ffffff'}}}%%
 flowchart TD
     %% 定义默认样式：白色背景，黑色边框
-    classDef default fill:#ffffff,stroke:#000000,stroke-width:1px,color:#000000
-    classDef diamond fill:#ffffff,stroke:#000000,stroke-width:1px,color:#000000
+    classDef default fill:#ffffff,stroke:#000000,stroke-width:2px,color:#000000
+    classDef diamond fill:#ffffff,stroke:#000000,stroke-width:2px,color:#000000
     
     %% 你的流程图节点...
 ```
@@ -39,7 +40,7 @@ flowchart TD
 **关键样式规则：**
 - `fill:#ffffff` - 节点填充纯白色
 - `stroke:#000000` - 黑色边框
-- `stroke-width:1px` - 边框宽度1像素
+- `stroke-width:2px` - 边框宽度2像素
 - `color:#000000` - 黑色文字
 - 菱形判断节点需要额外定义 `diamond` 类并应用
 
@@ -98,10 +99,11 @@ flowchart TD
 
 ### 1. 系统总体流程
 ```mermaid
+%%{init: {'themeVariables': { 'edgeLabelBackground': '#ffffff'}}}%%
 flowchart TD
     %% 定义样式：白色背景，黑色边框
-    classDef default fill:#ffffff,stroke:#000000,stroke-width:1px,color:#000000
-    classDef diamond fill:#ffffff,stroke:#000000,stroke-width:1px,color:#000000
+    classDef default fill:#ffffff,stroke:#000000,stroke-width:2px,color:#000000
+    classDef diamond fill:#ffffff,stroke:#000000,stroke-width:2px,color:#000000
     
     start([开始]) --> input[用户输入]
     input --> validate{验证}
@@ -117,10 +119,11 @@ flowchart TD
 
 ### 2. 登录流程
 ```mermaid
+%%{init: {'themeVariables': { 'edgeLabelBackground': '#ffffff'}}}%%
 flowchart TD
     %% 定义样式：白色背景，黑色边框
-    classDef default fill:#ffffff,stroke:#000000,stroke-width:1px,color:#000000
-    classDef diamond fill:#ffffff,stroke:#000000,stroke-width:1px,color:#000000
+    classDef default fill:#ffffff,stroke:#000000,stroke-width:2px,color:#000000
+    classDef diamond fill:#ffffff,stroke:#000000,stroke-width:2px,color:#000000
     
     start([开始]) --> input[输入账号密码]
     input --> check{验证账号}
@@ -137,10 +140,11 @@ flowchart TD
 
 ### 3. 数据增删改查流程
 ```mermaid
+%%{init: {'themeVariables': { 'edgeLabelBackground': '#ffffff'}}}%%
 flowchart TD
     %% 定义样式：白色背景，黑色边框
-    classDef default fill:#ffffff,stroke:#000000,stroke-width:1px,color:#000000
-    classDef diamond fill:#ffffff,stroke:#000000,stroke-width:1px,color:#000000
+    classDef default fill:#ffffff,stroke:#000000,stroke-width:2px,color:#000000
+    classDef diamond fill:#ffffff,stroke:#000000,stroke-width:2px,color:#000000
     
     start([开始]) --> show[展示列表]
     show --> op{选择操作}
@@ -172,7 +176,7 @@ npm install -g @mermaid-js/mermaid-cli
 mmdc -i input.mmd -o output.png -b white
 
 # 或指定更高分辨率
-mmdc -i input.mmd -o output.png -b white -s 2
+mmdc -i input.mmd -o output.png -b white -s 3
 ```
 
 **关键参数：**
@@ -185,8 +189,8 @@ mmdc -i input.mmd -o output.png -b white -s 2
 
 输出前检查：
 - [ ] 图类型唯一且正确
-- [ ] 包含白色背景样式定义：`classDef default fill:#ffffff,stroke:#000000,stroke-width:1px,color:#000000`
-- [ ] 菱形节点定义样式：`classDef diamond fill:#ffffff,stroke:#000000,stroke-width:1px,color:#000000`
+- [ ] 包含白色背景样式定义：`classDef default fill:#ffffff,stroke:#000000,stroke-width:2px,color:#000000`
+- [ ] 菱形节点定义样式：`classDef diamond fill:#ffffff,stroke:#000000,stroke-width:2px,color:#000000`
 - [ ] 所有菱形节点应用 diamond 类：`class 节点名1,节点名2 diamond`
 - [ ] 只有 Mermaid 代码块
 - [ ] 节点 ID 无非法字符
@@ -200,10 +204,11 @@ mmdc -i input.mmd -o output.png -b white -s 2
 
 **输出**：
 ```mermaid
+%%{init: {'themeVariables': { 'edgeLabelBackground': '#ffffff'}}}%%
 flowchart TD
     %% 定义样式：白色背景，黑色边框
-    classDef default fill:#ffffff,stroke:#000000,stroke-width:1px,color:#000000
-    classDef diamond fill:#ffffff,stroke:#000000,stroke-width:1px,color:#000000
+    classDef default fill:#ffffff,stroke:#000000,stroke-width:2px,color:#000000
+    classDef diamond fill:#ffffff,stroke:#000000,stroke-width:2px,color:#000000
     
     start([开始]) --> input[填写注册信息]
     input --> check{信息验证}
