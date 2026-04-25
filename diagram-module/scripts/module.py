@@ -17,13 +17,13 @@ from PIL import Image, ImageDraw, ImageFont
 
 # 常量配置 - 学术紧凑风格
 SCALE = 2  # 适度缩放，平衡清晰度与性能（避免下采样过度模糊）
-NODE_W = 72  # 竖排文字的节点宽度（2倍原始尺寸）
-NODE_H = 168  # 竖排文字的最小节点高度（2倍原始尺寸）
-ROOT_NODE_W = 280  # 根节点宽度（水平文字，2倍原始尺寸）
-ROOT_NODE_H = 72  # 根节点高度（2倍原始尺寸）
-H_SPACING = 24  # 水平间距（2倍原始尺寸）
-V_SPACING = 48  # 垂直间距（2倍原始尺寸）
-FONT_SIZE = 28  # 字体大小（2倍原始尺寸，确保清晰）
+NODE_W = 72  # 竖排文字的节点宽度（1x 尺寸）
+NODE_H = 80  # 竖排文字的最小节点高度（1x 尺寸，紧凑）
+ROOT_NODE_W = 280  # 根节点宽度（水平文字，1x 尺寸）
+ROOT_NODE_H = 72  # 根节点高度（1x 尺寸）
+H_SPACING = 24  # 水平间距（1x 尺寸）
+V_SPACING = 32  # 垂直间距（1x 尺寸）
+FONT_SIZE = 28  # 字体大小（1x 尺寸）
 VERTICAL_TEXT_EDGE_PADDING = 0  # 竖排文本首尾额外安全边距
 VERTICAL_TEXT_EDGE_TRIM = 16  # 竖排文本首尾留白裁剪量（像素）
 
@@ -160,6 +160,9 @@ def render_module_diagram(
     # 先加载字体，用于计算文字高度
     font = load_font(FONT_SIZE * SCALE)
 
+    # 计算根节点自适应宽度
+    root.width = _calc_root_node_width(root.name, font)
+
     # 计算每一层的统一高度（自适应高度，同一层高度一致）
     layer_heights = _calc_layer_heights(root, font, SCALE)
 
@@ -208,6 +211,23 @@ def _build_tree(data: dict, depth: int = 0) -> TreeNode:
     return node
 
 
+def _calc_root_node_width(text: str, font: ImageFont.ImageFont) -> int:
+    """计算根节点所需的宽度（根据水平文字长度自适应）
+
+    Returns:
+        1x 尺寸上的节点宽度
+    """
+    if not text:
+        return ROOT_NODE_W
+
+    # 测量文字宽度（2x 画布上的像素值）
+    text_width = int(font.getlength(text))
+    # 左右各留一个汉字宽度作为边距
+    padding = int(font.getlength("汉"))
+    # 转换为 1x 值
+    return max(ROOT_NODE_W, (text_width + padding * 2) // SCALE)
+
+
 def _calc_node_height(node: TreeNode, font: ImageFont.ImageFont, scale: int) -> int:
     """计算节点所需的高度（根据文字长度自适应）
 
@@ -223,7 +243,8 @@ def _calc_node_height(node: TreeNode, font: ImageFont.ImageFont, scale: int) -> 
         return NODE_H
 
     total_height, _line_step, _upper, _lower = _measure_vertical_text_block(text, font)
-    return max(NODE_H, total_height)
+    # total_height 是 2x 画布上的像素值，转换为 1x 值
+    return max(NODE_H, total_height // SCALE)
 
 
 def _calc_layer_heights(root: TreeNode, font: ImageFont.ImageFont, scale: int) -> dict[int, int]:
@@ -265,7 +286,7 @@ def _calculate_tree_size(node: TreeNode, layer_heights: dict[int, int]) -> int:
     """
     # 设置节点尺寸（使用层统一高度）
     if node.depth == 0:
-        node.width = ROOT_NODE_W
+        # 根节点宽度已在 render_module_diagram 中自适应计算
         node.height = layer_heights.get(0, ROOT_NODE_H)
     else:
         node.width = NODE_W
@@ -298,7 +319,7 @@ def _layout_tree(node: TreeNode, start_x: int, start_y: int, layer_heights: dict
     """
     # 设置节点尺寸（使用层统一高度）
     if node.depth == 0:
-        node.width = ROOT_NODE_W
+        # 根节点宽度已在 render_module_diagram 中自适应计算
         node.height = layer_heights.get(0, ROOT_NODE_H)
     else:
         node.width = NODE_W
@@ -399,7 +420,7 @@ def _draw_node(draw: ImageDraw.ImageDraw, node: TreeNode, font: ImageFont.ImageF
         (left * scale, top * scale, right * scale, bottom * scale),
         fill="#FFFFFF",
         outline="#000000",
-        width=2,
+        width=2 * scale,
     )
 
     # 绘制文字
@@ -439,13 +460,13 @@ def _draw_vertical_text(
     if not text:
         return
 
-    total_height, line_step, upper_padding, _lower_padding = _measure_vertical_text_block(text, font)
+    total_height, line_step, upper_extent, _lower_extent = _measure_vertical_text_block(text, font)
 
     # 计算文本框的顶部位置
     box_top = cy - total_height // 2
 
-    # 第一个字中心 = 顶部 + 该字体实际需要的上边距，避免字形被截断
-    current_y = box_top + upper_padding
+    # 第一个字中心 = 顶部 + 首字符中心到顶部的距离，确保首字顶部正好在 box_top
+    current_y = box_top + upper_extent
 
     # 逐字绘制
     for char in text:
@@ -454,27 +475,30 @@ def _draw_vertical_text(
 
 
 def _measure_vertical_text_block(text: str, font: ImageFont.ImageFont) -> tuple[int, int, int, int]:
-    """测量竖排文本块尺寸。
+    """测量竖排文本块尺寸（返回 2x 画布上的像素值）。
 
     Returns:
-        (total_height, line_step, upper_padding, lower_padding)
+        (total_height, line_step, upper_extent, lower_extent)
     """
     if not text:
-        return NODE_H, 0, 0, 0
+        return NODE_H * SCALE, 0, 0, 0
 
-    # 保持原有步距：使用字体行盒高度（ascent + descent）。
     boxes = [font.getbbox(char, anchor="mm") for char in text]
-    ascent, descent = font.getmetrics()
-    line_step = ascent + descent
+    bbox_heights = [box[3] - box[1] for box in boxes]
+    avg_bbox_height = int(sum(bbox_heights) / len(bbox_heights)) if bbox_heights else 50
+    # 步距：字符实际高度 + 半个汉字高度作为间距
+    line_step = avg_bbox_height + avg_bbox_height // 2
 
-    # 首尾边距仅由首字/尾字决定。
-    _left, first_top, _right, _first_bottom = boxes[0]
-    _left, _last_top, _right, last_bottom = boxes[-1]
-    upper_padding = max(0, -first_top - VERTICAL_TEXT_EDGE_TRIM) + VERTICAL_TEXT_EDGE_PADDING
-    lower_padding = max(0, last_bottom - VERTICAL_TEXT_EDGE_TRIM) + VERTICAL_TEXT_EDGE_PADDING
+    # 首字符中心到顶部的距离、尾字符中心到底部的距离
+    # 上下各留一个完整汉字高度作为边距
+    first_top = boxes[0][1]
+    last_bottom = boxes[-1][3]
+    upper_extent = -first_top + avg_bbox_height
+    lower_extent = last_bottom + avg_bbox_height
 
-    total_height = (len(text) - 1) * line_step + upper_padding + lower_padding
-    return total_height, line_step, upper_padding, lower_padding
+    # 总高度 = 上留白 + 中间字间距 + 下留白
+    total_height = (len(text) - 1) * line_step + upper_extent + lower_extent
+    return total_height, line_step, upper_extent, lower_extent
 
 
 def _draw_connection(
@@ -495,7 +519,7 @@ def _draw_connection(
         draw.line(
             ((parent_x * scale, parent_y * scale), (child_x * scale, child_y * scale)),
             fill="#000000",
-            width=1,
+            width=1 * scale,
         )
     else:
         # 使用倒T形连接：父节点底部 -> 同一水平线 -> 子节点顶部
@@ -505,19 +529,19 @@ def _draw_connection(
         draw.line(
             ((parent_x * scale, parent_y * scale), (parent_x * scale, mid_y * scale)),
             fill="#000000",
-            width=1,
+            width=1 * scale,
         )
         # 水平连接线
         draw.line(
             ((parent_x * scale, mid_y * scale), (child_x * scale, mid_y * scale)),
             fill="#000000",
-            width=1,
+            width=1 * scale,
         )
         # 子节点顶部到中间
         draw.line(
             ((child_x * scale, mid_y * scale), (child_x * scale, child_y * scale)),
             fill="#000000",
-            width=1,
+            width=1 * scale,
         )
 
 
