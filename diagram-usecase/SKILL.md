@@ -26,14 +26,15 @@ description: |
 
 3. **生成用例图**
    - 使用本项目的 CLI 工具生成 PNG 图片
-   - 输出路径：`docs/usecase/diagram/<usecase_name>.png`
+   - 输出路径：`skills/output/diagram-usecase/diagram.png`（默认，可自定义）
 
 ## 目录结构
 
 ```
 docs/usecase/
 ├── json/       # JSON 数据文件
-└── diagram/    # 生成的用例图 PNG
+
+skills/output/diagram-usecase/    # 生成的用例图 PNG（默认输出目录）
 ```
 
 ## JSON 文件规范
@@ -69,8 +70,15 @@ docs/usecase/
 
 ```bash
 uv run python -m scripts.cli \
+  --json-file docs/usecase/json/<usecase_name>.json
+```
+
+当输入文件使用**绝对路径**时，CLI 会自动推断项目目录（向上查找包含 `docs/` 或 `thesis-output/` 的目录），默认输出到 `<项目目录>/thesis-output/img/diagram.png`。如使用相对路径或无法推断，则回退到 `skills/output/diagram-usecase/diagram.png`。如需自定义路径：
+
+```bash
+uv run python -m scripts.cli \
   --json-file docs/usecase/json/<usecase_name>.json \
-  --out docs/usecase/diagram/<usecase_name>.png
+  --out <自定义路径>.png
 ```
 
 ## 示例
@@ -86,8 +94,7 @@ uv run python -m scripts.cli \
 生成命令：
 ```bash
 uv run python -m scripts.cli \
-  --json-file docs/usecase/json/user.json \
-  --out docs/usecase/diagram/user.png
+  --json-file docs/usecase/json/user.json
 ```
 
 ### 管理员用例（另一个图）
@@ -101,8 +108,7 @@ uv run python -m scripts.cli \
 生成命令：
 ```bash
 uv run python -m scripts.cli \
-  --json-file docs/usecase/json/admin.json \
-  --out docs/usecase/diagram/admin.png
+  --json-file docs/usecase/json/admin.json
 ```
 
 ## 简化格式（直接使用）
@@ -113,7 +119,7 @@ uv run python -m scripts.cli \
 uv run python -m scripts.cli --json-file usecase.json
 ```
 
-默认输出到 `docs/usecase/diagram.png`
+默认输出路径由 CLI 自动推断（绝对路径输入 → `<项目目录>/thesis-output/img/diagram.png`，否则回退到 `skills/output/diagram-usecase/diagram.png`）
 
 ## 多参与者格式（向后兼容）
 

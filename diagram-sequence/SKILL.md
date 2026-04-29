@@ -65,8 +65,15 @@ npx -y @mermaid-js/mermaid-cli -i sequence.mmd -o sequence.png -b white
 
 ```bash
 uv run python -m scripts.cli \
+  --json-file docs/sequence/json/<name>.json
+```
+
+当输入文件使用**绝对路径**时，CLI 会自动推断项目目录（向上查找包含 `docs/` 或 `thesis-output/` 的目录），默认输出到 `<项目目录>/thesis-output/img/diagram.png`；中间 `.mmd` 文件自动存放到 `skills/tmp/<时间戳>/`。如使用相对路径或无法推断，则回退到 `skills/output/diagram-sequence/diagram.png`。如需自定义路径：
+
+```bash
+uv run python -m scripts.cli \
   --json-file docs/sequence/json/<name>.json \
-  --out docs/sequence/diagram/<name>.png
+  --out <自定义路径>.png
 ```
 
 ## 目录结构
@@ -74,8 +81,9 @@ uv run python -m scripts.cli \
 ```
 docs/sequence/
 ├── json/       # JSON 数据文件
-├── mmd/        # 生成的 Mermaid 源文件
-└── diagram/    # 生成的时序图 PNG
+
+skills/output/diagram-sequence/    # 生成的时序图 PNG（默认输出目录）
+skills/tmp/                        # 中间文件（Mermaid 源文件等）
 ```
 
 ## JSON 文件规范
@@ -122,8 +130,7 @@ docs/sequence/
 
 ```bash
 uv run python -m scripts.cli \
-  --json-file docs/sequence/json/login.json \
-  --out docs/sequence/diagram/login.png
+  --json-file docs/sequence/json/login.json
 ```
 
 ## 示例
@@ -160,8 +167,7 @@ uv run python -m scripts.cli \
 
 ```bash
 uv run python -m scripts.cli \
-  --json-file docs/sequence/json/seat-select.json \
-  --out docs/sequence/diagram/seat-select.png
+  --json-file docs/sequence/json/seat-select.json
 ```
 
 ### 推荐模块时序图
@@ -194,8 +200,8 @@ cd ~/.claude/skills
 uv sync
 ```
 
-- 本 Skill 目录应包含 `.venv -> ~/.claude/skills/.venv` 符号链接
 - Python 依赖统一在根目录 `pyproject.toml` 管理，不在子目录单独安装
+- 各 skill 子目录无需创建 `.venv`，`uv run` 会自动向上查找到根目录的虚拟环境
 - Mermaid CLI 推荐通过 `npx -y @mermaid-js/mermaid-cli` 调用，避免全局安装
 
 ## 自检清单

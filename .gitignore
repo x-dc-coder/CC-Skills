@@ -65,3 +65,6 @@ thesis/
 *.synctex.gz
 *.toc
 *.xdv
+
+# skills 临时目录
+tmp/

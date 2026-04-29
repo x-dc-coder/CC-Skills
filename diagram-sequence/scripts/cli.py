@@ -8,11 +8,26 @@
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+
+SKILLS_ROOT = Path(__file__).resolve().parent.parent.parent
+
+
+def _resolve_output_path(input_file: Path | None, skill_name: str, default_name: str = "diagram.png") -> Path:
+    """从输入文件路径推断项目目录，默认输出到 <项目目录>/thesis-output/img/"""
+    if input_file and input_file.is_absolute():
+        for parent in input_file.resolve().parents:
+            if (parent / "thesis-output").exists() or (parent / "docs").exists():
+                output_dir = parent / "thesis-output" / "img"
+                output_dir.mkdir(parents=True, exist_ok=True)
+                return output_dir / default_name
+    return SKILLS_ROOT / "output" / skill_name / default_name
 
 
 def _json_to_mermaid(data: dict) -> str:
@@ -120,27 +135,38 @@ Examples:
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--json-file", help="Path to JSON data file")
     group.add_argument("--mmd-file", help="Path to existing Mermaid file")
-    parser.add_argument("--out", default=None, help="Output PNG path (default: docs/sequence/diagram.png)")
+    parser.add_argument("--out", default=None, help="Output PNG path (default: auto-detect from input file)")
     parser.add_argument("--bg", default="white", help="Background color (default: white)")
     parser.add_argument("--scale", type=int, default=2, help="Scale factor (default: 2)")
     args = parser.parse_args()
 
+    # 确定输入文件（用于推断项目目录）
+    input_file = None
+    if args.json_file:
+        input_file = Path(args.json_file)
+    elif args.mmd_file:
+        input_file = Path(args.mmd_file)
+
     # 确定输出路径
     output_path = args.out
     if output_path is None:
-        output_path = "docs/sequence/diagram.png"
+        output_path = _resolve_output_path(input_file, "diagram-sequence")
+    else:
+        output_path = Path(output_path)
 
     # 确保输出目录存在
-    output_file = Path(output_path)
-    output_file.parent.mkdir(parents=True, exist_ok=True)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
 
     # 生成 Mermaid 代码
     if args.json_file:
         json_data = json.loads(Path(args.json_file).read_text(encoding="utf-8"))
         mmd_text = _json_to_mermaid(json_data)
 
-        # 同时保存 .mmd 源文件
-        mmd_out = output_file.with_suffix(".mmd")
+        # 同时保存 .mmd 源文件到 tmp 目录
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        tmp_dir = SKILLS_ROOT / "tmp" / timestamp
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        mmd_out = tmp_dir / f"{output_path.stem}.mmd"
         mmd_out.write_text(mmd_text, encoding="utf-8")
         print(f"Generated Mermaid: {mmd_out}")
     else:
