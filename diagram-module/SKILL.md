@@ -7,7 +7,7 @@ description: |
   - 可视化模块组成关系
   - 展示系统功能架构
   
-  使用本项目的 CLI 工具 `python -m scripts.cli` 生成功能模块图。
+  使用本项目的 CLI 工具 `uv run python -m scripts.cli` 生成功能模块图。
 ---
 
 # 功能模块图生成 Skill
@@ -71,7 +71,7 @@ docs/module/
 ## 模块图生成命令
 
 ```bash
-python -m scripts.cli \
+uv run python -m scripts.cli \
   --json-file docs/module/json/<module_name>.json \
   --out docs/module/diagram/<module_name>.png
 ```
@@ -115,7 +115,7 @@ python -m scripts.cli \
 
 生成命令：
 ```bash
-python -m scripts.cli \
+uv run python -m scripts.cli \
   --json-file docs/module/json/ecommerce.json \
   --out docs/module/diagram/ecommerce.png
 ```
@@ -125,7 +125,7 @@ python -m scripts.cli \
 也可以直接使用简化格式，省略 `--out` 参数：
 
 ```bash
-python -m scripts.cli --json-file module.json
+uv run python -m scripts.cli --json-file module.json
 ```
 
 默认输出到 `docs/module/diagram.png`
@@ -133,5 +133,6 @@ python -m scripts.cli --json-file module.json
 ## 依赖安装
 
 ```bash
-pip install -r requirements.txt
+cd ~/.claude/skills
+uv sync
 ```

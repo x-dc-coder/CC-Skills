@@ -34,7 +34,7 @@ This skill solves these problems by deeply inspecting the Word XML structure.
 ### 1. Run the extraction script
 
 ```bash
-python3 <skill-path>/scripts/extract_docx.py <input.docx> -o <output-dir> -f both
+uv run python <skill-path>/scripts/extract_docx.py <input.docx> -o <output-dir> -f both
 ```
 
 Options:
@@ -119,18 +119,19 @@ level detection may fail (heading_level will be 0). You can still use the
 
 Install if missing:
 ```bash
-pip install python-docx
+cd ~/.claude/skills
+uv sync
 ```
 
 ## Example workflow
 
 ```bash
 # Extract a thesis document
-python3 scripts/extract_docx.py ~/thesis.docx -o ./output -f both
+uv run python scripts/extract_docx.py ~/thesis.docx -o ./output -f both
 
 # Read the Markdown for overview
 cat ./output/thesis.md
 
 # Read the JSON for detailed analysis
-python3 -c "import json; d=json.load(open('./output/thesis.json')); print(d['statistics'])"
+uv run python -c "import json; d=json.load(open('./output/thesis.json')); print(d['statistics'])"
 ```

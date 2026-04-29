@@ -7,7 +7,7 @@ description: |
   - 可视化 Actor 与 UseCase 关系
   - 绘制参与者与用例的关联图
   
-  使用本项目的 CLI 工具 `python -m scripts.cli` 生成用例图。
+  使用本项目的 CLI 工具 `uv run python -m scripts.cli` 生成用例图。
 ---
 
 # 用例图生成 Skill
@@ -68,7 +68,7 @@ docs/usecase/
 ## 用例图生成命令
 
 ```bash
-python -m scripts.cli \
+uv run python -m scripts.cli \
   --json-file docs/usecase/json/<usecase_name>.json \
   --out docs/usecase/diagram/<usecase_name>.png
 ```
@@ -85,7 +85,7 @@ python -m scripts.cli \
 
 生成命令：
 ```bash
-python -m scripts.cli \
+uv run python -m scripts.cli \
   --json-file docs/usecase/json/user.json \
   --out docs/usecase/diagram/user.png
 ```
@@ -100,7 +100,7 @@ python -m scripts.cli \
 
 生成命令：
 ```bash
-python -m scripts.cli \
+uv run python -m scripts.cli \
   --json-file docs/usecase/json/admin.json \
   --out docs/usecase/diagram/admin.png
 ```
@@ -110,7 +110,7 @@ python -m scripts.cli \
 也可以直接使用简化格式，省略 `--out` 参数：
 
 ```bash
-python -m scripts.cli --json-file usecase.json
+uv run python -m scripts.cli --json-file usecase.json
 ```
 
 默认输出到 `docs/usecase/diagram.png`
@@ -134,5 +134,6 @@ python -m scripts.cli --json-file usecase.json
 ## 依赖安装
 
 ```bash
-pip install -r requirements.txt
+cd ~/.claude/skills
+uv sync
 ```

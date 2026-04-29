@@ -6,7 +6,7 @@ from typing import Iterable
 from sqlglot import exp, parse
 from sqlglot.errors import ParseError
 
-from models import ColumnModel, DiagramModel, TableModel
+from scripts.models import ColumnModel, DiagramModel, TableModel
 
 
 @dataclass

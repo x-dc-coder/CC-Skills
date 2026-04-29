@@ -54,7 +54,7 @@ description: Use when writing undergraduate thesis content for science/engineeri
 1. 将所有章节合并为 `thesis-output/full-thesis.md`
 2. **执行 Markdown 规范检查**（必须）：
    ```bash
-   python3 thesis-output/check_markdown_spec.py --md thesis-output/full-thesis.md
+   uv run python thesis-output/check_markdown_spec.py --md thesis-output/full-thesis.md
    ```
    - 若检查失败，必须修复所有 ERROR 后才能继续
    - 建议修复所有 WARN 以获得最佳质量

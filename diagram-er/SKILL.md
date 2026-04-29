@@ -7,7 +7,7 @@ description: |
   - 可视化表的字段结构
   - 生成 Chen 风格的单表 ER 图
   
-  使用本项目的 CLI 工具 `python -m scripts.cli` 生成 Chen 风格 ER 图。
+  使用本项目的 CLI 工具 `uv run python -m scripts.cli` 生成 Chen 风格 ER 图。
 ---
 
 # ER 图生成 Skill
@@ -62,7 +62,7 @@ CREATE TABLE users (
 ## ER 图生成命令
 
 ```bash
-python -m scripts.cli \
+uv run python -m scripts.cli \
   --sql-file docs/er/sql/<table_name>.sql \
   --out docs/er/diagram/<table_name>.png
 ```
@@ -88,7 +88,7 @@ CREATE TABLE users (
 
 生成命令：
 ```bash
-python -m scripts.cli \
+uv run python -m scripts.cli \
   --sql-file docs/er/sql/users.sql \
   --out docs/er/diagram/users.png
 ```
@@ -96,5 +96,6 @@ python -m scripts.cli \
 ## 依赖安装
 
 ```bash
-pip install -r requirements.txt
+cd ~/.claude/skills
+uv sync
 ```
