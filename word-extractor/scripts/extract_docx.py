@@ -22,6 +22,118 @@ from docx import Document
 from docx.oxml.ns import qn
 
 
+def extract_comments_data(doc):
+    """
+    Extract all comments from the comments.xml part.
+    Returns a dict mapping comment id -> comment metadata.
+    """
+    comments_map = {}
+    for rel in doc.part.rels.values():
+        if "comments" in rel.reltype and "Extended" not in rel.reltype:
+            comments_part = rel.target_part
+            root = comments_part.element
+            for comment in root.findall(qn("w:comment")):
+                cid = comment.get(qn("w:id"))
+                author = comment.get(qn("w:author"))
+                date = comment.get(qn("w:date"))
+                initials = comment.get(qn("w:initials"))
+                text = "".join(t.text or "" for t in comment.findall(".//" + qn("w:t")))
+                comments_map[cid] = {
+                    "id": cid,
+                    "author": author,
+                    "date": date,
+                    "initials": initials,
+                    "text": text,
+                }
+            break
+    return comments_map
+
+
+def extract_comment_ranges(doc):
+    """
+    Walk the document body in order to find which paragraphs each comment
+    touches, and extract the text between commentRangeStart and commentRangeEnd.
+    Returns a dict mapping comment id -> list of paragraph indices,
+    and a dict mapping comment id -> selected text.
+    """
+    from docx.oxml import register_element_cls
+
+    comment_paras = {}   # cid -> [para_idx, ...]
+    comment_texts = {}   # cid -> selected text fragment
+
+    body = doc.element.body
+    para_idx = -1
+
+    # Track open comments per paragraph for text extraction
+    open_comments = set()
+
+    for child in body:
+        if child.tag == qn("w:p"):
+            para_idx += 1
+            # Reset open comments for each paragraph (range can span paras,
+            # but text extraction is per-paragraph)
+            open_comments = set()
+            inside_range = False
+            range_buffer = {}
+
+            for sub in child:
+                tag = sub.tag
+                if tag == qn("w:commentRangeStart"):
+                    cid = sub.get(qn("w:id"))
+                    open_comments.add(cid)
+                    comment_paras.setdefault(cid, []).append(para_idx)
+                    range_buffer[cid] = []
+                elif tag == qn("w:commentRangeEnd"):
+                    cid = sub.get(qn("w:id"))
+                    if cid in open_comments:
+                        open_comments.discard(cid)
+                        if cid in range_buffer:
+                            frag = "".join(range_buffer[cid])
+                            if frag:
+                                if cid not in comment_texts:
+                                    comment_texts[cid] = frag
+                                else:
+                                    comment_texts[cid] += frag
+                            del range_buffer[cid]
+                elif tag == qn("w:r"):
+                    run_text = "".join(t.text or "" for t in sub.findall(qn("w:t")))
+                    if run_text:
+                        for cid in list(open_comments):
+                            if cid in range_buffer:
+                                range_buffer[cid].append(run_text)
+
+            # Handle comments that end in a later paragraph
+            for cid in open_comments:
+                if cid in range_buffer:
+                    frag = "".join(range_buffer[cid])
+                    if frag:
+                        if cid not in comment_texts:
+                            comment_texts[cid] = frag
+                        else:
+                            comment_texts[cid] += frag
+
+        elif child.tag == qn("w:tbl"):
+            # Tables don't count as paragraphs but may be between paragraphs
+            pass
+
+    # Second pass: collect paragraph indices for comments that only have
+    # commentReference (no range markers) or to ensure all referenced paras are captured.
+    # We look at commentReference elements in each paragraph.
+    para_idx = -1
+    for child in body:
+        if child.tag == qn("w:p"):
+            para_idx += 1
+            for sub in child.iter():
+                if sub.tag == qn("w:commentReference"):
+                    cid = sub.get(qn("w:id"))
+                    if cid and cid not in comment_paras:
+                        comment_paras[cid] = [para_idx]
+                    elif cid and para_idx not in comment_paras[cid]:
+                        comment_paras[cid].append(para_idx)
+
+    return comment_paras, comment_texts
+
+
 def extract_images(doc, docx_path):
     """
     Extract images with their paragraph positions and captions.
@@ -271,7 +383,7 @@ def get_run_formatting(run):
     return fmt
 
 
-def extract_paragraphs(doc, images, tables):
+def extract_paragraphs(doc, images, tables, comment_paras):
     """
     Extract all paragraphs with rich metadata.
     Mark positions of images and tables within the paragraph stream.
@@ -279,6 +391,12 @@ def extract_paragraphs(doc, images, tables):
     # Build lookup sets for quick checking
     image_para_indices = {img["paragraph_index"] for img in images}
     table_para_indices = {tbl["paragraph_index"] for tbl in tables}
+
+    # Build reverse lookup: para_idx -> list of comment ids
+    para_comments = {}
+    for cid, para_indices in comment_paras.items():
+        for pidx in para_indices:
+            para_comments.setdefault(pidx, []).append(cid)
 
     paragraphs = []
     for idx, para in enumerate(doc.paragraphs):
@@ -295,6 +413,7 @@ def extract_paragraphs(doc, images, tables):
             "is_empty": not text,
             "has_image": idx in image_para_indices,
             "has_table": idx in table_para_indices,
+            "comments": para_comments.get(idx, []),
         }
 
         # Extract run-level formatting
@@ -444,10 +563,12 @@ def generate_markdown(data):
     paragraphs = data["paragraphs"]
     images = data["images"]
     tables = data["tables"]
+    comments = data.get("comments", [])
 
     # Build lookup maps
     image_by_para = {img["paragraph_index"]: img for img in images}
     table_by_para = {tbl["paragraph_index"]: tbl for tbl in tables}
+    comments_map = {c["id"]: c for c in comments}
 
     for para in paragraphs:
         idx = para["index"]
@@ -462,6 +583,14 @@ def generate_markdown(data):
         if level > 0:
             lines.append(f"{'#' * level} {text}")
             lines.append("")
+            # Append comments for this heading
+            for cid in para.get("comments", []):
+                c = comments_map.get(cid)
+                if c:
+                    lines.append(f"> **批注** [{c['author']}]: {c['text']}")
+                    if c.get("selected_text"):
+                        lines.append(f"> *选中内容：{c['selected_text']}*")
+                    lines.append("")
             continue
 
         # Handle images
@@ -475,6 +604,13 @@ def generate_markdown(data):
             if text:
                 lines.append(text)
                 lines.append("")
+            for cid in para.get("comments", []):
+                c = comments_map.get(cid)
+                if c:
+                    lines.append(f"> **批注** [{c['author']}]: {c['text']}")
+                    if c.get("selected_text"):
+                        lines.append(f"> *选中内容：{c['selected_text']}*")
+                    lines.append("")
             continue
 
         # Handle tables
@@ -493,12 +629,26 @@ def generate_markdown(data):
                 for row in cells[1:]:
                     lines.append("| " + " | ".join(row) + " |")
             lines.append("")
+            for cid in para.get("comments", []):
+                c = comments_map.get(cid)
+                if c:
+                    lines.append(f"> **批注** [{c['author']}]: {c['text']}")
+                    if c.get("selected_text"):
+                        lines.append(f"> *选中内容：{c['selected_text']}*")
+                    lines.append("")
             continue
 
         # Regular paragraph
         if text:
             lines.append(text)
             lines.append("")
+        for cid in para.get("comments", []):
+            c = comments_map.get(cid)
+            if c:
+                lines.append(f"> **批注** [{c['author']}]: {c['text']}")
+                if c.get("selected_text"):
+                    lines.append(f"> *选中内容：{c['selected_text']}*")
+                lines.append("")
 
     return "\n".join(lines)
 
@@ -509,9 +659,24 @@ def extract_all(docx_path):
 
     images = extract_images(doc, docx_path)
     tables = extract_tables(doc)
-    paragraphs = extract_paragraphs(doc, images, tables)
+    comments_map = extract_comments_data(doc)
+    comment_paras, comment_texts = extract_comment_ranges(doc)
+    paragraphs = extract_paragraphs(doc, images, tables, comment_paras)
     sections = detect_special_sections(paragraphs)
     heading_tree = build_heading_tree(paragraphs)
+
+    # Enrich comments with paragraph indices and selected text
+    comments = []
+    for cid, cdata in comments_map.items():
+        comments.append({
+            "id": cdata["id"],
+            "author": cdata["author"],
+            "date": cdata["date"],
+            "initials": cdata["initials"],
+            "text": cdata["text"],
+            "paragraph_indices": comment_paras.get(cid, []),
+            "selected_text": comment_texts.get(cid, None),
+        })
 
     result = {
         "source_file": os.path.basename(docx_path),
@@ -520,11 +685,13 @@ def extract_all(docx_path):
             "table_count": len(doc.tables),
             "image_count": len(images),
             "heading_count": sum(1 for p in paragraphs if p["heading_level"] > 0),
+            "comment_count": len(comments),
         },
         "sections": sections,
         "heading_tree": heading_tree,
         "images": images,
         "tables": tables,
+        "comments": comments,
         "paragraphs": paragraphs,
     }
 
@@ -574,6 +741,7 @@ def main():
     print(f"  Headings: {stats['heading_count']}")
     print(f"  Tables: {stats['table_count']}")
     print(f"  Images: {stats['image_count']}")
+    print(f"  Comments: {stats['comment_count']}")
     if data["sections"]["title"]:
         print(f"  Title: {data['sections']['title']}")
 
