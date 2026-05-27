@@ -1,0 +1,100 @@
+{
+  "skill_name": "wsl-powershell-bridge",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "我在 WSL 里开发，现在需要调用 Windows 上的 Visio COM 接口来自动化生成图表，应该怎么操作？",
+      "expected_output": "应该建议使用 powershell.exe 作为桥接，提供具体的命令示例，解释 WSLInterop 机制，并说明 COM 对象不能跨边界传递",
+      "files": [],
+      "assertions": [
+        {
+          "name": "mentions_powershell_bridge",
+          "type": "llm_judge",
+          "prompt": "Check if the response mentions using powershell.exe as a bridge from WSL to Windows"
+        },
+        {
+          "name": "mentions_com_limitation",
+          "type": "llm_judge",
+          "prompt": "Check if the response mentions that COM objects cannot cross the WSL-Windows boundary"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "WSL 里运行 python 脚本提示 ImportError: No module named 'win32com'，但我明明在 Windows 上装了这个包，怎么回事？",
+      "expected_output": "应该解释 WSL 和 Windows 是两个独立环境，建议通过 PowerShell 调用 Windows 侧的 Python，或提供替代方案",
+      "files": [],
+      "assertions": [
+        {
+          "name": "explains_environment_separation",
+          "type": "llm_judge",
+          "prompt": "Check if the response explains that WSL Linux and Windows are separate environments"
+        },
+        {
+          "name": "suggests_windows_python",
+          "type": "llm_judge",
+          "prompt": "Check if the response suggests using Windows-side Python via PowerShell"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "能不能在 WSL 里用 PowerShell 启动一个 Windows 上的后台服务，并且之后还能停止它？",
+      "expected_output": "应该提供 Start-Process 启动和 Get-Process/Stop-Process 停止的示例，并提醒进程管理的局限性和注意事项",
+      "files": [],
+      "assertions": [
+        {
+          "name": "provides_start_example",
+          "type": "llm_judge",
+          "prompt": "Check if the response provides a Start-Process example for starting a background service"
+        },
+        {
+          "name": "provides_stop_example",
+          "type": "llm_judge",
+          "prompt": "Check if the response provides a Stop-Process or equivalent example for stopping the service"
+        },
+        {
+          "name": "warns_about_limitations",
+          "type": "llm_judge",
+          "prompt": "Check if the response warns about process management limitations (e.g., killing by name may affect other processes)"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "prompt": "我在 WSL 里执行 powershell.exe 报错 Exec format error，怎么解决？",
+      "expected_output": "应该解释 WSLInterop 未注册，提供注册命令，并建议配置 /etc/wsl.conf 持久化",
+      "files": [],
+      "assertions": [
+        {
+          "name": "explains_wslinterop",
+          "type": "llm_judge",
+          "prompt": "Check if the response explains WSLInterop and why the error occurs"
+        },
+        {
+          "name": "provides_fix_command",
+          "type": "llm_judge",
+          "prompt": "Check if the response provides the binfmt_misc registration command to fix the issue"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "prompt": "请帮我写一个脚本，在 WSL 里调用 Windows 上的 Python 执行 pywin32 操作，并把结果传回 WSL",
+      "expected_output": "应该建议使用 Python 脚本文件模式，展示如何在 Windows 侧生成 JSON 输出，以及如何在 WSL 侧解析",
+      "files": [],
+      "assertions": [
+        {
+          "name": "recommends_script_file_pattern",
+          "type": "llm_judge",
+          "prompt": "Check if the response recommends using a Python script file (Pattern 3) rather than inline commands"
+        },
+        {
+          "name": "mentions_json_for_data_exchange",
+          "type": "llm_judge",
+          "prompt": "Check if the response mentions using JSON for structured data exchange between Windows and WSL"
+        }
+      ]
+    }
+  ]
+}
