@@ -127,7 +127,7 @@ def create_issue(config: Dict[str, Any], owner: str, repo: str, title: str, body
         payload["labels"] = labels
     if assignee:
         payload["assignee"] = assignee
-    return api_request(config["gitcode"]["api_base"], "POST", f"/repos/{owner}/issues", token, payload=payload) or {}
+    return api_request(config["gitcode"]["api_base"], "POST", f"/repos/{owner}/{repo}/issues", token, payload=payload) or {}
 
 
 def update_issue(config: Dict[str, Any], owner: str, repo: str, number: int, title: Optional[str] = None, body: Optional[str] = None, state: Optional[str] = None, labels: Optional[str] = None, state_event: Optional[str] = None) -> Dict[str, Any]:
@@ -143,7 +143,7 @@ def update_issue(config: Dict[str, Any], owner: str, repo: str, number: int, tit
         payload["labels"] = labels
     if state_event is not None:
         payload["state_event"] = state_event
-    return api_request(config["gitcode"]["api_base"], "PATCH", f"/repos/{owner}/issues/{number}", token, payload=payload) or {}
+    return api_request(config["gitcode"]["api_base"], "PATCH", f"/repos/{owner}/{repo}/issues/{number}", token, payload=payload) or {}
 
 
 def close_issue(config: Dict[str, Any], owner: str, repo: str, number: int) -> Dict[str, Any]:
@@ -152,7 +152,7 @@ def close_issue(config: Dict[str, Any], owner: str, repo: str, number: int) -> D
     current = get_issue(config, owner, repo, number)
     title = current.get("title", "")
     payload = {"repo": repo, "state_event": "close", "title": title}
-    return api_request(config["gitcode"]["api_base"], "PATCH", f"/repos/{owner}/issues/{number}", token, payload=payload) or {}
+    return api_request(config["gitcode"]["api_base"], "PATCH", f"/repos/{owner}/{repo}/issues/{number}", token, payload=payload) or {}
 
 
 def reopen_issue(config: Dict[str, Any], owner: str, repo: str, number: int) -> Dict[str, Any]:
@@ -160,7 +160,7 @@ def reopen_issue(config: Dict[str, Any], owner: str, repo: str, number: int) -> 
     current = get_issue(config, owner, repo, number)
     title = current.get("title", "")
     payload = {"repo": repo, "state_event": "reopen", "title": title}
-    return api_request(config["gitcode"]["api_base"], "PATCH", f"/repos/{owner}/issues/{number}", token, payload=payload) or {}
+    return api_request(config["gitcode"]["api_base"], "PATCH", f"/repos/{owner}/{repo}/issues/{number}", token, payload=payload) or {}
 
 
 # ---------------------------------------------------------------------------
