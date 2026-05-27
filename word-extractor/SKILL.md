@@ -34,7 +34,8 @@ This skill solves these problems by deeply inspecting the Word XML structure.
 ### 1. Run the extraction script
 
 ```bash
-uv run python <skill-path>/scripts/extract_docx.py <input.docx> -o <output-dir> -f both
+cd ~/.claude/skills
+uv run python word-extractor/scripts/extract_docx.py <input.docx> -o <output-dir> -f both
 ```
 
 Options:
@@ -127,7 +128,8 @@ uv sync
 
 ```bash
 # Extract a thesis document
-uv run python scripts/extract_docx.py ~/thesis.docx -o ./output -f both
+cd ~/.claude/skills
+uv run python word-extractor/scripts/extract_docx.py ~/thesis.docx -o ./output -f both
 
 # Read the Markdown for overview
 cat ./output/thesis.md

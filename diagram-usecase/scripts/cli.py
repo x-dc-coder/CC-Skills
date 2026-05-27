@@ -45,17 +45,23 @@ Examples:
         "--safe-margin", type=int, default=24, help="Safe white margin in pixels after auto-crop"
     )
     parser.add_argument("--no-auto-crop", action="store_true", help="Disable automatic content-based crop")
+    parser.add_argument("--scale", type=int, default=None, help="Render scale factor (higher = more pixels)")
+    parser.add_argument("--no-downsample", action="store_true", help="Output high-resolution image without downsampling")
     args = parser.parse_args()
 
     # 读取 JSON
     json_data = json.loads(Path(args.json_file).read_text(encoding="utf-8"))
 
     # 渲染
-    png = render_usecase_diagram(
-        json_data,
+    kwargs = dict(
         auto_crop=not args.no_auto_crop,
         safe_margin=max(0, args.safe_margin),
+        downsample_output=not args.no_downsample,
     )
+    if args.scale is not None:
+        kwargs["scale"] = args.scale
+
+    png = render_usecase_diagram(json_data, **kwargs)
 
     # 确定输出路径
     output_path = args.out

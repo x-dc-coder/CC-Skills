@@ -68,3 +68,9 @@ thesis/
 
 # skills 临时目录
 tmp/
+
+# 论文提取输出产物（个人文件，不提交）
+output/
+
+# skill 评估工作区（临时评估数据）
+kimi-web-search-workspace/

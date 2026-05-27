@@ -22,19 +22,24 @@ ENTITY_H = 50   # 实体矩形高度（缩小）
 RELATION_DW = 40  # 菱形半宽（缩小）
 RELATION_DH = 28  # 菱形半高（缩小）
 PADDING = 80    # 画布边距
-FONT_SIZE = 15
-LABEL_FONT_SIZE = 13
+FONT_SIZE = 12
+LABEL_FONT_SIZE = 10
 
 
-def render_er_diagram(data: dict, auto_crop: bool = True, safe_margin: int = 24) -> bytes:
-    """渲染 ER 图为 PNG"""
+def render_er_diagram(data: dict, auto_crop: bool = True, safe_margin: int = 24, scale: int = None, downsample_output: bool = True) -> bytes:
+    """渲染 ER 图为 PNG
+
+    Args:
+        downsample_output: 是否下采样到 1x（默认 True）；设为 False 可输出更高像素。
+    """
     entities = data.get("entities", [])
     relations = data.get("relations", [])
     title = data.get("title", "")
 
     # 计算画布尺寸
     canvas_w, canvas_h = _compute_canvas_size(entities, relations)
-    scale = SCALE
+    if scale is None:
+        scale = SCALE
 
     image = Image.new("RGB", (canvas_w * scale, canvas_h * scale), "#FFFFFF")
     draw = ImageDraw.Draw(image)
@@ -54,7 +59,9 @@ def render_er_diagram(data: dict, auto_crop: bool = True, safe_margin: int = 24)
     for rel in relations:
         _draw_relation(draw, rel, name_font, scale)
 
-    final = _finalize_image(_downsample(image, scale), bg_color=(255, 255, 255), auto_crop=auto_crop, safe_margin=safe_margin)
+    if downsample_output:
+        image = _downsample(image, scale)
+    final = _finalize_image(image, bg_color=(255, 255, 255), auto_crop=auto_crop, safe_margin=safe_margin)
     return _to_png_bytes(final)
 
 
@@ -240,8 +247,11 @@ def _load_font(size: int) -> ImageFont.ImageFont:
                     except OSError:
                         continue
 
-    # 系统字体
+    # 系统字体（宋体优先，统一论文字体规范）
     system_candidates = [
+        "/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc",  # Linux 思源宋体
+        "C:/Windows/Fonts/simsun.ttc",   # Windows 宋体
+        "C:/Windows/Fonts/simsun.ttf",   # Windows 宋体（备选）
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
         "/System/Library/Fonts/Supplemental/Arial.ttf",

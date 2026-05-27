@@ -185,6 +185,7 @@ skills/output/diagram-ers/    # 生成的 ER 图 PNG（默认输出目录）
 ## ER 图生成命令
 
 ```bash
+cd ~/.claude/skills/diagram-ers
 uv run python -m scripts.cli \
   --json-file docs/er/json/<name>.json
 ```
@@ -192,6 +193,7 @@ uv run python -m scripts.cli \
 当输入文件使用**绝对路径**时，CLI 会自动推断项目目录（向上查找包含 `docs/` 或 `thesis-output/` 的目录），默认输出到 `<项目目录>/thesis-output/img/diagram.png`。如使用相对路径或无法推断，则回退到 `skills/output/diagram-ers/diagram.png`。如需自定义路径：
 
 ```bash
+cd ~/.claude/skills/diagram-ers
 uv run python -m scripts.cli \
   --json-file docs/er/json/<name>.json \
   --out <自定义路径>.png
@@ -235,6 +237,7 @@ uv run python -m scripts.cli \
 生成命令：
 
 ```bash
+cd ~/.claude/skills/diagram-ers
 uv run python -m scripts.cli \
   --json-file docs/er/json/simple.json
 ```
@@ -242,6 +245,7 @@ uv run python -m scripts.cli \
 ### 简化格式（直接使用）
 
 ```bash
+cd ~/.claude/skills/diagram-ers
 uv run python -m scripts.cli --json-file er.json
 ```
 

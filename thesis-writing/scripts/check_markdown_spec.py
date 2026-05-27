@@ -18,10 +18,12 @@ FIGURE_TITLE_RE_LOOSE = re.compile(r"^\s*\*{0,2}\s*(?:图|Figure|Fig\.)\s*\d+[-�
 MERMAID_FENCE_RE = re.compile(r"^\s*```\s*mermaid\s*$", re.IGNORECASE)
 CITATION_RE = re.compile(r"\[(\d+)\]")
 META_FIELD_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{1,30}\s*:\s*\S+")
-SPECIAL_HEADINGS = {"摘要", "abstract", "参考文献", "references", "致谢", "acknowledgements", "结论", "结  论", "致  谢"}
+SPECIAL_HEADINGS = {"摘要", "abstract", "参考文献", "references", "致谢", "acknowledgements", "结论", "结  论", "致  谢", "附录"}
 REFERENCE_ITEM_RE = re.compile(r"^\[(\d+)\]")
 FORMULA_NUMBER_RE = re.compile(r"\\tag\{\s*(\d+)-(\d+)\s*\}|(?:\\?\()\s*(\d+)-(\d+)\s*(?:\\?\))")
 FORMULA_IMG_KEYWORDS_RE = re.compile(r"公式|equation|formula", re.IGNORECASE)
+CJK_RE = re.compile(r"[一-鿿㐀-䶿　-〿＀-￯]")
+ASCII_ALNUM_RE = re.compile(r"[A-Za-z0-9]")
 
 
 @dataclass
@@ -144,6 +146,59 @@ def _validate_markdown_pairs(findings: list[Finding], line_no: int, text: str) -
             "UNPAIRED_PARENTHESES",
             f"圆括号 () 不匹配：左 {paren_open} 个，右 {paren_close} 个",
         )
+
+
+def _validate_cjk_ascii_spacing(
+    findings: list[Finding],
+    line_no: int,
+    text: str,
+) -> None:
+    """检查中文字符与英文/数字之间是否存在空格。"""
+    stripped = text.strip()
+    if not stripped:
+        return
+    # 跳过标题行
+    if ATX_HEADING_RE.match(stripped):
+        return
+    # 跳过表格行
+    if TABLE_ROW_RE.match(stripped) or TABLE_SEP_RE.match(stripped):
+        return
+    # 跳过引用块中的图片占位符和描述
+    if stripped.startswith("> [") or stripped.startswith("> 描述："):
+        return
+    # 跳过参考文献列表行
+    if REFERENCE_ITEM_RE.match(stripped):
+        return
+    # 跳过表题和图题行（支持加粗格式）
+    if stripped.startswith("表") or stripped.startswith("图") or stripped.startswith("**表") or stripped.startswith("**图"):
+        return
+
+    # 先保护行内代码、URL、图片语法中的内容
+    protected_text = re.sub(r"`[^`]*`", lambda m: "\x00" * len(m.group(0)), text)
+    protected_text = re.sub(r"!\[[^\]]*\]\([^)]*\)", lambda m: "\x00" * len(m.group(0)), protected_text)
+    protected_text = re.sub(r"\[[^\]]+\]\([^)]+\)", lambda m: "\x00" * len(m.group(0)), protected_text)
+
+    # 检查 中文 + 空格 + ASCII/数字
+    for m in re.finditer(r"[一-鿿㐀-䶿　-〿＀-￯]\s+[A-Za-z0-9]", protected_text):
+        add_findings(
+            findings,
+            "ERROR",
+            line_no,
+            "CJK_ASCII_SPACE",
+            "中文字符与英文/数字之间不得有空格，请删除空格",
+        )
+        break  # 每行只报一次
+
+    # 检查 ASCII/数字 + 空格 + 中文
+    for m in re.finditer(r"[A-Za-z0-9]\s+[一-鿿㐀-䶿　-〿＀-￯]", protected_text):
+        add_findings(
+            findings,
+            "ERROR",
+            line_no,
+            "ASCII_CJK_SPACE",
+            "英文/数字与中文字符之间不得有空格，请删除空格",
+        )
+        break
 
 
 def _validate_formula_number(
@@ -344,7 +399,7 @@ def _validate_text_around_blocks(
             has_text_before = True
 
         has_text_after = False
-        look = table_end
+        look = table_end + 1
         while look < len(lines) and not lines[look].strip():
             look += 1
         if look < len(lines) and _is_valid_text(lines[look]):
@@ -407,6 +462,7 @@ def check_markdown(path: Path) -> tuple[list[Finding], list[str]]:
                 add_findings(findings, "ERROR", first_non_empty_idx, "META_PANDOC_BLOCK", "禁止 Pandoc 标题元信息块（% 开头）")
 
     in_references_section = False
+    in_appendix_section = False
 
     for idx, line in enumerate(lines, start=1):
         stripped = line.strip()
@@ -455,8 +511,12 @@ def check_markdown(path: Path) -> tuple[list[Finding], list[str]]:
         if in_math_block:
             continue
 
-        _validate_paired_double_quotes(findings, idx, line)
-        _validate_markdown_pairs(findings, idx, line)
+        # 跳过表格行和表格分隔行的配对检查（单元格内标记不应作为Markdown解析）
+        is_table = bool(TABLE_ROW_RE.match(line) or TABLE_SEP_RE.match(line))
+        if not is_table:
+            _validate_paired_double_quotes(findings, idx, line)
+            _validate_markdown_pairs(findings, idx, line)
+        _validate_cjk_ascii_spacing(findings, idx, line)
 
         heading = ATX_HEADING_RE.match(line)
         if heading:
@@ -466,8 +526,14 @@ def check_markdown(path: Path) -> tuple[list[Finding], list[str]]:
             if first_heading_line is None:
                 first_heading_line = idx
 
-            # 跳级检查
-            if prev_heading_level > 0 and level > prev_heading_level + 1:
+            # 附录区域判定
+            if level == 1 and title == "附录":
+                in_appendix_section = True
+            elif level == 1 and in_appendix_section:
+                in_appendix_section = False
+
+            # 跳级检查（附录区域跳过）
+            if not in_appendix_section and prev_heading_level > 0 and level > prev_heading_level + 1:
                 add_findings(
                     findings,
                     "ERROR",
@@ -478,8 +544,8 @@ def check_markdown(path: Path) -> tuple[list[Finding], list[str]]:
 
             if level == 1:
                 h1_count += 1
-                # 提取章节号（数字开头）
-                m = re.match(r"^(\d+)\s+", raw_title)
+                # 提取章节号（支持 "1 引言" 和 "第1章 引言" 两种格式）
+                m = re.match(r"^(?:第)?(\d+)\s*章?\s+", raw_title)
                 if m:
                     current_chapter_no = m.group(1)
                 elif title not in SPECIAL_HEADINGS:
@@ -492,7 +558,7 @@ def check_markdown(path: Path) -> tuple[list[Finding], list[str]]:
                     )
                 current_section_no = None
             elif level == 2:
-                if not re.match(r"^\d+\.\d+\s+", raw_title):
+                if not in_appendix_section and not re.match(r"^\d+\.\d+\s+", raw_title):
                     add_findings(
                         findings,
                         "ERROR",
@@ -514,7 +580,7 @@ def check_markdown(path: Path) -> tuple[list[Finding], list[str]]:
                             )
                         current_section_no = re.match(r"^(\d+\.\d+)", raw_title).group(1)
             elif level == 3:
-                if not re.match(r"^\d+\.\d+\.\d+\s+", raw_title):
+                if not in_appendix_section and not re.match(r"^\d+\.\d+\.\d+\s+", raw_title):
                     add_findings(
                         findings,
                         "ERROR",

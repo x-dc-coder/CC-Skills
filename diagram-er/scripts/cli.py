@@ -30,12 +30,14 @@ def main() -> None:
     parser.add_argument("--sql-file", required=True, help="Path to SQL DDL file")
     parser.add_argument("--out", default=None, help="Output PNG path (default: auto-detect from input file)")
     parser.add_argument("--dialect", default="mysql", help="SQL dialect for sqlglot")
+    parser.add_argument("--scale", type=int, default=4, help="Render scale factor (default: 4, higher = more pixels)")
+    parser.add_argument("--downsample", action="store_true", help="Downsample output to 1x (default: output high-res)")
     args = parser.parse_args()
 
     sql_text = Path(args.sql_file).read_text(encoding="utf-8")
     model = ddl_to_model(sql_text, dialect=args.dialect)
 
-    png = render_diagram_png(model)
+    png = render_diagram_png(model, scale=args.scale, downsample_output=args.downsample)
 
     output_path = args.out
     if output_path is None:

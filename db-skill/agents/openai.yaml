@@ -1,0 +1,4 @@
+interface:
+  display_name: "DB Skill"
+  short_description: "Operate MySQL with bounded JSON outputs and temp-file workflow"
+  default_prompt: "Use this skill to safely run MySQL CRUD and query operations with strict row limits, JSON output, jq filtering, and temp-file storage to avoid context bloat."

@@ -21,28 +21,28 @@ from PIL import Image, ImageDraw, ImageFont
 # 常量配置 - 学术论文风格（较高清）
 SCALE = 8  # 高分辨率渲染，然后下采样以获得更清晰的图像
 
-# Actor 尺寸（放大1.5倍）
-ACTOR_HEAD_RADIUS = 18  # 头部半径
-ACTOR_BODY_HEIGHT = 38  # 身体高度
-ACTOR_ARM_WIDTH = 27  # 手臂宽度
-ACTOR_LEG_HEIGHT = 30  # 腿部高度
-ACTOR_WIDTH = 54  # 整体宽度（用于布局）
+# Actor 尺寸（适配 12pt 字号）
+ACTOR_HEAD_RADIUS = 14  # 头部半径
+ACTOR_BODY_HEIGHT = 30  # 身体高度
+ACTOR_ARM_WIDTH = 20  # 手臂宽度
+ACTOR_LEG_HEIGHT = 24  # 腿部高度
+ACTOR_WIDTH = 40  # 整体宽度（用于布局）
 ACTOR_HEIGHT = ACTOR_HEAD_RADIUS * 2 + ACTOR_BODY_HEIGHT + ACTOR_LEG_HEIGHT  # 整体高度
-ACTOR_LABEL_MARGIN = 12  # 标签与图标的间距
+ACTOR_LABEL_MARGIN = 10  # 标签与图标的间距
 
-# 用例椭圆尺寸（放大1.5倍）
-USECASE_MIN_WIDTH = 150  # 最小宽度
-USECASE_HEIGHT = 60  # 椭圆高度
-USECASE_TEXT_PADDING = 24  # 文字边距
+# 用例椭圆尺寸（适配 12pt 字号）
+USECASE_MIN_WIDTH = 100  # 最小宽度
+USECASE_HEIGHT = 45  # 椭圆高度
+USECASE_TEXT_PADDING = 14  # 文字边距（紧凑）
 
-# 布局间距（放大1.5倍）
-ACTOR_TO_USECASE = 180  # 参与者到用例的水平距离
-USECASE_V_SPACING = 30  # 用例之间的垂直间距
-CANVAS_PADDING = 60  # 画布边距
+# 布局间距（紧凑，减少留白）
+ACTOR_TO_USECASE = 80   # 参与者到用例的水平距离
+USECASE_V_SPACING = 12  # 用例之间的垂直间距
+CANVAS_PADDING = 20     # 画布边距
 
-# 字体（放大到16px，更清晰）
-FONT_SIZE = 16
-ACTOR_FONT_SIZE = 16
+# 字体（统一论文标准字号 12pt）
+FONT_SIZE = 12
+ACTOR_FONT_SIZE = 12
 
 
 @dataclass
@@ -99,8 +99,11 @@ def load_font(size: int) -> ImageFont.ImageFont:
                 except OSError:
                     continue
 
-    # 3. 系统字体路径
+    # 3. 系统字体路径（宋体优先，统一论文字体规范）
     system_candidates = [
+        "/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc",  # Linux 思源宋体
+        "C:/Windows/Fonts/simsun.ttc",   # Windows 宋体
+        "C:/Windows/Fonts/simsun.ttf",   # Windows 宋体（备选）
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
@@ -109,7 +112,6 @@ def load_font(size: int) -> ImageFont.ImageFont:
         "C:/Windows/Fonts/arial.ttf",
         "C:/Windows/Fonts/msyh.ttc",
         "C:/Windows/Fonts/simhei.ttf",
-        "C:/Windows/Fonts/simsun.ttc",
     ]
     for p in system_candidates:
         if not p:
@@ -191,6 +193,8 @@ def render_usecase_diagram(
     model: dict,
     auto_crop: bool = True,
     safe_margin: int = 24,
+    scale: int = None,
+    downsample_output: bool = True,
 ) -> bytes:
     """渲染用例图
 
@@ -198,6 +202,8 @@ def render_usecase_diagram(
         model: 用例图模型，推荐使用单参与者简洁格式
         auto_crop: 是否自动裁剪空白边距
         safe_margin: 安全边距（像素）
+        scale: 渲染缩放比例（默认使用全局 SCALE）
+        downsample_output: 是否下采样到 1x（默认 True）；设为 False 可输出更高像素。
 
     Returns:
         PNG图片字节数据
@@ -208,11 +214,14 @@ def render_usecase_diagram(
             "usecases": ["登录系统", "重置密码", "商品下单", "退出系统"]
         }
     """
+    if scale is None:
+        scale = SCALE
+
     # 解析模型
     diagram_model = _parse_model(model)
 
     if not diagram_model.actors and not diagram_model.usecases:
-        return _render_empty(auto_crop, safe_margin)
+        return _render_empty(auto_crop, safe_margin, scale)
 
     # 计算布局
     _calculate_layout(diagram_model)
@@ -221,27 +230,29 @@ def render_usecase_diagram(
     canvas_w, canvas_h = _get_canvas_size(diagram_model)
 
     # 创建画布
-    image = Image.new("RGB", (canvas_w * SCALE, canvas_h * SCALE), "#FFFFFF")
+    image = Image.new("RGB", (canvas_w * scale, canvas_h * scale), "#FFFFFF")
     draw = ImageDraw.Draw(image)
 
     # 绘制
-    font = load_font(FONT_SIZE * SCALE)
-    actor_font = load_font(ACTOR_FONT_SIZE * SCALE)
+    font = load_font(FONT_SIZE * scale)
+    actor_font = load_font(ACTOR_FONT_SIZE * scale)
 
     # 先绘制关系（在底层）
     for relation in diagram_model.relations:
-        _draw_relation(draw, relation, diagram_model, SCALE)
+        _draw_relation(draw, relation, diagram_model, scale)
 
     # 再绘制参与者和用例
     for actor in diagram_model.actors:
-        _draw_actor(draw, actor, actor_font, SCALE)
+        _draw_actor(draw, actor, actor_font, scale)
 
     for usecase in diagram_model.usecases:
-        _draw_usecase(draw, usecase, font, SCALE)
+        _draw_usecase(draw, usecase, font, scale)
 
     # 后处理
+    if downsample_output:
+        image = downsample(image, scale)
     final = finalize_image(
-        downsample(image, SCALE),
+        image,
         bg_color=(255, 255, 255),
         auto_crop=auto_crop,
         safe_margin=safe_margin,
@@ -375,12 +386,15 @@ def _calculate_layout(model: UseCaseModel) -> None:
         actor_x = CANVAS_PADDING + ACTOR_WIDTH // 2
 
         for i, actor in enumerate(model.actors):
-            actor.x = actor_x
+            # 根据参与者名称宽度调整 x，确保文字不超出左边界
+            label_width = _estimate_text_width(actor.name)
+            min_actor_x = label_width // 2 + CANVAS_PADDING
+            actor.x = max(actor_x, min_actor_x)
             actor.y = actor_start_y + i * (ACTOR_HEIGHT + 40)
 
 
 def _estimate_text_width(text: str) -> int:
-    """估算文字宽度"""
+    """估算文字宽度（按 12pt 字号）"""
     width = 0
     for char in text:
         if '\u4e00' <= char <= '\u9fff':  # 中文字符
@@ -653,11 +667,13 @@ def _draw_arrow(
     )
 
 
-def _render_empty(auto_crop: bool, safe_margin: int) -> bytes:
+def _render_empty(auto_crop: bool, safe_margin: int, scale: int = None) -> bytes:
     """渲染空状态"""
-    image = Image.new("RGB", (800 * SCALE, 600 * SCALE), "#FFFFFF")
+    if scale is None:
+        scale = SCALE
+    image = Image.new("RGB", (800 * scale, 600 * scale), "#FFFFFF")
     draw = ImageDraw.Draw(image)
-    font = load_font(24 * SCALE)
+    font = load_font(12 * scale)
     draw.text(
         (400 * SCALE, 300 * SCALE),
         "No use case data found.",
@@ -665,8 +681,10 @@ def _render_empty(auto_crop: bool, safe_margin: int) -> bytes:
         font=font,
         anchor="mm",
     )
+    if downsample_output:
+        image = downsample(image, scale)
     final = finalize_image(
-        downsample(image, SCALE),
+        image,
         bg_color=(255, 255, 255),
         auto_crop=auto_crop,
         safe_margin=safe_margin,

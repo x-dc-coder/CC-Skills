@@ -176,6 +176,13 @@ description: Use when writing undergraduate thesis content for science/engineeri
 - 圆括号 `()`
 - 双引号 `"` / `"` / `"`
 
+### 空格规范（重要）
+- **正文中，中文字符与英文字母/数字之间不得有空格**
+- 正确：`基于SpringBoot框架` / `MySQL 8.0数据库` / `Vue.js前端`
+- 错误：`基于 SpringBoot 框架` / `MySQL 8.0 数据库` / `Vue.js 前端`
+- 英文单词**内部**空格保留（如 `Spring Boot`、`RESTful API`）
+- 行内代码、URL、参考文献列表中的 `[数字]` 不受此限制
+
 ### 其他规范
 - 禁止在正文中保留 Mermaid 代码块（应渲染为图片后引用）
 - 引用编号必须为正整数

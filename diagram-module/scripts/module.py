@@ -16,14 +16,14 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
 # 常量配置 - 学术紧凑风格
-SCALE = 2  # 适度缩放，平衡清晰度与性能（避免下采样过度模糊）
-NODE_W = 72  # 竖排文字的节点宽度（1x 尺寸）
-NODE_H = 80  # 竖排文字的最小节点高度（1x 尺寸，紧凑）
-ROOT_NODE_W = 280  # 根节点宽度（水平文字，1x 尺寸）
-ROOT_NODE_H = 72  # 根节点高度（1x 尺寸）
-H_SPACING = 24  # 水平间距（1x 尺寸）
-V_SPACING = 32  # 垂直间距（1x 尺寸）
-FONT_SIZE = 28  # 字体大小（1x 尺寸）
+SCALE = 4  # 高分辨率渲染后下采样，保证论文插图清晰度
+NODE_W = 40  # 竖排文字的节点宽度（1x 尺寸）
+NODE_H = 50  # 竖排文字的最小节点高度（1x 尺寸，紧凑）
+ROOT_NODE_W = 160  # 根节点宽度（水平文字，1x 尺寸）
+ROOT_NODE_H = 50  # 根节点高度（1x 尺寸）
+H_SPACING = 20  # 水平间距（1x 尺寸）
+V_SPACING = 28  # 垂直间距（1x 尺寸）
+FONT_SIZE = 12  # 字体大小（1x 尺寸，统一论文标准字号）
 VERTICAL_TEXT_EDGE_PADDING = 0  # 竖排文本首尾额外安全边距
 VERTICAL_TEXT_EDGE_TRIM = 16  # 竖排文本首尾留白裁剪量（像素）
 
@@ -61,8 +61,11 @@ def load_font(size: int) -> ImageFont.ImageFont:
                 except OSError:
                     continue
 
-    # 3. 系统字体路径
+    # 3. 系统字体路径（宋体优先，统一论文字体规范）
     system_candidates = [
+        "/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc",  # Linux 思源宋体
+        "C:/Windows/Fonts/simsun.ttc",   # Windows 宋体
+        "C:/Windows/Fonts/simsun.ttf",   # Windows 宋体（备选）
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
@@ -71,7 +74,6 @@ def load_font(size: int) -> ImageFont.ImageFont:
         "C:/Windows/Fonts/arial.ttf",
         "C:/Windows/Fonts/msyh.ttc",
         "C:/Windows/Fonts/simhei.ttf",
-        "C:/Windows/Fonts/simsun.ttc",
     ]
     for p in system_candidates:
         if not p:
@@ -139,6 +141,8 @@ def render_module_diagram(
     model: dict,
     auto_crop: bool = True,
     safe_margin: int = 24,
+    scale: int = None,
+    downsample_output: bool = True,
 ) -> bytes:
     """渲染功能模块图
 
@@ -146,19 +150,24 @@ def render_module_diagram(
         model: 模块图模型，包含 tree 字段
         auto_crop: 是否自动裁剪空白边距
         safe_margin: 安全边距（像素）
+        scale: 渲染缩放比例（默认使用全局 SCALE）
+        downsample_output: 是否下采样到 1x（默认 True）；设为 False 可输出更高像素。
 
     Returns:
         PNG图片字节数据
     """
+    if scale is None:
+        scale = SCALE
+
     tree_data = model.get("tree", {})
     if not tree_data:
-        return _render_empty(auto_crop, safe_margin)
+        return _render_empty(auto_crop, safe_margin, scale, downsample_output)
 
     # 构建树结构
     root = _build_tree(tree_data)
 
     # 先加载字体，用于计算文字高度
-    font = load_font(FONT_SIZE * SCALE)
+    font = load_font(FONT_SIZE * scale)
 
     # 计算根节点自适应宽度
     root.width = _calc_root_node_width(root.name, font)
@@ -190,8 +199,10 @@ def render_module_diagram(
     _draw_tree(draw, root, font, SCALE)
 
     # 后处理
+    if downsample_output:
+        image = downsample(image, scale)
     final = finalize_image(
-        downsample(image, SCALE),
+        image,
         bg_color=(255, 255, 255),
         auto_crop=auto_crop,
         safe_margin=safe_margin,
@@ -545,11 +556,13 @@ def _draw_connection(
         )
 
 
-def _render_empty(auto_crop: bool, safe_margin: int) -> bytes:
+def _render_empty(auto_crop: bool, safe_margin: int, scale: int = None, downsample_output: bool = True) -> bytes:
     """渲染空状态"""
-    image = Image.new("RGB", (800 * SCALE, 600 * SCALE), "#FFFFFF")
+    if scale is None:
+        scale = SCALE
+    image = Image.new("RGB", (800 * scale, 600 * scale), "#FFFFFF")
     draw = ImageDraw.Draw(image)
-    font = load_font(24 * SCALE)
+    font = load_font(12 * scale)
     draw.text(
         (400 * SCALE, 300 * SCALE),
         "No module data found.",
@@ -557,8 +570,10 @@ def _render_empty(auto_crop: bool, safe_margin: int) -> bytes:
         font=font,
         anchor="mm",
     )
+    if downsample_output:
+        image = downsample(image, scale)
     final = finalize_image(
-        downsample(image, SCALE),
+        image,
         bg_color=(255, 255, 255),
         auto_crop=auto_crop,
         safe_margin=safe_margin,

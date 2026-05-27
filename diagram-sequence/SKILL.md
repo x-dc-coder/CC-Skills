@@ -30,6 +30,7 @@ description: |
 ### 基础语法
 
 ```mermaid
+%%{init: {'themeVariables': { 'fontFamily': 'SimSun, Noto Serif CJK SC, serif', 'fontSize': '12px'}}}%%
 sequenceDiagram
     actor 用户
     participant 前端
@@ -64,6 +65,7 @@ npx -y @mermaid-js/mermaid-cli -i sequence.mmd -o sequence.png -b white
 ### 方式二：使用本项目的 CLI 工具（推荐）
 
 ```bash
+cd ~/.claude/skills/diagram-sequence
 uv run python -m scripts.cli \
   --json-file docs/sequence/json/<name>.json
 ```
@@ -71,6 +73,7 @@ uv run python -m scripts.cli \
 当输入文件使用**绝对路径**时，CLI 会自动推断项目目录（向上查找包含 `docs/` 或 `thesis-output/` 的目录），默认输出到 `<项目目录>/thesis-output/img/diagram.png`；中间 `.mmd` 文件自动存放到 `skills/tmp/<时间戳>/`。如使用相对路径或无法推断，则回退到 `skills/output/diagram-sequence/diagram.png`。如需自定义路径：
 
 ```bash
+cd ~/.claude/skills/diagram-sequence
 uv run python -m scripts.cli \
   --json-file docs/sequence/json/<name>.json \
   --out <自定义路径>.png
@@ -89,6 +92,8 @@ skills/tmp/                        # 中间文件（Mermaid 源文件等）
 ## JSON 文件规范
 
 ### 基本结构
+
+所有生成的时序图均包含统一的字体配置（宋体 12px），确保与论文风格一致。
 
 ```json
 {
@@ -129,6 +134,7 @@ skills/tmp/                        # 中间文件（Mermaid 源文件等）
 ## 时序图生成命令
 
 ```bash
+cd ~/.claude/skills/diagram-sequence
 uv run python -m scripts.cli \
   --json-file docs/sequence/json/login.json
 ```
@@ -166,6 +172,7 @@ uv run python -m scripts.cli \
 生成命令：
 
 ```bash
+cd ~/.claude/skills/diagram-sequence
 uv run python -m scripts.cli \
   --json-file docs/sequence/json/seat-select.json
 ```

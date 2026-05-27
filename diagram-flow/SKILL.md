@@ -28,12 +28,12 @@ description: |
 所有流程图必须包含以下样式定义，确保白色背景和白色节点：
 
 ```mermaid
-%%{init: {'themeVariables': { 'edgeLabelBackground': '#ffffff'}}}%%
+%%{init: {'themeVariables': { 'fontFamily': 'SimSun, Noto Serif CJK SC, serif', 'fontSize': '16px', 'edgeLabelBackground': '#ffffff'}, 'flowchart': {'curve': 'stepAfter', 'padding': 0, 'nodeSpacing': 10, 'rankSpacing': 15, 'useMaxWidth': true, 'htmlLabels': false}}}%%
 flowchart TD
     %% 定义默认样式：白色背景，黑色边框
     classDef default fill:#ffffff,stroke:#000000,stroke-width:2px,color:#000000
     classDef diamond fill:#ffffff,stroke:#000000,stroke-width:2px,color:#000000
-    
+
     %% 你的流程图节点...
 ```
 
@@ -42,6 +42,8 @@ flowchart TD
 - `stroke:#000000` - 黑色边框
 - `stroke-width:2px` - 边框宽度2像素
 - `color:#000000` - 黑色文字
+- 字体统一为宋体 **16px**
+- `flowchart` 紧凑配置：`padding: 0, nodeSpacing: 10, rankSpacing: 15`（最小留白）
 - 菱形判断节点需要额外定义 `diamond` 类并应用
 
 ## 输出格式
@@ -99,7 +101,7 @@ flowchart TD
 
 ### 1. 系统总体流程
 ```mermaid
-%%{init: {'themeVariables': { 'edgeLabelBackground': '#ffffff'}}}%%
+%%{init: {'themeVariables': { 'fontFamily': 'SimSun, Noto Serif CJK SC, serif', 'fontSize': '16px', 'edgeLabelBackground': '#ffffff'}, 'flowchart': {'curve': 'stepAfter', 'padding': 0, 'nodeSpacing': 10, 'rankSpacing': 15, 'useMaxWidth': true, 'htmlLabels': false}}}%%
 flowchart TD
     %% 定义样式：白色背景，黑色边框
     classDef default fill:#ffffff,stroke:#000000,stroke-width:2px,color:#000000
@@ -119,7 +121,7 @@ flowchart TD
 
 ### 2. 登录流程
 ```mermaid
-%%{init: {'themeVariables': { 'edgeLabelBackground': '#ffffff'}}}%%
+%%{init: {'themeVariables': { 'fontFamily': 'SimSun, Noto Serif CJK SC, serif', 'fontSize': '16px', 'edgeLabelBackground': '#ffffff'}, 'flowchart': {'curve': 'stepAfter', 'padding': 0, 'nodeSpacing': 10, 'rankSpacing': 15, 'useMaxWidth': true, 'htmlLabels': false}}}%%
 flowchart TD
     %% 定义样式：白色背景，黑色边框
     classDef default fill:#ffffff,stroke:#000000,stroke-width:2px,color:#000000
@@ -140,7 +142,7 @@ flowchart TD
 
 ### 3. 数据增删改查流程
 ```mermaid
-%%{init: {'themeVariables': { 'edgeLabelBackground': '#ffffff'}}}%%
+%%{init: {'themeVariables': { 'fontFamily': 'SimSun, Noto Serif CJK SC, serif', 'fontSize': '16px', 'edgeLabelBackground': '#ffffff'}, 'flowchart': {'curve': 'stepAfter', 'padding': 0, 'nodeSpacing': 10, 'rankSpacing': 15, 'useMaxWidth': true, 'htmlLabels': false}}}%%
 flowchart TD
     %% 定义样式：白色背景，黑色边框
     classDef default fill:#ffffff,stroke:#000000,stroke-width:2px,color:#000000
@@ -166,24 +168,28 @@ flowchart TD
 
 ## 渲染为图片
 
-使用 mermaid-cli 将生成的 Mermaid 代码渲染为 PNG 图片：
+使用 mermaid-cli 将生成的 Mermaid 代码渲染为 PNG 或 SVG：
 
 ```bash
 # 安装 mermaid-cli（如未安装）
 npm install -g @mermaid-js/mermaid-cli
 
-# 渲染为 PNG（白色背景）
-mmdc -i input.mmd -o output.png -b white
+# 渲染为 PNG（白色背景 + 2x 分辨率，保证论文清晰度）
+mmdc -i input.mmd -o output.png -b white -s 2
 
 # 或指定更高分辨率
 mmdc -i input.mmd -o output.png -b white -s 3
+
+# 渲染为 SVG（矢量格式，Word 中任意缩放不模糊，推荐）
+mmdc -i input.mmd -o output.svg -e svg
 ```
 
 **关键参数：**
 - `-i` 输入的 .mmd 文件路径
 - `-o` 输出的图片路径
-- `-b white` 设置白色背景（必须）
-- `-s` 缩放比例（可选，提高清晰度）
+- `-e svg` 输出 SVG 矢量格式（**推荐**，Word 中无损缩放）
+- `-b white` 设置白色背景（PNG 时必须）
+- `-s` 缩放比例（PNG 建议 2 起步，确保插入论文后不模糊）
 
 ## 自检清单
 
@@ -204,7 +210,7 @@ mmdc -i input.mmd -o output.png -b white -s 3
 
 **输出**：
 ```mermaid
-%%{init: {'themeVariables': { 'edgeLabelBackground': '#ffffff'}}}%%
+%%{init: {'themeVariables': { 'fontFamily': 'SimSun, Noto Serif CJK SC, serif', 'fontSize': '16px', 'edgeLabelBackground': '#ffffff'}, 'flowchart': {'curve': 'stepAfter', 'padding': 0, 'nodeSpacing': 10, 'rankSpacing': 15, 'useMaxWidth': true, 'htmlLabels': false}}}%%
 flowchart TD
     %% 定义样式：白色背景，黑色边框
     classDef default fill:#ffffff,stroke:#000000,stroke-width:2px,color:#000000

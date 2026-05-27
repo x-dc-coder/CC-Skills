@@ -6,22 +6,27 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
-ENTITY_W = 220
-ENTITY_H = 120
-ATTR_W = 190
-ATTR_H = 84
+ENTITY_W = 100
+ENTITY_H = 40
+ATTR_W = 90
+ATTR_H = 44
 
 
-def render_diagram_png(model: dict, auto_crop: bool = True, safe_margin: int = 24) -> bytes:
-    """渲染单表 ER 图为 PNG"""
+def render_diagram_png(model: dict, auto_crop: bool = True, safe_margin: int = 24, scale: int = 4, downsample_output: bool = True) -> bytes:
+    """渲染单表 ER 图为 PNG
+
+    Args:
+        downsample_output: 是否下采样到 1x（默认 True）；设为 False 可输出更高像素。
+    """
     tables = model.get("tables", [])
-    scale = 4
 
     if not tables:
         image = Image.new("RGB", (900 * scale, 560 * scale), "#FFFFFF")
         draw = ImageDraw.Draw(image)
-        draw.text((40 * scale, 40 * scale), "No table found in SQL DDL.", fill="#111827", font=_load_font(20 * scale))
-        final = _finalize_image(_downsample(image, scale), bg_color=(255, 255, 255), auto_crop=auto_crop, safe_margin=safe_margin)
+        draw.text((40 * scale, 40 * scale), "No table found in SQL DDL.", fill="#111827", font=_load_font(12 * scale))
+        if downsample_output:
+            image = _downsample(image, scale)
+        final = _finalize_image(image, bg_color=(255, 255, 255), auto_crop=auto_crop, safe_margin=safe_margin)
         return _to_png_bytes(final)
 
     # 只处理第一个表（单表模式）
@@ -32,12 +37,14 @@ def render_diagram_png(model: dict, auto_crop: bool = True, safe_margin: int = 2
     image = Image.new("RGB", (canvas_w * scale, canvas_h * scale), "#FFFFFF")
     draw = ImageDraw.Draw(image)
 
-    entity_font = _load_font(34 * scale)
-    attr_font = _load_font(34 * scale)
+    entity_font = _load_font(12 * scale)
+    attr_font = _load_font(12 * scale)
 
     _draw_entity_cluster(draw, table, layout, entity_font, attr_font, scale)
 
-    final = _finalize_image(_downsample(image, scale), bg_color=(255, 255, 255), auto_crop=auto_crop, safe_margin=safe_margin)
+    if downsample_output:
+        image = _downsample(image, scale)
+    final = _finalize_image(image, bg_color=(255, 255, 255), auto_crop=auto_crop, safe_margin=safe_margin)
     return _to_png_bytes(final)
 
 
@@ -46,13 +53,13 @@ def _layout_single_entity(table: dict) -> dict:
     cols_count = len(table.get("columns", []))
 
     # 根据属性数量调整画布大小
-    orbit_x = min(390, max(260, 200 + cols_count * 16))
-    orbit_y = min(290, max(190, 140 + cols_count * 12))
+    orbit_x = min(240, max(160, 120 + cols_count * 12))
+    orbit_y = min(180, max(120, 90 + cols_count * 9))
 
     # 计算画布尺寸，确保所有属性都能显示
-    margin = 120
-    canvas_w = max(1300, orbit_x * 2 + ATTR_W + margin * 2)
-    canvas_h = max(900, orbit_y * 2 + ATTR_H + margin * 2)
+    margin = 60
+    canvas_w = max(560, orbit_x * 2 + ATTR_W + margin * 2)
+    canvas_h = max(460, orbit_y * 2 + ATTR_H + margin * 2)
 
     # 实体居中
     cx = canvas_w // 2
@@ -100,56 +107,72 @@ def _draw_entity_cluster(
     entity_name = str(table.get("name") or table.get("id") or "Entity")
     fitted_font, text_width, text_height = _get_fitted_font(draw, entity_name, entity_font, ENTITY_W * scale - 40)
 
-    # 根据字体大小计算矩形高度，保持宽高比协调
-    # 计算缩小比例
-    original_size = entity_font.size
-    scale_ratio = fitted_font.size / original_size
-    # 高度随字体缩小而缩小，但保持最小高度确保美观
-    # 原始半边高 60，缩小后按比例计算，最小 35（确保不会太小）
-    half_h = max(35, int((ENTITY_H // 2) * max(0.6, scale_ratio)))
-    half_w = ENTITY_W // 2
+    # 实体宽度、高度均贴合文字 + 紧凑边距
+    half_h = max(16, int((text_height / scale) / 2) + 6)
+    half_w = max(40, int((text_width / scale) / 2) + 10)
 
     left = cx - half_w
     top = cy - half_h
     right = cx + half_w
     bottom = cy + half_h
 
-    # 绘制实体矩形（高度自适应）
+    # 绘制实体矩形（宽高自适应）
     _draw_rect(draw, left, top, right, bottom, scale, fill="#FFFFFF", outline="#111111", width=2)
 
     # 绘制实体名
     draw.text((cx * scale, cy * scale), entity_name, fill="#111111", font=fitted_font, anchor="mm")
 
-    # 绘制属性
+    # 绘制属性 —— 先计算所有属性标签，统一调整椭圆大小
     columns = table.get("columns", [])
+    attr_labels = [str(col.get("comment") or col.get("name") or "attr") for col in columns]
+
+    # 计算属性文字所需的最大宽度和高度
+    max_attr_text_w = 0
+    max_attr_text_h = 0
+    for label in attr_labels:
+        box = draw.textbbox((0, 0), label, font=attr_font)
+        w = box[2] - box[0]
+        h = box[3] - box[1]
+        if w > max_attr_text_w:
+            max_attr_text_w = w
+        if h > max_attr_text_h:
+            max_attr_text_h = h
+
+    # 根据最长文字统一调整椭圆半宽、半高
+    attr_half_w = max(ATTR_W // 2, int((max_attr_text_w / scale) / 2) + 10)
+    attr_half_h = max(ATTR_H // 2, int((max_attr_text_h / scale) / 2) + 8)
+
     for idx, col in enumerate(columns):
         ax, ay = layout["attrs"][idx]
+        label = attr_labels[idx]
 
         # 连接线：实体矩形边界 -> 椭圆边界（使用实际宽高）
         sx, sy = _rect_edge_point(cx, cy, half_w * 2, half_h * 2, ax, ay)
-        ex, ey = _ellipse_edge_point(ax, ay, ATTR_W // 2, ATTR_H // 2, cx, cy)
+        ex, ey = _ellipse_edge_point(ax, ay, attr_half_w, attr_half_h, cx, cy)
         _draw_line(draw, sx, sy, ex, ey, scale, fill="#111111", width=1)
 
-        # 绘制属性椭圆
+        # 绘制属性椭圆（统一自适应大小）
         _draw_ellipse(
             draw,
-            ax - ATTR_W // 2,
-            ay - ATTR_H // 2,
-            ax + ATTR_W // 2,
-            ay + ATTR_H // 2,
+            ax - attr_half_w,
+            ay - attr_half_h,
+            ax + attr_half_w,
+            ay + attr_half_h,
             scale,
             fill="#FFFFFF",
             outline="#111111",
             width=1,
         )
 
-        # 属性标签（优先使用注释）
-        label = str(col.get("comment") or col.get("name") or "attr")
-        draw.text((ax * scale, ay * scale), label, fill="#111111", font=attr_font, anchor="mm")
+        # 属性标签自动适配椭圆宽度
+        fitted_attr_font, _, _ = _get_fitted_font(
+            draw, label, attr_font, attr_half_w * 2 * scale - 16
+        )
+        draw.text((ax * scale, ay * scale), label, fill="#111111", font=fitted_attr_font, anchor="mm")
 
         # 主键加下划线
         if col.get("isPrimaryKey"):
-            box = draw.textbbox((ax * scale, ay * scale), label, font=attr_font, anchor="mm")
+            box = draw.textbbox((ax * scale, ay * scale), label, font=fitted_attr_font, anchor="mm")
             underline_y = box[3] + 2 * scale
             draw.line((box[0], underline_y, box[2], underline_y), fill="#111111", width=max(1, scale))
 
@@ -211,17 +234,18 @@ def _load_font(size: int) -> ImageFont.ImageFont:
                 except OSError:
                     continue
 
-    # 3. 系统字体路径
+    # 3. 系统字体路径（宋体优先，统一论文字体规范）
     system_candidates = [
+        "/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc",  # Linux 思源宋体
+        "C:/Windows/Fonts/simsun.ttc",   # Windows 宋体
+        "C:/Windows/Fonts/simsun.ttf",   # Windows 宋体（备选）
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
         "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
         "/System/Library/Fonts/Supplemental/Arial.ttf",
         "C:/Windows/Fonts/arial.ttf",
-        "C:/Windows/Fonts/msyh.ttc",  # 微软雅黑
-        "C:/Windows/Fonts/simhei.ttf",  # 黑体
-        "C:/Windows/Fonts/simsun.ttc",  # 宋体
+        "C:/Windows/Fonts/msyh.ttc",     # 微软雅黑
+        "C:/Windows/Fonts/simhei.ttf",   # 黑体
     ]
     for p in system_candidates:
         if not p:
