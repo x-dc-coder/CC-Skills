@@ -76,6 +76,34 @@ uv run python -c "import PIL, sqlglot; print('OK')"
 - `uv` 在子目录执行时能够自动找到虚拟环境
 - 实际上所有 Skill 共享同一个物理环境
 
+## 工作目录依赖（重要）
+
+`uv run` 通过当前工作目录查找 `pyproject.toml` 来定位虚拟环境。以下场景需注意：
+
+1. **在项目目录内运行**
+   ```bash
+   cd ~/.claude/skills
+   uv run python db-skill/scripts/pg_tool.py ...
+   ```
+   正常找到虚拟环境，推荐方式。
+
+2. **在临时/外部目录运行**
+   ```bash
+   cd /tmp
+   uv run python ~/.claude/skills/db-skill/scripts/pg_tool.py ...
+   ```
+   `uv` 在 `/tmp` 找不到 `pyproject.toml`，会使用系统默认 Python，导致依赖缺失（如 `psycopg2` 找不到）。
+
+3. **子进程调用时应使用 `sys.executable`**
+   当脚本需要作为子进程在其他目录运行时，应使用当前 Python 解释器的绝对路径，而非 `uv run`：
+   ```python
+   import sys
+   subprocess.run([sys.executable, "db-skill/scripts/pg_tool.py", ...])
+   ```
+
+4. **db-skill / 配置发现也依赖 cwd**
+   `mysql_tool.py` 和 `pg_tool.py` 会从当前工作目录向上查找 `.db-skill/mysql.json` 或 `.db-skill/pg.json`。在项目根目录下运行才能正确发现配置，或使用 `--config` 显式指定。
+
 ## 当前依赖
 
 | 包名 | 用途 |
