@@ -122,12 +122,17 @@ def get_issue(config: Dict[str, Any], owner: str, repo: str, number: int) -> Dic
 
 def create_issue(config: Dict[str, Any], owner: str, repo: str, title: str, body: str = "", labels: Optional[str] = None, assignee: Optional[str] = None) -> Dict[str, Any]:
     token = require_token(config)
-    payload: Dict[str, Any] = {"title": title, "body": body, "repo": repo}
+    payload: Dict[str, Any] = {"title": title, "body": _unescape_body(body), "repo": repo}
     if labels:
         payload["labels"] = labels
     if assignee:
         payload["assignee"] = assignee
     return api_request(config["gitcode"]["api_base"], "POST", f"/repos/{owner}/{repo}/issues", token, payload=payload) or {}
+
+
+def _unescape_body(text: str) -> str:
+    """Convert literal \\n/\\r/\\t in shell args to real newlines/tabs."""
+    return text.replace("\\n", "\n").replace("\\r", "\r").replace("\\t", "\t")
 
 
 def update_issue(config: Dict[str, Any], owner: str, repo: str, number: int, title: Optional[str] = None, body: Optional[str] = None, state: Optional[str] = None, labels: Optional[str] = None) -> Dict[str, Any]:
@@ -136,7 +141,7 @@ def update_issue(config: Dict[str, Any], owner: str, repo: str, number: int, tit
     if title is not None:
         payload["title"] = title
     if body is not None:
-        payload["body"] = body
+        payload["body"] = _unescape_body(body)
     if state is not None:
         # GitCode API expects "close"/"reopen", not "closed"/"open"
         payload["state"] = {"closed": "close", "open": "reopen"}.get(state, state)
@@ -169,7 +174,7 @@ def list_issue_comments(config: Dict[str, Any], owner: str, repo: str, number: i
 
 def create_issue_comment(config: Dict[str, Any], owner: str, repo: str, number: int, body: str) -> Dict[str, Any]:
     token = require_token(config)
-    return api_request(config["gitcode"]["api_base"], "POST", f"/repos/{owner}/{repo}/issues/{number}/comments", token, payload={"body": body}) or {}
+    return api_request(config["gitcode"]["api_base"], "POST", f"/repos/{owner}/{repo}/issues/{number}/comments", token, payload={"body": _unescape_body(body)}) or {}
 
 
 # ---------------------------------------------------------------------------
