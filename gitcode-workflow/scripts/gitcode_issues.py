@@ -130,36 +130,30 @@ def create_issue(config: Dict[str, Any], owner: str, repo: str, title: str, body
     return api_request(config["gitcode"]["api_base"], "POST", f"/repos/{owner}/{repo}/issues", token, payload=payload) or {}
 
 
-def update_issue(config: Dict[str, Any], owner: str, repo: str, number: int, title: Optional[str] = None, body: Optional[str] = None, state: Optional[str] = None, labels: Optional[str] = None, state_event: Optional[str] = None) -> Dict[str, Any]:
+def update_issue(config: Dict[str, Any], owner: str, repo: str, number: int, title: Optional[str] = None, body: Optional[str] = None, state: Optional[str] = None, labels: Optional[str] = None) -> Dict[str, Any]:
     token = require_token(config)
-    payload: Dict[str, Any] = {"repo": repo}
+    payload: Dict[str, Any] = {}
     if title is not None:
         payload["title"] = title
     if body is not None:
         payload["body"] = body
     if state is not None:
-        payload["state"] = state
+        # GitCode API expects "close"/"reopen", not "closed"/"open"
+        payload["state"] = {"closed": "close", "open": "reopen"}.get(state, state)
     if labels is not None:
         payload["labels"] = labels
-    if state_event is not None:
-        payload["state_event"] = state_event
     return api_request(config["gitcode"]["api_base"], "PATCH", f"/repos/{owner}/{repo}/issues/{number}", token, payload=payload) or {}
 
 
 def close_issue(config: Dict[str, Any], owner: str, repo: str, number: int) -> Dict[str, Any]:
     token = require_token(config)
-    # Get current issue to preserve title
-    current = get_issue(config, owner, repo, number)
-    title = current.get("title", "")
-    payload = {"repo": repo, "state_event": "close", "title": title}
+    payload = {"state": "close"}
     return api_request(config["gitcode"]["api_base"], "PATCH", f"/repos/{owner}/{repo}/issues/{number}", token, payload=payload) or {}
 
 
 def reopen_issue(config: Dict[str, Any], owner: str, repo: str, number: int) -> Dict[str, Any]:
     token = require_token(config)
-    current = get_issue(config, owner, repo, number)
-    title = current.get("title", "")
-    payload = {"repo": repo, "state_event": "reopen", "title": title}
+    payload = {"state": "reopen"}
     return api_request(config["gitcode"]["api_base"], "PATCH", f"/repos/{owner}/{repo}/issues/{number}", token, payload=payload) or {}
 
 
