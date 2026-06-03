@@ -236,9 +236,10 @@ def _load_font(size: int) -> ImageFont.ImageFont:
 
     # 3. 系统字体路径（宋体优先，统一论文字体规范）
     system_candidates = [
-        "/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc",  # Linux 思源宋体
+        "/mnt/c/Windows/Fonts/simsun.ttc",  # WSL 宋体（优先）
         "C:/Windows/Fonts/simsun.ttc",   # Windows 宋体
         "C:/Windows/Fonts/simsun.ttf",   # Windows 宋体（备选）
+        "/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc",  # Linux 思源宋体
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
         "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
