@@ -117,13 +117,25 @@ Important behavior:
 - the review manifest freezes the reviewed file set and content hashes for the next publish step
 
 After `preview`:
-1. Show the pending file list grouped by added, modified, deleted, renamed, and untracked.
-2. Show blocked high-risk files or warnings from the safety scan.
-3. Draft **3 commit-message candidates**.
-4. Prefer concise Chinese subject lines when the active rules require Chinese subjects.
-5. Ask the user to choose one option or edit it.
-6. Surface the review-manifest path and snapshot hash.
-7. Do **not** run `publish` until the user confirms the final message.
+1. **评估改动规模**：
+   - **小规模**：待提交文件数 `<= 6` 且改动逻辑单一（如同一类 refactor 或同一 feature），按单批次处理。
+   - **大规模**：待提交文件数 `> 6` 或涉及多种改动类型（如同时包含 refactor、feat、docs、chore），**必须主动建议分批提交**。
+2. **大规模改动的分批策略**：
+   - 根据文件逻辑关系将待提交文件分组为 2-4 个批次，每组聚焦一个独立主题。例如：
+     - 批次 A：核心代码重构（新增/修改模块文件）
+     - 批次 B：新功能或 CLI 入口
+     - 批次 C：WSL/工具链支持
+     - 批次 D：文档与配置更新
+   - 为**每个批次分别生成 2-3 个独立的提交信息候选**，候选信息应反映该批次具体的 scope 和改动类型。
+   - 先向用户展示分批方案和每批的候选信息，等用户逐批确认后，再逐批执行 `git add` + `git commit`。
+   - 只有在用户**明确要求单批次提交**时，才放弃分批方案，回退到统一的 3 个候选信息。
+3. Show the pending file list grouped by added, modified, deleted, renamed, and untracked.
+4. Show blocked high-risk files or warnings from the safety scan.
+5. Draft commit-message candidates (单批次时 3 个，多批次时每批 2-3 个).
+6. Prefer concise Chinese subject lines when the active rules require Chinese subjects.
+7. Ask the user to choose one option per batch, or edit it.
+8. Surface the review-manifest path and snapshot hash.
+9. Do **not** run `publish` until the user confirms the final message(s).
 
 Example output shape:
 
@@ -153,7 +165,7 @@ Run:
 python scripts/gitcode_bootstrap.py publish --project /path/to/project --commit-message "feat(scope): <subject>" --config ~/.config/gitcode-workflow/config.json --json
 ```
 
-The publish workflow:
+The publish workflow (for **single-batch** commits):
 - loads the review manifest from `.git/gitcode-workflow-review.json` by default, or `--review-manifest <path>` if provided
 - aborts if the manifest is missing, belongs to another project, or no longer matches the current worktree
 - validates the commit-message format against the allowed conventional types
@@ -162,6 +174,11 @@ The publish workflow:
 - aborts on high-risk secret files that are present but not ignored
 - stages **only the reviewed manifest targets**, commits once, and pushes the current branch to the configured remote
 - clears the review manifest after a successful publish
+
+For **multi-batch** commits (user confirmed a batching plan in preview):
+- Do **not** use the publish script for batching. Instead, manually stage each batch with `git add <files>` and commit with `git commit -m "<message>"`.
+- After all batches are committed, push once with `git push <remote> <branch>`.
+- The review manifest can still be used as a reference for the full file set, but each batch commits independently.
 
 If the user asks to push but the worktree changed after preview, rerun `preview` and make them review the new file set first.
 
@@ -199,6 +216,11 @@ git config core.quotepath false
 
 This avoids quoted/escaped paths in status output and reduces pathspec mismatch risk in automated staging/publish flows.
 
+## Commit-message constraints
+
+- **绝对禁止**在提交信息末尾或正文中添加 `Co-Authored-By` 标记，包括 `Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>`。提交信息应仅包含符合 Conventional Commits 格式的主题和正文，不得附加任何 co-author 签名。
+- 如果用户明确要求添加 co-author，才允许添加。
+
 ## Commit-message drafting rules
 
 Use [references/commit-rules.md](references/commit-rules.md) when the project file is missing.
@@ -210,6 +232,7 @@ When drafting options:
 - do not end the subject with punctuation
 - keep the final subject close to the stated length target in the active rules
 - when multiple interpretations are plausible, present a preferred option plus safer alternatives
+- **禁止**在提交信息中添加 `Co-Authored-By` 行（见上方 Commit-message constraints）
 
 ## Safety rules
 
@@ -243,7 +266,7 @@ Assistant behavior:
 4. surface the review-manifest path and snapshot hash
 5. wait for the user to confirm a final message
 
-### Example C: publish after confirmation
+### Example C: publish after confirmation (single batch)
 User intent: "就用第 2 个提交信息，开始推送。"
 
 Assistant behavior:
@@ -251,6 +274,15 @@ Assistant behavior:
 2. rely on the saved review manifest
 3. abort if the worktree changed since preview
 4. report remote, branch, commit hash, staged targets, and manifest cleanup status
+
+### Example D: publish after confirmation (multi-batch)
+User intent: "第一批用选项 1，第二批用选项 2，第三批用选项 1，帮我推送。"
+
+Assistant behavior:
+1. For each batch, run `git add <batch-files>` followed by `git commit -m "<batch-message>"`
+2. After all batches are committed, run `git push <remote> <branch>`
+3. Report each commit hash, total batch count, and push status
+4. Do **not** rely on the review manifest for batching; it was only a reference for the full file set
 
 ## Output expectations
 
@@ -270,42 +302,42 @@ Additionally:
 
 1. **列出 Issue**
    ```bash
-   python scripts/gitcode_issues.py list --owner <owner> --repo <repo> [--state open|closed|all] [--json]
+   python scripts/gitcode_issues.py --owner <owner> --repo <repo> list [--state open|closed|all] [--json]
    ```
 
 2. **创建 Issue**
    ```bash
-   python scripts/gitcode_issues.py create --owner <owner> --repo <repo> --title "<title>" [--body "<body>"] [--labels "<labels>"] [--json]
+   python scripts/gitcode_issues.py --owner <owner> --repo <repo> create --title "<title>" [--body "<body>"] [--labels "<labels>"] [--json]
    ```
 
 3. **查看 Issue**
    ```bash
-   python scripts/gitcode_issues.py get --owner <owner> --repo <repo> <number> [--json]
+   python scripts/gitcode_issues.py --owner <owner> --repo <repo> get <number> [--json]
    ```
 
 4. **更新 Issue**
    ```bash
-   python scripts/gitcode_issues.py update --owner <owner> --repo <repo> <number> [--title "<title>"] [--body "<body>"] [--state open|closed] [--json]
+   python scripts/gitcode_issues.py --owner <owner> --repo <repo> update <number> [--title "<title>"] [--body "<body>"] [--state open|closed] [--json]
    ```
 
 5. **关闭 Issue**
    ```bash
-   python scripts/gitcode_issues.py close --owner <owner> --repo <repo> <number> [--json]
+   python scripts/gitcode_issues.py --owner <owner> --repo <repo> close <number> [--json]
    ```
 
 6. **重新打开 Issue**
    ```bash
-   python scripts/gitcode_issues.py reopen --owner <owner> --repo <repo> <number> [--json]
+   python scripts/gitcode_issues.py --owner <owner> --repo <repo> reopen <number> [--json]
    ```
 
 7. **列出评论**
    ```bash
-   python scripts/gitcode_issues.py comments --owner <owner> --repo <repo> <number> [--json]
+   python scripts/gitcode_issues.py --owner <owner> --repo <repo> comments <number> [--json]
    ```
 
 8. **添加评论**
    ```bash
-   python scripts/gitcode_issues.py comment-create --owner <owner> --repo <repo> <number> --body "<body>" [--json]
+   python scripts/gitcode_issues.py --owner <owner> --repo <repo> comment-create <number> --body "<body>" [--json]
    ```
 
 ### Issue 使用场景
