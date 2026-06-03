@@ -101,8 +101,9 @@ def load_font(size: int) -> ImageFont.ImageFont:
 
     # 3. 系统字体路径（宋体优先，统一论文字体规范）
     system_candidates = [
-        "/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc",  # Linux 思源宋体
+        "/mnt/c/Windows/Fonts/simsun.ttc",  # WSL 宋体（优先）
         "C:/Windows/Fonts/simsun.ttc",   # Windows 宋体
+        "/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc",  # Linux 思源宋体
         "C:/Windows/Fonts/simsun.ttf",   # Windows 宋体（备选）
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc",
@@ -167,11 +168,16 @@ def finalize_image(
     return cropped.convert("RGB")
 
 
-def to_png_bytes(image: Image.Image) -> bytes:
-    """将图片转换为PNG字节"""
+def to_png_bytes(image: Image.Image, dpi: tuple[int, int] = (150, 150)) -> bytes:
+    """将图片转换为PNG字节
+
+    Args:
+        image: PIL Image 对象
+        dpi: DPI 元数据，用于控制 Word 等软件中的渲染清晰度
+    """
     from io import BytesIO
     out = BytesIO()
-    image.save(out, format="PNG")
+    image.save(out, format="PNG", dpi=dpi)
     return out.getvalue()
 
 
@@ -194,7 +200,8 @@ def render_usecase_diagram(
     auto_crop: bool = True,
     safe_margin: int = 24,
     scale: int = None,
-    downsample_output: bool = True,
+    downsample_output: bool = False,
+    dpi: tuple[int, int] = (150, 150),
 ) -> bytes:
     """渲染用例图
 
@@ -203,7 +210,8 @@ def render_usecase_diagram(
         auto_crop: 是否自动裁剪空白边距
         safe_margin: 安全边距（像素）
         scale: 渲染缩放比例（默认使用全局 SCALE）
-        downsample_output: 是否下采样到 1x（默认 True）；设为 False 可输出更高像素。
+        downsample_output: 是否下采样到 1x（默认 False，输出高分辨率）
+        dpi: PNG DPI 元数据（用于控制 Word 等软件中的渲染清晰度，默认 150）
 
     Returns:
         PNG图片字节数据
@@ -221,7 +229,7 @@ def render_usecase_diagram(
     diagram_model = _parse_model(model)
 
     if not diagram_model.actors and not diagram_model.usecases:
-        return _render_empty(auto_crop, safe_margin, scale)
+        return _render_empty(auto_crop, safe_margin, scale, downsample_output, dpi)
 
     # 计算布局
     _calculate_layout(diagram_model)
@@ -257,7 +265,7 @@ def render_usecase_diagram(
         auto_crop=auto_crop,
         safe_margin=safe_margin,
     )
-    return to_png_bytes(final)
+    return to_png_bytes(final, dpi=dpi)
 
 
 def _parse_model(data: dict) -> UseCaseModel:
@@ -667,7 +675,7 @@ def _draw_arrow(
     )
 
 
-def _render_empty(auto_crop: bool, safe_margin: int, scale: int = None) -> bytes:
+def _render_empty(auto_crop: bool, safe_margin: int, scale: int = None, downsample_output: bool = False, dpi: tuple[int, int] = (150, 150)) -> bytes:
     """渲染空状态"""
     if scale is None:
         scale = SCALE
@@ -675,7 +683,7 @@ def _render_empty(auto_crop: bool, safe_margin: int, scale: int = None) -> bytes
     draw = ImageDraw.Draw(image)
     font = load_font(12 * scale)
     draw.text(
-        (400 * SCALE, 300 * SCALE),
+        (400 * scale, 300 * scale),
         "No use case data found.",
         fill="#000000",
         font=font,
@@ -689,4 +697,4 @@ def _render_empty(auto_crop: bool, safe_margin: int, scale: int = None) -> bytes
         auto_crop=auto_crop,
         safe_margin=safe_margin,
     )
-    return to_png_bytes(final)
+    return to_png_bytes(final, dpi=dpi)
