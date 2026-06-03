@@ -169,7 +169,8 @@ def make_output_path(explicit: Optional[str]) -> Path:
         p.parent.mkdir(parents=True, exist_ok=True)
         return p
 
-    root = Path(tempfile.gettempdir()) / "db-skill"
+    today = date.today().isoformat()
+    root = Path("/tmp/skills-output") / today / "db-skill"
     root.mkdir(parents=True, exist_ok=True)
     fd, name = tempfile.mkstemp(prefix="pg-result-", suffix=".json", dir=root)
     os.close(fd)

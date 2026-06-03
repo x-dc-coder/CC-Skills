@@ -16,6 +16,7 @@ import os
 import re
 import sys
 import zipfile
+from datetime import date
 from pathlib import Path
 
 from docx import Document
@@ -701,7 +702,7 @@ def extract_all(docx_path):
 def main():
     parser = argparse.ArgumentParser(description="Extract all content from a .docx file")
     parser.add_argument("input", help="Path to the .docx file")
-    parser.add_argument("--output-dir", "-o", default=".", help="Output directory")
+    parser.add_argument("--output-dir", "-o", default=None, help="Output directory (default: /tmp/skills-output/<date>/word-extractor/)")
     parser.add_argument("--format", "-f", choices=["json", "markdown", "both"], default="both",
                         help="Output format")
     args = parser.parse_args()
@@ -718,7 +719,11 @@ def main():
     data = extract_all(args.input)
 
     base_name = Path(args.input).stem
-    output_dir = Path(args.output_dir)
+    if args.output_dir is None:
+        today = date.today().isoformat()
+        output_dir = Path("/tmp/skills-output") / today / "word-extractor"
+    else:
+        output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     if args.format in ("json", "both"):

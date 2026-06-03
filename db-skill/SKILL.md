@@ -87,7 +87,7 @@ python3 scripts/pg_tool.py run --sql-file ./sql/report.sql --jq '.[0:10]'
 - Require user second confirmation before any non-read SQL.
 - Require `--confirm-write` for any non-read SQL; reject execution when missing.
 - Enforce a hard cap for read rows (`max_limit`) from config, default 1000.
-- Store full read results in `/tmp/db-skill/` as JSON.
+- Store full read results in `/tmp/skills-output/<date>/db-skill/` as JSON.
 - Print only compact metadata + jq preview to control context size.
 - Commit only write operations.
 

@@ -70,7 +70,7 @@ uv run python -m scripts.cli \
   --json-file docs/sequence/json/<name>.json
 ```
 
-当输入文件使用**绝对路径**时，CLI 会自动推断项目目录（向上查找包含 `docs/` 或 `thesis-output/` 的目录），默认输出到 `<项目目录>/thesis-output/img/diagram.png`；中间 `.mmd` 文件自动存放到 `skills/tmp/<时间戳>/`。如使用相对路径或无法推断，则回退到 `skills/output/diagram-sequence/diagram.png`。如需自定义路径：
+当输入文件使用**绝对路径**时，CLI 会自动推断项目目录（向上查找包含 `docs/` 或 `thesis-output/` 的目录），默认输出到 `<项目目录>/thesis-output/img/diagram.png`；中间 `.mmd` 文件自动存放到 `/tmp/skills-output/<date>/diagram-sequence/`。如使用相对路径或无法推断，则回退到 `/tmp/skills-output/<date>/diagram-sequence/diagram.png`。如需自定义路径：
 
 ```bash
 cd ~/.claude/skills/diagram-sequence
@@ -85,8 +85,7 @@ uv run python -m scripts.cli \
 docs/sequence/
 ├── json/       # JSON 数据文件
 
-skills/output/diagram-sequence/    # 生成的时序图 PNG（默认输出目录）
-skills/tmp/                        # 中间文件（Mermaid 源文件等）
+/tmp/skills-output/<date>/diagram-sequence/    # 生成的时序图 PNG 及中间文件（默认输出目录）
 ```
 
 ## JSON 文件规范

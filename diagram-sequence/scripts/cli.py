@@ -13,6 +13,7 @@ import json
 import subprocess
 import sys
 import tempfile
+from datetime import date
 from pathlib import Path
 
 
@@ -28,6 +29,10 @@ def _resolve_output_path(input_file: Path | None, skill_name: str, default_name:
                 output_dir.mkdir(parents=True, exist_ok=True)
                 return output_dir / default_name
     return SKILLS_ROOT / "output" / skill_name / default_name
+    today = date.today().isoformat()
+    out = Path("/tmp/skills-output") / today / skill_name
+    out.mkdir(parents=True, exist_ok=True)
+    return out / default_name
 
 
 def _json_to_mermaid(data: dict) -> str:
@@ -167,9 +172,8 @@ Examples:
         json_data = json.loads(Path(args.json_file).read_text(encoding="utf-8"))
         mmd_text = _json_to_mermaid(json_data)
 
-        # 同时保存 .mmd 源文件到 tmp 目录
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        tmp_dir = SKILLS_ROOT / "tmp" / timestamp
+        # 同时保存 .mmd 源文件到统一输出目录
+        tmp_dir = Path("/tmp/skills-output") / datetime.datetime.now().strftime("%Y-%m-%d") / "diagram-sequence"
         tmp_dir.mkdir(parents=True, exist_ok=True)
         mmd_out = tmp_dir / f"{output_path.stem}.mmd"
         mmd_out.write_text(mmd_text, encoding="utf-8")
