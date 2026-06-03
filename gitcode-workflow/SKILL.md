@@ -40,7 +40,7 @@ Use this skill for WSL or Linux projects that need predictable local Git setup, 
 Run:
 
 ```bash
-python scripts/gitcode_bootstrap.py local-only --project /path/to/project --config ~/.config/gitcode-workflow/config.json --json
+uv run python scripts/gitcode_bootstrap.py local-only --project /path/to/project --config ~/.config/gitcode-workflow/config.json --json
 ```
 
 This workflow:
@@ -62,7 +62,7 @@ Use this mode only when the user already has a built project and wants **layered
 Run:
 
 ```bash
-python scripts/gitcode_bootstrap.py adopt-existing-project --project /path/to/project --max-layers 6 --config ~/.config/gitcode-workflow/config.json --json
+uv run python scripts/gitcode_bootstrap.py adopt-existing-project --project /path/to/project --max-layers 6 --config ~/.config/gitcode-workflow/config.json --json
 ```
 
 This workflow:
@@ -84,7 +84,7 @@ Always tell the user this is a path-and-filename heuristic draft, not an authori
 Run:
 
 ```bash
-python scripts/gitcode_bootstrap.py create-remote --project /path/to/project --config ~/.config/gitcode-workflow/config.json --json
+uv run python scripts/gitcode_bootstrap.py create-remote --project /path/to/project --config ~/.config/gitcode-workflow/config.json --json
 ```
 
 This workflow:
@@ -106,7 +106,7 @@ Do not run this mode unless the user has clearly asked to create or connect a re
 Always run this before any publish or push:
 
 ```bash
-python scripts/gitcode_bootstrap.py preview --project /path/to/project --config ~/.config/gitcode-workflow/config.json --json
+uv run python scripts/gitcode_bootstrap.py preview --project /path/to/project --config ~/.config/gitcode-workflow/config.json --json
 ```
 
 Important behavior:
@@ -162,7 +162,7 @@ Use this only after the user has explicitly confirmed a final commit message.
 Run:
 
 ```bash
-python scripts/gitcode_bootstrap.py publish --project /path/to/project --commit-message "feat(scope): <subject>" --config ~/.config/gitcode-workflow/config.json --json
+uv run python scripts/gitcode_bootstrap.py publish --project /path/to/project --commit-message "feat(scope): <subject>" --config ~/.config/gitcode-workflow/config.json --json
 ```
 
 The publish workflow (for **single-batch** commits):
@@ -302,42 +302,42 @@ Additionally:
 
 1. **列出 Issue**
    ```bash
-   python scripts/gitcode_issues.py --owner <owner> --repo <repo> list [--state open|closed|all] [--json]
+   uv run python scripts/gitcode_issues.py --owner <owner> --repo <repo> list [--state open|closed|all] [--json]
    ```
 
 2. **创建 Issue**
    ```bash
-   python scripts/gitcode_issues.py --owner <owner> --repo <repo> create --title "<title>" [--body "<body>"] [--labels "<labels>"] [--json]
+   uv run python scripts/gitcode_issues.py --owner <owner> --repo <repo> create --title "<title>" [--body "<body>"] [--labels "<labels>"] [--json]
    ```
 
 3. **查看 Issue**
    ```bash
-   python scripts/gitcode_issues.py --owner <owner> --repo <repo> get <number> [--json]
+   uv run python scripts/gitcode_issues.py --owner <owner> --repo <repo> get <number> [--json]
    ```
 
 4. **更新 Issue**
    ```bash
-   python scripts/gitcode_issues.py --owner <owner> --repo <repo> update <number> [--title "<title>"] [--body "<body>"] [--state open|closed] [--json]
+   uv run python scripts/gitcode_issues.py --owner <owner> --repo <repo> update <number> [--title "<title>"] [--body "<body>"] [--state open|closed] [--json]
    ```
 
 5. **关闭 Issue**
    ```bash
-   python scripts/gitcode_issues.py --owner <owner> --repo <repo> close <number> [--json]
+   uv run python scripts/gitcode_issues.py --owner <owner> --repo <repo> close <number> [--json]
    ```
 
 6. **重新打开 Issue**
    ```bash
-   python scripts/gitcode_issues.py --owner <owner> --repo <repo> reopen <number> [--json]
+   uv run python scripts/gitcode_issues.py --owner <owner> --repo <repo> reopen <number> [--json]
    ```
 
 7. **列出评论**
    ```bash
-   python scripts/gitcode_issues.py --owner <owner> --repo <repo> comments <number> [--json]
+   uv run python scripts/gitcode_issues.py --owner <owner> --repo <repo> comments <number> [--json]
    ```
 
 8. **添加评论**
    ```bash
-   python scripts/gitcode_issues.py --owner <owner> --repo <repo> comment-create <number> --body "<body>" [--json]
+   uv run python scripts/gitcode_issues.py --owner <owner> --repo <repo> comment-create <number> --body "<body>" [--json]
    ```
 
 ### Issue 使用场景

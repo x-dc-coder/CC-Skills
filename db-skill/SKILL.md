@@ -23,8 +23,8 @@ description: High-performance MySQL and PostgreSQL operations for project-local 
      - `config/mysql.json` or `config/pg.json`
 
 2. Run SQL through the Python runner:
-   - **MySQL**: `python3 scripts/mysql_tool.py run --sql "SELECT * FROM users"`
-   - **PostgreSQL**: `python3 scripts/pg_tool.py run --sql "SELECT * FROM users"`
+   - **MySQL**: `uv run python scripts/mysql_tool.py run --sql "SELECT * FROM users"`
+   - **PostgreSQL**: `uv run python scripts/pg_tool.py run --sql "SELECT * FROM users"`
 
 3. Keep query output bounded:
    - SELECT/CTE queries are wrapped and limited automatically.
@@ -35,12 +35,12 @@ description: High-performance MySQL and PostgreSQL operations for project-local 
 
 - Query with default row limit:
 ```bash
-python3 scripts/mysql_tool.py run --sql "SELECT * FROM orders"
+uv run python scripts/mysql_tool.py run --sql "SELECT * FROM orders"
 ```
 
 - Query with custom limit and jq filter:
 ```bash
-python3 scripts/mysql_tool.py run \
+uv run python scripts/mysql_tool.py run \
   --sql "SELECT * FROM orders WHERE status='paid' ORDER BY id DESC" \
   --limit 200 \
   --jq '.[].id'
@@ -48,24 +48,24 @@ python3 scripts/mysql_tool.py run \
 
 - Execute DML (insert/update/delete):
 ```bash
-python3 scripts/mysql_tool.py run --sql "DELETE FROM sessions WHERE expired=1" --confirm-write
+uv run python scripts/mysql_tool.py run --sql "DELETE FROM sessions WHERE expired=1" --confirm-write
 ```
 
 - Read SQL from file:
 ```bash
-python3 scripts/mysql_tool.py run --sql-file ./sql/report.sql --jq '.[0:10]'
+uv run python scripts/mysql_tool.py run --sql-file ./sql/report.sql --jq '.[0:10]'
 ```
 
 ## PostgreSQL Commands
 
 - Query with default row limit:
 ```bash
-python3 scripts/pg_tool.py run --sql "SELECT * FROM orders"
+uv run python scripts/pg_tool.py run --sql "SELECT * FROM orders"
 ```
 
 - Query with custom limit and jq filter:
 ```bash
-python3 scripts/pg_tool.py run \
+uv run python scripts/pg_tool.py run \
   --sql "SELECT * FROM orders WHERE status='paid' ORDER BY id DESC" \
   --limit 200 \
   --jq '.[].id'
@@ -73,12 +73,12 @@ python3 scripts/pg_tool.py run \
 
 - Execute DML (insert/update/delete):
 ```bash
-python3 scripts/pg_tool.py run --sql "DELETE FROM sessions WHERE expired=1" --confirm-write
+uv run python scripts/pg_tool.py run --sql "DELETE FROM sessions WHERE expired=1" --confirm-write
 ```
 
 - Read SQL from file:
 ```bash
-python3 scripts/pg_tool.py run --sql-file ./sql/report.sql --jq '.[0:10]'
+uv run python scripts/pg_tool.py run --sql-file ./sql/report.sql --jq '.[0:10]'
 ```
 
 ## Behavior Rules

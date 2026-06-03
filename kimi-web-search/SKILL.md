@@ -58,7 +58,7 @@ export KIMI_API_KEY="your-api-key-here"
 ### 方式三：运行时传入
 
 ```bash
-MOONSHOT_API_KEY=your-key python scripts/kimi_search.py "搜索内容"
+MOONSHOT_API_KEY=your-key uv run python scripts/kimi_search.py "搜索内容"
 ```
 
 ---

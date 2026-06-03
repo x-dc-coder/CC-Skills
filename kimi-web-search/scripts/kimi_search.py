@@ -3,9 +3,9 @@
 Kimi Web Search - 多层搜索工具，支持 Kimi $web_search + DuckDuckGo + GitHub + 网页抓取。
 
 Usage:
-    python kimi_search.py "搜索查询内容"
-    python kimi_search.py --raw "搜索查询内容"    # 返回原始搜索结果
-    python kimi_search.py --fallback "搜索查询内容"  # 强制使用 fallback 搜索
+    uv run python scripts/kimi_search.py "搜索查询内容"
+    uv run python scripts/kimi_search.py --raw "搜索查询内容"    # 返回原始搜索结果
+    uv run python scripts/kimi_search.py --fallback "搜索查询内容"  # 强制使用 fallback 搜索
 
 Environment:
     MOONSHOT_API_KEY 或 KIMI_API_KEY - Kimi API 密钥（用于 Layer 1）
@@ -338,7 +338,7 @@ def search(query: str, model: str = "kimi-k2.6", raw: bool = False, force_fallba
         if not HAS_REQUESTS:
             return {
                 "success": False,
-                "error": "Fallback search requires 'requests' and 'beautifulsoup4'. Install: pip install requests beautifulsoup4",
+                "error": "Fallback search requires 'requests' and 'beautifulsoup4'. Install: uv sync",
                 "result": "",
             }
 

@@ -28,7 +28,6 @@ def _resolve_output_path(input_file: Path | None, skill_name: str, default_name:
                 output_dir = parent / "thesis-output" / "img"
                 output_dir.mkdir(parents=True, exist_ok=True)
                 return output_dir / default_name
-    return SKILLS_ROOT / "output" / skill_name / default_name
     today = date.today().isoformat()
     out = Path("/tmp/skills-output") / today / skill_name
     out.mkdir(parents=True, exist_ok=True)

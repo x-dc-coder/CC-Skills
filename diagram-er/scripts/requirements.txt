@@ -1,2 +1,4 @@
-sqlglot>=20.0.0
-Pillow>=10.0.0
+# Deprecated for local use.
+# Environment is managed centrally at ~/.claude/skills via:
+#   uv sync
+# Python dependencies are declared in root pyproject.toml.
