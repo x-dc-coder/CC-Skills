@@ -1,4 +1,0 @@
-# Deprecated for local use.
-# Environment is managed centrally at ~/.claude/skills via:
-#   uv sync
-# Python dependencies are declared in root pyproject.toml.

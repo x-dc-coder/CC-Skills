@@ -1,5 +1,0 @@
-# Deprecated for local use.
-# Environment is managed centrally at ~/.claude/skills via:
-#   uv sync
-# Use npx for Mermaid CLI instead of global install:
-#   npx -y @mermaid-js/mermaid-cli
