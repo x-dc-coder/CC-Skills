@@ -1,0 +1,270 @@
+#!/bin/bash
+# =============================================================================
+# psh — WSL PowerShell Bridge helper functions
+# =============================================================================
+# Source this file in ~/.bashrc to get one-liner PowerShell access from WSL:
+#
+#   source ~/.claude/skills/wsl-powershell-bridge/scripts/psh
+#
+# Or add to ~/.bashrc:
+#   echo 'source ~/.claude/skills/wsl-powershell-bridge/scripts/psh' >> ~/.bashrc
+#
+# Key design decisions:
+# - psh() uses -Command (clean text output, no CLIXML)
+# - pshx() uses -EncodedCommand (for complex scripts with nested quotes)
+# - All calls set UTF-8 encoding to prevent garbled Chinese output
+# =============================================================================
+
+# UTF-8 encoding prefix (CRITICAL: prevents garbled Chinese/multibyte output)
+POWERSHELL_UTF8_PREFIX='[Console]::InputEncoding = [System.Text.Encoding]::UTF8; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $OutputEncoding = [System.Text.Encoding]::UTF8;'
+
+# Check WSLInterop once on source
+_psh_check_interop() {
+    if ! powershell.exe -Command "${POWERSHELL_UTF8_PREFIX} Write-Host 'ok'" 2>/dev/null | grep -q ok; then
+        echo "[psh] WARNING: WSLInterop not working. Run:" >&2
+        echo "  echo ':WSLInterop:M::MZ::/init:' | sudo tee /proc/sys/fs/binfmt_misc/register" >&2
+        return 1
+    fi
+    return 0
+}
+
+# psh — Execute a PowerShell command via -Command (clean text output)
+# Usage: psh 'Get-Date'
+#        psh 'Get-Process -Name code | ConvertTo-Json'
+psh() {
+    if [ $# -eq 0 ]; then
+        echo "Usage: psh '<powershell command>'" >&2
+        echo "Example: psh 'Get-Date -Format yyyy-MM-dd'" >&2
+        echo "Example: psh 'Get-Process | Select-Object -First 5 Name,Id | ConvertTo-Json'" >&2
+        echo "" >&2
+        echo "Tip: Use pshx for complex scripts with nested quotes" >&2
+        return 1
+    fi
+    local cmd="$1"
+    powershell.exe -Command "${POWERSHELL_UTF8_PREFIX} ${cmd}" 2>&1 | tr -d '\r'
+}
+
+# pshx — Execute via -EncodedCommand (for complex scripts, no quote escaping needed)
+# NOTE: EncodedCommand wraps output in CLIXML. This function strips it.
+# Usage: pshx 'Write-Host "Complex \"nested\" quotes work here"'
+pshx() {
+    if [ $# -eq 0 ]; then
+        echo "Usage: pshx '<complex powershell script>'" >&2
+        echo "Use this when your command has nested quotes that break -Command." >&2
+        return 1
+    fi
+    local cmd="$1"
+    # Prepend UTF-8 encoding + progress suppression
+    local full_cmd="${POWERSHELL_UTF8_PREFIX} \$ProgressPreference = 'SilentlyContinue'; ${cmd}"
+    local cmd_b64
+    cmd_b64=$(echo -n "$full_cmd" | iconv -t UTF-16LE 2>/dev/null | base64 -w0 2>/dev/null)
+    if [ -z "$cmd_b64" ]; then
+        echo "[pshx] ERROR: Failed to encode command. Check that iconv and base64 are available." >&2
+        return 1
+    fi
+    # Filter out CLIXML wrapper lines (#< CLIXML and <Objs...>...</Objs>)
+    powershell.exe -EncodedCommand "$cmd_b64" 2>&1 | tr -d '\r' | sed '/^#< CLIXML/d; /^<Objs /,/^<\/Objs>/d'
+}
+
+# pshj — Execute PowerShell, parse output as JSON through jq
+# Usage: pshj 'Get-Date | ConvertTo-Json'
+pshj() {
+    if [ $# -eq 0 ]; then
+        echo "Usage: pshj '<powershell command that outputs JSON>'" >&2
+        echo "Example: pshj 'Get-ComputerInfo | Select-Object CsName,WindowsVersion | ConvertTo-Json'" >&2
+        return 1
+    fi
+    local output
+    output=$(psh "$1")
+    local rc=$?
+    if [ $rc -ne 0 ]; then
+        return $rc
+    fi
+    echo "$output" | jq . 2>/dev/null || {
+        echo "[pshj] WARNING: Output is not valid JSON. Raw output:" >&2
+        echo "$output" >&2
+        return 1
+    }
+}
+
+# pshf — Execute a PowerShell script FILE on Windows
+# Usage: pshf "E:\scripts\my_script.ps1" -Arg1 "value"
+pshf() {
+    if [ $# -eq 0 ]; then
+        echo "Usage: pshf '<windows-path-to-ps1>' [args...]" >&2
+        return 1
+    fi
+    local script_path="$1"
+    shift
+    powershell.exe -File "$script_path" "$@" 2>&1 | tr -d '\r'
+}
+
+# win-clip — Copy stdin to Windows clipboard
+# Usage: echo "hello" | win-clip
+# NOTE: clip.exe works for ASCII. For Chinese/UTF-8, content is stored
+# using the console code page and may be garbled on paste.
+# For reliable Chinese clipboard: write to a file on /mnt/c/ and use
+#   powershell.exe -Command "Set-Clipboard -Value (Get-Content 'C:\path\to\file' -Raw -Encoding UTF8)"
+win-clip() {
+    clip.exe
+}
+
+# win-paste — Paste Windows clipboard to stdout
+# Usage: win-paste
+win-paste() {
+    powershell.exe -Command "${POWERSHELL_UTF8_PREFIX} Get-Clipboard" 2>&1 | tr -d '\r'
+}
+
+# win-reg-read — Read a Windows Registry value
+# Usage: win-reg-read 'HKLM:\Software\Microsoft\Windows NT\CurrentVersion' 'ProductName'
+win-reg-read() {
+    local path="$1"
+    local name="$2"
+    if [ -z "$path" ]; then
+        echo "Usage: win-reg-read '<registry-path>' [property-name]"
+        echo "Example: win-reg-read 'HKLM:\Software\Microsoft\Windows NT\CurrentVersion' 'ProductName'"
+        return 1
+    fi
+    if [ -n "$name" ]; then
+        psh "(Get-ItemProperty -Path '$path' -Name '$name' -ErrorAction SilentlyContinue).'$name'"
+    else
+        pshj "Get-ItemProperty -Path '$path' -ErrorAction SilentlyContinue | ConvertTo-Json"
+    fi
+}
+
+# win-find-proc — Find Windows processes by command line pattern
+# Usage: win-find-proc 'uvicorn'
+win-find-proc() {
+    local pattern="$1"
+    if [ -z "$pattern" ]; then
+        echo "Usage: win-find-proc '<command-line-pattern>'"
+        echo "Example: win-find-proc 'uvicorn'"
+        return 1
+    fi
+    pshj "Get-CimInstance Win32_Process | Where-Object CommandLine -like '*$pattern*' | Select-Object ProcessId,Name,CommandLine | ConvertTo-Json"
+}
+
+# win-sysinfo — Quick system information snapshot
+# Usage: win-sysinfo
+win-sysinfo() {
+    pshj '@{
+        ComputerName = (Get-ItemProperty "HKLM:\Software\Microsoft\Windows NT\CurrentVersion").ProductName
+        Build = (Get-ItemProperty "HKLM:\Software\Microsoft\Windows NT\CurrentVersion").CurrentBuild
+        CPU = (Get-CimInstance Win32_Processor | Select-Object -First 1).Name.Trim()
+        RAM_GB = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory/1GB, 1)
+        Disks = (Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" | ForEach-Object { "$($_.DeviceID) $([math]::Round($_.Size/1GB,1))GB ($([math]::Round($_.FreeSpace/1GB,1))GB free)" }) -join "; "
+    } | ConvertTo-Json'
+}
+
+# =============================================================================
+# Channel B: Direct Windows EXE helpers (zero PowerShell overhead, ~10ms)
+# =============================================================================
+
+# reg-get — Fast registry read via reg.exe (no PowerShell)
+# Usage: reg-get 'HKLM\Software\Microsoft\Windows NT\CurrentVersion' 'ProductName'
+reg-get() {
+    local path="$1" name="$2"
+    if [ -z "$path" ]; then
+        echo "Usage: reg-get '<registry-path>' [value-name]"
+        echo "Example: reg-get 'HKLM\Software\Microsoft\Windows NT\CurrentVersion' 'ProductName'"
+        return 1
+    fi
+    if [ -n "$name" ]; then
+        reg.exe query "$path" /v "$name" 2>/dev/null | grep "$name" | sed 's/.*REG_[A-Z]*[[:space:]]*//'
+    else
+        reg.exe query "$path" 2>/dev/null
+    fi
+}
+
+# reg-set — Fast registry write via reg.exe
+# Usage: reg-set 'HKCU\Software\MyApp' 'Setting' 'value' [REG_SZ|REG_DWORD]
+reg-set() {
+    local path="$1" name="$2" value="$3" type="${4:-REG_SZ}"
+    if [ -z "$path" ] || [ -z "$name" ] || [ -z "$value" ]; then
+        echo "Usage: reg-set '<path>' '<name>' '<value>' [REG_SZ|REG_DWORD]"
+        echo "Example: reg-set 'HKCU\Software\MyBridge' 'LastRun' '2026-06-05'"
+        return 1
+    fi
+    reg.exe add "$path" /v "$name" /t "$type" /d "$value" /f 2>/dev/null
+}
+
+# sc-query — Query a Windows service status
+# Usage: sc-query Dhcp
+sc-query() {
+    local service="$1"
+    if [ -z "$service" ]; then echo "Usage: sc-query <service-name>"; return 1; fi
+    sc.exe query "$service" 2>/dev/null
+}
+
+# sc-start / sc-stop — Start/stop a Windows service
+# Usage: sc-start Dhcp
+sc-start() { sc.exe start "${1}" 2>/dev/null; }
+sc-stop()  { sc.exe stop "${1}" 2>/dev/null; }
+
+# win-user — Get current Windows user identity
+# Usage: win-user
+win-user() { whoami.exe 2>/dev/null; }
+
+# win-hash — Compute file hash (uses certutil for speed, falls back to PowerShell for UTF-8 safety)
+# Usage: win-hash 'E:\file.bin' [SHA256|MD5|SHA1]
+win-hash() {
+    local file="$1" algo="${2:-SHA256}"
+    if [ -z "$file" ]; then echo "Usage: win-hash <windows-path> [SHA256|MD5|SHA1]"; return 1; fi
+    # certutil is faster but garbles Chinese in path names; extract only the hash line
+    local result
+    result=$(certutil.exe -hashfile "$file" "$algo" 2>/dev/null | tr -d '\r' | grep -E '^[a-f0-9]{32,64}$|^[A-Fa-f0-9]{32,64}$' | head -1)
+    if [ -n "$result" ]; then
+        echo "$result"
+    else
+        # Fallback: PowerShell Get-FileHash (UTF-8 safe)
+        powershell.exe -Command "${POWERSHELL_UTF8_PREFIX} (Get-FileHash -Path '$file' -Algorithm $algo).Hash" 2>/dev/null | tr -d '\r'
+    fi
+}
+
+# win-tasklist — List Windows processes (fast, no PowerShell)
+# Usage: win-tasklist 'code.exe'
+win-tasklist() {
+    local name="$1"
+    if [ -z "$name" ]; then
+        tasklist.exe 2>/dev/null | head -20
+    else
+        tasklist.exe /FI "IMAGENAME eq $name" 2>/dev/null
+    fi
+}
+
+# win-taskkill — Kill Windows process by name or PID (fast, no PowerShell)
+# Usage: win-taskkill notepad.exe
+#        win-taskkill 12345
+win-taskkill() {
+    local target="$1"
+    if [ -z "$target" ]; then echo "Usage: win-taskkill <process-name-or-pid>"; return 1; fi
+    if [[ "$target" =~ ^[0-9]+$ ]]; then
+        taskkill.exe /F /PID "$target" 2>/dev/null
+    else
+        taskkill.exe /F /IM "$target" 2>/dev/null
+    fi
+}
+
+# win-info — Quick Windows system info dump (no PowerShell)
+# Usage: win-info
+win-info() {
+    systeminfo.exe 2>/dev/null | grep -E "OS Name|OS Version|System Boot Time|Total Physical Memory|Host Name|System Type"
+}
+
+# win-open — Open file/URL/directory in Windows default app (uses wslview if installed)
+# Usage: win-open /mnt/e/docs/report.pdf
+#        win-open https://github.com
+win-open() {
+    local target="$1"
+    if [ -z "$target" ]; then echo "Usage: win-open <file|url|directory>"; return 1; fi
+    if command -v wslview &>/dev/null; then
+        wslview "$target"
+    elif [[ "$target" =~ ^https?:// ]]; then
+        powershell.exe -Command "Start-Process '$target'" 2>/dev/null
+    else
+        powershell.exe -Command "Invoke-Item '$(wslpath -w "$target" 2>/dev/null || echo "$target")'" 2>/dev/null
+    fi
+}
+
+# Silently check interop (don't spam on every shell open)
+_psh_check_interop

@@ -40,7 +40,7 @@
     {
       "id": 3,
       "prompt": "能不能在 WSL 里用 PowerShell 启动一个 Windows 上的后台服务，并且之后还能停止它？",
-      "expected_output": "应该提供 Start-Process 启动和 Get-Process/Stop-Process 停止的示例，并提醒进程管理的局限性和注意事项",
+      "expected_output": "应该提供 Start-Process 启动和基于 WMI 命令行的精确进程停止示例，并提醒使用 PID 文件管理进程生命周期",
       "files": [],
       "assertions": [
         {
@@ -51,12 +51,12 @@
         {
           "name": "provides_stop_example",
           "type": "llm_judge",
-          "prompt": "Check if the response provides a Stop-Process or equivalent example for stopping the service"
+          "prompt": "Check if the response provides a Stop-Process or WMI-based example for stopping the service"
         },
         {
           "name": "warns_about_limitations",
           "type": "llm_judge",
-          "prompt": "Check if the response warns about process management limitations (e.g., killing by name may affect other processes)"
+          "prompt": "Check if the response warns about process management limitations and suggests PID file or command-line matching"
         }
       ]
     },
@@ -93,6 +93,204 @@
           "name": "mentions_json_for_data_exchange",
           "type": "llm_judge",
           "prompt": "Check if the response mentions using JSON for structured data exchange between Windows and WSL"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "prompt": "我在 WSL 里需要执行一个复杂的 PowerShell 命令，里面嵌套了很多引号，一直报错，有没有更好的办法？",
+      "expected_output": "应该建议使用 -EncodedCommand 模式，将命令 Base64 编码后执行，彻底解决引号转义问题",
+      "files": [],
+      "assertions": [
+        {
+          "name": "mentions_encoded_command",
+          "type": "llm_judge",
+          "prompt": "Check if the response mentions using -EncodedCommand with Base64-encoded UTF-16LE to solve quote escaping"
+        },
+        {
+          "name": "provides_encoding_example",
+          "type": "llm_judge",
+          "prompt": "Check if the response shows how to encode a command with iconv and base64"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "prompt": "怎么从 WSL 中读取和修改 Windows 注册表？我想查一下安装了哪些软件。",
+      "expected_output": "应该提供 Get-ItemProperty 读取注册表的示例，展示如何列出 HKLM 下的已安装软件，以及 Set-ItemProperty 修改注册表的方法",
+      "files": [],
+      "assertions": [
+        {
+          "name": "mentions_registry_read",
+          "type": "llm_judge",
+          "prompt": "Check if the response provides Get-ItemProperty examples for reading Windows Registry from WSL"
+        },
+        {
+          "name": "mentions_uninstall_path",
+          "type": "llm_judge",
+          "prompt": "Check if the response mentions the Uninstall registry path for listing installed software"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "prompt": "我想从 WSL 获取 Windows 系统的硬件信息，比如 CPU 型号、内存大小、硬盘容量，怎么做？",
+      "expected_output": "应该使用 WMI/CIM 查询（Get-CimInstance），分别查询 Win32_Processor、Win32_ComputerSystem、Win32_LogicalDisk",
+      "files": [],
+      "assertions": [
+        {
+          "name": "mentions_wmi_query",
+          "type": "llm_judge",
+          "prompt": "Check if the response mentions Get-CimInstance for querying WMI/CIM classes"
+        },
+        {
+          "name": "covers_hardware_classes",
+          "type": "llm_judge",
+          "prompt": "Check if the response covers Win32_Processor, Win32_ComputerSystem, or Win32_LogicalDisk for hardware info"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "prompt": "能不能从 WSL 调用 Windows 的原生 Win32 API？比如弹出一个 MessageBox 通知？",
+      "expected_output": "应该介绍 Add-Type 动态编译 C# 代码来 P/Invoke Win32 API，给出 user32.dll MessageBox 的具体示例",
+      "files": [],
+      "assertions": [
+        {
+          "name": "mentions_add_type",
+          "type": "llm_judge",
+          "prompt": "Check if the response mentions Add-Type for compiling C# code in PowerShell to call Win32 API"
+        },
+        {
+          "name": "provides_pinvoke_example",
+          "type": "llm_judge",
+          "prompt": "Check if the response provides a DllImport example for calling a Win32 function (e.g., user32.dll MessageBox)"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "prompt": "怎么在 WSL 终端里把输出结果复制到 Windows 剪贴板？或者读取 Windows 剪贴板的内容？",
+      "expected_output": "应该介绍 clip.exe 和 Get-Clipboard 的双向剪贴板操作",
+      "files": [],
+      "assertions": [
+        {
+          "name": "mentions_clipboard_wsl_to_win",
+          "type": "llm_judge",
+          "prompt": "Check if the response shows how to send WSL output to Windows clipboard (clip.exe or Set-Clipboard)"
+        },
+        {
+          "name": "mentions_clipboard_win_to_wsl",
+          "type": "llm_judge",
+          "prompt": "Check if the response shows how to read Windows clipboard from WSL (Get-Clipboard)"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "prompt": "我想从 WSL 查看 Windows 的事件日志，排查一下系统错误，该怎么做？",
+      "expected_output": "应该使用 Get-WinEvent 查询 Windows Event Log，提供 System 日志的查询示例",
+      "files": [],
+      "assertions": [
+        {
+          "name": "mentions_event_log",
+          "type": "llm_judge",
+          "prompt": "Check if the response mentions Get-WinEvent for querying Windows Event Logs"
+        },
+        {
+          "name": "provides_filter_example",
+          "type": "llm_judge",
+          "prompt": "Check if the response shows how to filter events by log name, level, or time range"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "prompt": "我想在 WSL 里创建一个 Windows 定时任务，每天凌晨自动运行一个 Python 脚本，怎么操作？",
+      "expected_output": "应该使用 Register-ScheduledTask 创建计划任务，提供完整的 Action/Trigger/Principal 示例",
+      "files": [],
+      "assertions": [
+        {
+          "name": "mentions_scheduled_task",
+          "type": "llm_judge",
+          "prompt": "Check if the response mentions Register-ScheduledTask or schtasks for creating Windows scheduled tasks"
+        },
+        {
+          "name": "provides_task_creation_example",
+          "type": "llm_judge",
+          "prompt": "Check if the response provides a concrete example of creating a scheduled task with trigger and action"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "prompt": "我想从 WSL 快速查一下 Windows 的注册表，不需要复杂的 JSON 输出，有没有比 powershell.exe 更快的方法？",
+      "expected_output": "应该建议使用 reg.exe 直接读取注册表（Channel B），说明它比 PowerShell 快 3-5 倍，并给出 reg query 的具体语法",
+      "files": [],
+      "assertions": [
+        {
+          "name": "mentions_reg_exe_direct",
+          "type": "llm_judge",
+          "prompt": "Check if the response mentions using reg.exe directly from WSL without PowerShell as a faster alternative"
+        },
+        {
+          "name": "provides_reg_query_example",
+          "type": "llm_judge",
+          "prompt": "Check if the response provides a reg.exe query command example"
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "prompt": "我在 WSL 里生成了一个 PDF 报告，想用 Windows 上默认的 PDF 阅读器打开它，怎么做最简单？",
+      "expected_output": "应该建议使用 wslview 或 PowerShell Invoke-Item，并说明 wslview 需要先安装 wslu 包（sudo apt install wslu）",
+      "files": [],
+      "assertions": [
+        {
+          "name": "mentions_wslview_or_open",
+          "type": "llm_judge",
+          "prompt": "Check if the response mentions wslview or a method to open files with Windows default application"
+        },
+        {
+          "name": "mentions_wslu_install",
+          "type": "llm_judge",
+          "prompt": "Check if the response mentions that wslu/wslview requires installation via apt"
+        }
+      ]
+    },
+    {
+      "id": 15,
+      "prompt": "怎么从 WSL 管理 Windows 的服务？比如启动和停止 DHCP 服务。",
+      "expected_output": "应该同时提供两种方式：Channel A 用 PowerShell Get-Service/Start-Service，Channel B 用 sc.exe 直接控制（更快）",
+      "files": [],
+      "assertions": [
+        {
+          "name": "mentions_sc_exe",
+          "type": "llm_judge",
+          "prompt": "Check if the response mentions sc.exe as a direct way to control Windows services from WSL"
+        },
+        {
+          "name": "provides_dual_channel_option",
+          "type": "llm_judge",
+          "prompt": "Check if the response offers both PowerShell and direct EXE approaches"
+        }
+      ]
+    },
+    {
+      "id": 16,
+      "prompt": "我想计算一个 Windows 文件的 SHA256 哈希值，在 WSL 里怎么做？",
+      "expected_output": "应该提供 certutil.exe -hashfile 方法（Channel B），也可以用 PowerShell Get-FileHash（Channel A），说明二者的区别",
+      "files": [],
+      "assertions": [
+        {
+          "name": "mentions_certutil_hash",
+          "type": "llm_judge",
+          "prompt": "Check if the response mentions certutil.exe -hashfile for computing file hashes"
+        },
+        {
+          "name": "mentions_alternative_method",
+          "type": "llm_judge",
+          "prompt": "Check if the response also mentions PowerShell Get-FileHash as an alternative"
         }
       ]
     }
