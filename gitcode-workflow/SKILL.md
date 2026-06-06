@@ -366,12 +366,46 @@ Additionally:
 - 提交信息中使用 `#1` 引用 Issue
 - 使用 `fix #1` 或 `close #1` 自动关闭 Issue
 
+## 个人信息管理
+
+查看和管理 GitCode 个人主页信息。
+
+```bash
+cd ~/.claude/skills && uv run python gitcode-workflow/scripts/gitcode_bootstrap.py \
+  profile --action <show|emails|starred|repos|update> \
+  --config ~/.config/gitcode-workflow/config.json [--json]
+```
+
+### 支持的操作
+
+| 操作 | 说明 |
+|------|------|
+| `--action show` | 显示个人信息（`--public <username>` 查看他人） |
+| `--action emails` | 查看邮箱列表及验证状态 |
+| `--action starred` | 查看收藏的仓库 |
+| `--action repos` | 查看自己的所有仓库 |
+| `--action update` | 更新个人信息（⚠️ 当前 GitCode 维护期，暂不可用） |
+
+### 更新个人信息（等官方开放 PATCH /user 后可用）
+
+```bash
+cd ~/.claude/skills && uv run python gitcode-workflow/scripts/gitcode_bootstrap.py \
+  profile --action update \
+  --description "个人简介" \
+  --company "公司" \
+  --location "所在地" \
+  --website "https://example.com" \
+  --github-account "GitHub用户名"
+```
+
 ## Resources
 
 - [scripts/gitcode_bootstrap.py](scripts/gitcode_bootstrap.py): deterministic bootstrap automation
 - [scripts/gitcode_issues.py](scripts/gitcode_issues.py): Issue management automation
+- [scripts/lib/](scripts/lib/): shared library modules (common, config, git, api, profile, preview, etc.)
 - [references/config-format.md](references/config-format.md): config schema and precedence
 - [references/commit-rules.md](references/commit-rules.md): bundled fallback commit template
 - [references/safety-and-ignore.md](references/safety-and-ignore.md): secret-protection and review-manifest strategy
 - [references/api-capabilities.md](references/api-capabilities.md): full GitCode API v5 capabilities
+- [references/docs-sync-design.md](references/docs-sync-design.md): Wiki auto-doc sync design
 - [assets/config.example.json](assets/config.example.json): copyable starter config
