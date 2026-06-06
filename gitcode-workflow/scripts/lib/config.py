@@ -39,6 +39,12 @@ DEFAULTS: Dict[str, Any] = {
         "enabled": True,
         "allowed_hosts": ["gitcode.com"],
     },
+    "docs_sync": {
+        "enabled": False,
+        "auto_after_publish": False,
+        "require_confirmation": True,
+        "default_since": "HEAD~1",
+    },
 }
 
 ENV_MAPPING = {
@@ -55,6 +61,9 @@ ENV_MAPPING = {
     ("ssh", "public_key_path"): "GITCODE_SSH_PUBLIC_KEY_PATH",
     ("ssh", "title"): "GITCODE_SSH_TITLE",
     ("ssh", "comment"): "GITCODE_SSH_COMMENT",
+    ("docs_sync", "enabled"): "GITCODE_DOCS_SYNC_ENABLED",
+    ("docs_sync", "auto_after_publish"): "GITCODE_DOCS_SYNC_AUTO",
+    ("docs_sync", "require_confirmation"): "GITCODE_DOCS_SYNC_REQUIRE_CONFIRMATION",
 }
 
 

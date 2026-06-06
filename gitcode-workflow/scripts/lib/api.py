@@ -159,3 +159,16 @@ def validate_remote_url(url: str, config: Dict[str, Any], context: str) -> None:
             f"allowed hosts: {', '.join(allowed_hosts)}"
         )
     log_info(f"validated remote host '{host}' for {context}")
+
+
+# ── repository info ────────────────────────────────────────────────────
+
+def get_repo_info(
+    config: Dict[str, Any], namespace: str, repo_name: str
+) -> Dict[str, Any]:
+    """GET /repos/{owner}/{repo} — repository metadata including visibility and wiki status."""
+    return api_request(
+        config["gitcode"]["api_base"], "GET",
+        f"/repos/{namespace}/{repo_name}",
+        require_token(config),
+    )
