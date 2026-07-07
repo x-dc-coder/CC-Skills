@@ -1,0 +1,35 @@
+{
+  "title": "系统分层调用时序图",
+  "participants": [
+    {"name": "前端", "type": "actor"},
+    {"name": "Controller", "type": "participant"},
+    {"name": "Service", "type": "participant"},
+    {"name": "Mapper", "type": "participant"},
+    {"name": "MySQL", "type": "database"}
+  ],
+  "messages": [
+    {"from": "前端", "to": "Controller", "text": "POST /api/v1/posts"},
+    {"from": "Controller", "to": "Controller", "text": "@Valid参数校验", "activate": true},
+    {"from": "Controller", "to": "Service", "text": "createPost(DTO)", "deactivate": true},
+    {"from": "Service", "to": "Mapper", "text": "selectById(userId)"},
+    {"from": "Mapper", "to": "MySQL", "text": "SELECT FROM users"},
+    {"from": "MySQL", "to": "Mapper", "text": "返回用户记录", "dashed": true},
+    {"from": "Mapper", "to": "Service", "text": "返回User或null", "dashed": true},
+    {"from": "Service", "to": "Service", "text": "校验用户存在性", "activate": true},
+    {"from": "Service", "to": "Mapper", "text": "selectById(sectionId)", "deactivate": true},
+    {"from": "Mapper", "to": "MySQL", "text": "SELECT FROM sections"},
+    {"from": "MySQL", "to": "Mapper", "text": "返回版块记录", "dashed": true},
+    {"from": "Mapper", "to": "Service", "text": "返回Section或null", "dashed": true},
+    {"from": "Service", "to": "Service", "text": "校验版块存在性", "activate": true},
+    {"from": "Service", "to": "Service", "text": "创建Post实体", "deactivate": true},
+    {"from": "Service", "to": "Mapper", "text": "insert(post)"},
+    {"from": "Mapper", "to": "MySQL", "text": "INSERT INTO posts"},
+    {"from": "MySQL", "to": "Mapper", "text": "返回自增postId", "dashed": true},
+    {"from": "Mapper", "to": "Service", "text": "插入成功", "dashed": true},
+    {"from": "Service", "to": "Service", "text": "Converter: Entity→DTO", "activate": true},
+    {"from": "Service", "to": "Service", "text": "填充扩展信息", "deactivate": true},
+    {"from": "Service", "to": "Controller", "text": "ResultUtil.success()", "dashed": true},
+    {"from": "Controller", "to": "前端", "text": "BaseResponse<PostDTO>", "dashed": true},
+    {"from": "前端", "to": "前端", "text": "解析JSON/更新界面", "activate": true}
+  ]
+}
