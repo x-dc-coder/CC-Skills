@@ -6,25 +6,78 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+# ---------------------------------------------------------------------------
+# 模块级正则与常量（保持原样）
+# ---------------------------------------------------------------------------
+
 IMG_HTML_RE = re.compile(r"<\s*img\b", re.IGNORECASE)
 IMAGE_MD_RE = re.compile(r"!\[(.*?)\]\(([^)]+)\)")
 SETEXT_RE = re.compile(r"^\s*(=+|-+)\s*$")
 ATX_HEADING_RE = re.compile(r"^\s*(#{1,6})\s+(.+?)\s*$")
-TABLE_ROW_RE = re.compile(r"^\s*\|.*\|\s*$")
-TABLE_SEP_RE = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$")
-TABLE_CAPTION_RE = re.compile(r"^\s*\*{0,2}\s*(?:表|Table)\s*\d+[-－]\d+\s+.+\*{0,2}\s*$")
-FIGURE_TITLE_RE = re.compile(r"^\s*(?:图|Figure|Fig\.)\s*\d+[-－]\d+\s+.+\s*$")
-FIGURE_TITLE_RE_LOOSE = re.compile(r"^\s*\*{0,2}\s*(?:图|Figure|Fig\.)\s*\d+[-－]\d+\s+.+\*{0,2}\s*$")
+TABLE_CAPTION_RE = re.compile(r"^\s*\*{0,2}\s*(?:表|Table)\s*\d+(?:\s*[-－.]\s*\d+)?\s+.+\*{0,2}\s*$")
+FIGURE_TITLE_RE = re.compile(r"^\s*(?:图|Figure|Fig\.|Fi\.)\s*\d+(?:\s*[-－.]\s*\d+)?\s+.+\s*$")
+FIGURE_TITLE_RE_LOOSE = re.compile(r"^\s*\*{0,2}\s*(?:图|Figure|Fig\.|Fi\.)\s*\d+(?:\s*[-－.]\s*\d+)?\s+.+\*{0,2}\s*$")
 MERMAID_FENCE_RE = re.compile(r"^\s*```\s*mermaid\s*$", re.IGNORECASE)
 CITATION_RE = re.compile(r"\[(\d+)\]")
 META_FIELD_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{1,30}\s*:\s*\S+")
-SPECIAL_HEADINGS = {"摘要", "abstract", "参考文献", "references", "致谢", "acknowledgements", "结论", "结  论", "致  谢", "附录"}
+SPECIAL_HEADINGS = {"摘要", "abstract", "参考文献", "references", "致谢", "acknowledgements", "结论", "结  论", "致  谢"}
+_CN_SEQ_RE = re.compile(
+    r"^[一二三四五六七八九十百]+[、.]"
+    r"|^[（(][一二三四五六七八九十百]+[）)]"
+    r"|^第[一二三四五六七八九十百]+[章节部分篇]"
+)
+
+# 中文数字映射与转换
+_CN_DIGIT_MAP = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+_CN_UNIT_MAP = {"十": 10, "百": 100, "千": 1000}
+
+
+def _cn_to_int(cn: str) -> int | None:
+    """中文数字 → 整数：一→1, 十一→11, 二十→20, 一百二十→120。不可转换返回 None。"""
+    if not cn or not all(c in "一二三四五六七八九十百千零" for c in cn):
+        return None
+    if cn == "十":
+        return 10
+    if cn.startswith("一十") and len(cn) > 2:
+        cn = cn[1:]  # 一十二 → 十二
+    total = 0
+    current = 0
+    for ch in cn:
+        if ch in _CN_DIGIT_MAP:
+            current = _CN_DIGIT_MAP[ch]
+        elif ch in _CN_UNIT_MAP:
+            if current == 0:
+                current = 1
+            total += current * _CN_UNIT_MAP[ch]
+            current = 0
+    total += current
+    return total if total > 0 else None
+
+
+# 多体系标题编号正则
+_H1_ARABIC_RE = re.compile(r"^(\d+)\s+")
+_H1_CN_RE = re.compile(r"^([一二三四五六七八九十百千]+)[、，\s]")
+_H1_CHAPTER_RE = re.compile(r"^第([一二三四五六七八九十百千]+|\d+)[章节]\s*")
+
+_H2_ARABIC_RE = re.compile(r"^(\d+)\.(\d+)\s+")
+_H2_CN_RE = re.compile(r"^[（(]([一二三四五六七八九十百千]+)[）)]")
+_H2_CN_BARE_RE = re.compile(r"^([一二三四五六七八九十百千]+)[、，\s]")
+_H2_ARABIC_PAREN_RE = re.compile(r"^[（(](\d+)[）)]")
+_H2_SIMPLE_RE = re.compile(r"^(\d+)[、.,\s]")
+
+_H3_ARABIC_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)\s+")
+_H3_TWO_DOT_RE = re.compile(r"^(\d+)\.(\d+)\s+")
+_H3_CN_RE = re.compile(r"^[（(]([一二三四五六七八九十百千]+)[）)]")
+_H3_ARABIC_PAREN_RE = re.compile(r"^[（(](\d+)[）)]")
+_H3_SIMPLE_RE = re.compile(r"^(\d+)[、.,\s]")
 REFERENCE_ITEM_RE = re.compile(r"^\[(\d+)\]")
 FORMULA_NUMBER_RE = re.compile(r"\\tag\{\s*(\d+)-(\d+)\s*\}|(?:\\?\()\s*(\d+)-(\d+)\s*(?:\\?\))")
 FORMULA_IMG_KEYWORDS_RE = re.compile(r"公式|equation|formula", re.IGNORECASE)
-CJK_RE = re.compile(r"[一-鿿㐀-䶿　-〿＀-￯]")
-ASCII_ALNUM_RE = re.compile(r"[A-Za-z0-9]")
 
+
+# ---------------------------------------------------------------------------
+# 辅助函数（保持原样）
+# ---------------------------------------------------------------------------
 
 @dataclass
 class Finding:
@@ -38,6 +91,21 @@ def add_findings(findings: list[Finding], level: str, line: int, code: str, mess
     findings.append(Finding(level=level, line=line, code=code, message=message))
 
 
+def _is_table_row(line: str) -> bool:
+    s = line.strip()
+    return s.startswith("|") and "|" in s[1:]
+
+
+def _is_table_separator(line: str) -> bool:
+    s = line.strip()
+    if not s.startswith("|"):
+        return False
+    inner = s[1:]
+    if inner.endswith("|"):
+        inner = inner[:-1]
+    return all(c in "-:| \t" for c in inner) and "-" in inner
+
+
 def is_setext_candidate(prev_line: str) -> bool:
     prev = prev_line.strip()
     if not prev:
@@ -46,7 +114,7 @@ def is_setext_candidate(prev_line: str) -> bool:
         return False
     if prev.startswith(">"):
         return False
-    if TABLE_ROW_RE.match(prev):
+    if _is_table_row(prev):
         return False
     return True
 
@@ -60,158 +128,896 @@ def _strip_inline_code(text: str) -> str:
     return re.sub(r"`[^`]*`", "", text)
 
 
+# ---------------------------------------------------------------------------
+# MarkdownChecker — 将 322 行状态机提取为类
+# ---------------------------------------------------------------------------
+
+class MarkdownChecker:
+    """Markdown 格式规范检查器。
+
+    使用方式：
+        checker = MarkdownChecker(path)
+        checker.run()
+        for f in checker.findings:
+            print(f)
+    """
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.findings: list[Finding] = []
+        self.notes: list[str] = []
+
+        # ---- 扫描状态 ----
+        self._lines: list[str] = []
+        self._in_fence = False
+        self._in_math_block = False
+        self._in_references = False
+        self._pending_formula: int | None = None
+
+        # ---- 标题跟踪 ----
+        self._prev_level = 0
+        self._chapter: str | None = None
+        self._chapter_int: int | None = None  # 章节号整数值（支持中文转换）
+        self._section: str | None = None
+        self._first_heading: int | None = None
+        self._h1_count = 0
+
+        # ---- 标题编号追踪（连续性与格式一致性） ----
+        # H1: (line_no, num_int, format_str)
+        self._h1_nums: list[tuple[int, int, str]] = []
+        # H2: (line_no, chapter_int, section_int, format_str)
+        self._h2_nums: list[tuple[int, int, int, str]] = []
+        # H3: (line_no, chapter_int, section_int, subsection_int, format_str)
+        self._h3_nums: list[tuple[int, int, int, int, str]] = []
+        # 首个非特殊标题确定的格式（用于一致性校验）
+        self._h1_fmt: str | None = None
+        self._h2_fmt: str | None = None
+        self._h3_fmt: str | None = None
+        self._h1_has_special: bool = False  # 是否有摘要/参考文献等特殊标题
+
+        # ---- 收集器 ----
+        self._table_starts: list[tuple[int, str | None]] = []
+        self._images: list[tuple[int, str, str | None]] = []
+        self._refs: list[tuple[int, int]] = []
+        self._formula_seq: dict[int, int] = {}
+
+    # ---- 公开 API ----
+
+    def run(self) -> None:
+        """执行完整检查。"""
+        self._read()
+        self._check_meta()
+        self._scan()
+        self._post_scan()
+
+    # ---- 阶段 1：读取与编码 ----
+
+    def _read(self) -> None:
+        raw = self.path.read_bytes()
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            self._add("ERROR", exc.start + 1, "ENCODING", "文件不是有效 UTF-8 编码")
+            return
+        if "\r\n" in text:
+            self.notes.append("检测到 CRLF 行尾，建议统一为 LF（非强制）")
+        self._lines = text.splitlines()
+
+    # ---- 阶段 2：元信息检查 ----
+
+    def _check_meta(self) -> None:
+        if not self._lines:
+            return
+        first_non_empty_idx = None
+        for i, ln in enumerate(self._lines, start=1):
+            if ln.strip():
+                first_non_empty_idx = i
+                break
+        if first_non_empty_idx is None:
+            return
+        first_line = self._lines[first_non_empty_idx - 1].strip()
+        if first_line == "---":
+            self._add("ERROR", first_non_empty_idx, "META_FRONT_MATTER", "禁止 YAML front matter 元信息区块")
+        if first_line.startswith("%"):
+            self._add("ERROR", first_non_empty_idx, "META_PANDOC_BLOCK", "禁止 Pandoc 标题元信息块（% 开头）")
+
+    # ---- 阶段 3：逐行扫描（核心状态机） ----
+
+    def _scan(self) -> None:
+        for idx, line in enumerate(self._lines, start=1):
+            stripped = line.strip()
+
+            # 公式编号待检查
+            if self._pending_formula is not None and stripped:
+                self._validate_formula(idx, stripped)
+                self._pending_formula = None
+
+            # fenced code
+            if stripped.startswith("```"):
+                if MERMAID_FENCE_RE.match(stripped):
+                    self._add("WARN", idx, "MERMAID_DISABLED", "检测到 Mermaid 代码块：当前导出流程会移除该代码块")
+                self._in_fence = not self._in_fence
+                continue
+
+            if self._in_fence:
+                continue
+
+            # math block
+            if stripped.startswith("$$"):
+                self._handle_math_block(idx, stripped)
+                continue
+
+            if self._in_math_block:
+                continue
+
+            # 行内检查
+            self._check_line(findings_ref=None, idx=idx, line=line)
+
+            # 标题
+            heading = ATX_HEADING_RE.match(line)
+            if heading:
+                self._handle_heading(idx, heading)
+                continue
+
+            # 顶部元信息字段
+            if self._first_heading is None and idx <= 40 and META_FIELD_RE.match(stripped):
+                self._add("ERROR", idx, "META_FIELD", "检测到顶部元信息字段（Key: Value），请移除")
+
+            # HTML img
+            if IMG_HTML_RE.search(line):
+                self._add("ERROR", idx, "HTML_IMG", "不建议使用 <img>，请改用 Markdown 图片语法")
+
+            # setext heading
+            if idx > 1 and SETEXT_RE.match(stripped):
+                prev = self._lines[idx - 2]
+                if is_setext_candidate(prev):
+                    self._add("WARN", idx, "SETEXT_HEADING", "检测到 Setext 标题风格，建议改用 #/##/###")
+
+            # 图片
+            self._check_images_in_line(idx, line)
+
+            # 引用
+            self._check_citations(idx, line)
+
+            # 表格起始
+            if _is_table_row(line) and idx < len(self._lines):
+                next_line = self._lines[idx].strip()
+                if _is_table_separator(next_line):
+                    self._table_starts.append((idx, self._chapter))
+
+            # 参考文献条目空行检查
+            if self._in_references:
+                ref_m = REFERENCE_ITEM_RE.match(stripped)
+                if ref_m:
+                    self._refs.append((idx, int(ref_m.group(1))))
+                    if idx < len(self._lines):
+                        next_line = self._lines[idx].strip()
+                        if next_line and next_line.startswith("["):
+                            self._add("ERROR", idx, "REF_MISSING_BLANK_LINE", "参考文献条目之间缺少空行，请在每条文献后添加一个空行")
+
+        # 一级标题数量
+        if self._h1_count == 0:
+            self._add("ERROR", 1, "NO_H1", "文档必须使用一级标题（#）组织章节")
+
+    # ---- 行内检查子方法 ----
+
+    def _check_line(self, findings_ref, idx: int, line: str) -> None:
+        """行内验证：引号配对、Markdown 标记配对、段内换行。"""
+        self._validate_paired_quotes(idx, line)
+        self._validate_markdown_pairs(idx, line)
+        self._validate_line_breaks(idx, line)
+
+    # ---- 数学块处理 ----
+
+    def _handle_math_block(self, idx: int, stripped: str) -> None:
+        if self._in_math_block:
+            self._validate_formula(idx, stripped)
+            if not FORMULA_NUMBER_RE.search(stripped):
+                self._pending_formula = idx
+            self._in_math_block = False
+        else:
+            if stripped.endswith("$$") and len(stripped) > 4:
+                self._validate_formula(idx, stripped)
+                if not FORMULA_NUMBER_RE.search(stripped):
+                    self._pending_formula = idx
+            else:
+                self._in_math_block = True
+
+    # ---- 标题处理（多体系支持） ----
+
+    def _handle_heading(self, idx: int, heading: re.Match) -> None:
+        level = len(heading.group(1))
+        raw_title = heading.group(2).strip()
+        title = raw_title.lower()
+
+        if self._first_heading is None:
+            self._first_heading = idx
+
+        # 跳级检查
+        if self._prev_level > 0 and level > self._prev_level + 1:
+            self._add("ERROR", idx, "HEADING_SKIP_LEVEL",
+                      f"标题层级跳级：从 level {self._prev_level} 直接到 level {level}，请保持层级连续")
+
+        is_special = title in SPECIAL_HEADINGS
+
+        if level == 1:
+            self._h1_count += 1
+            if is_special:
+                self._h1_has_special = True
+            else:
+                self._parse_h1_number(idx, raw_title)
+            self._section = None
+            self._chapter_int = None  # 重置章节上下文
+        elif level == 2:
+            self._validate_h2_format(idx, raw_title, is_special)
+        elif level == 3:
+            self._validate_h3_format(idx, raw_title, is_special)
+
+        if is_special and level != 1:
+            self._add("ERROR", idx, "SPECIAL_HEADING_LEVEL", "摘要/Abstract/参考文献/致谢必须使用一级标题（#）")
+
+        self._prev_level = level
+
+        # 参考文献区域边界
+        if level == 1 and title == "参考文献":
+            self._in_references = True
+        elif level == 1 and self._in_references:
+            self._in_references = False
+
+    # ---- 一级标题编号解析 ----
+
+    def _parse_h1_number(self, idx: int, raw_title: str) -> None:
+        """解析一级标题编号，支持阿拉伯数字、中文序号、第X章三种体系。"""
+        # 尝试「数字 标题」
+        m = _H1_ARABIC_RE.match(raw_title)
+        if m:
+            num = int(m.group(1))
+            self._chapter = str(num)
+            self._chapter_int = num
+            self._h1_nums.append((idx, num, "arabic"))
+            self._set_h1_fmt("arabic")
+            return
+
+        # 尝试「一、标题」
+        m = _H1_CN_RE.match(raw_title)
+        if m:
+            num = _cn_to_int(m.group(1))
+            if num is not None:
+                self._chapter = str(num)
+                self._chapter_int = num
+                self._h1_nums.append((idx, num, "chinese"))
+                self._set_h1_fmt("chinese")
+                return
+
+        # 尝试「第一章 标题」
+        m = _H1_CHAPTER_RE.match(raw_title)
+        if m:
+            cn_or_num = m.group(1)
+            if cn_or_num.isdigit():
+                num = int(cn_or_num)
+            else:
+                num = _cn_to_int(cn_or_num)
+            if num is not None:
+                self._chapter = str(num)
+                self._chapter_int = num
+                self._h1_nums.append((idx, num, "chapter"))
+                self._set_h1_fmt("chapter")
+                return
+
+        # 不匹配任何编号格式
+        self._add("ERROR", idx, "HEADING1_FORMAT",
+                  "一级标题必须包含编号（如 '1 引言'、'一、引言' 或 '第一章 引言'）")
+
+    def _set_h1_fmt(self, fmt: str) -> None:
+        if self._h1_fmt is None:
+            self._h1_fmt = fmt
+        elif self._h1_fmt != fmt:
+            self._add("WARN", 0, "HEADING1_CONSISTENCY",
+                      f"一级标题编号格式不一致：之前使用 {self._fmt_label(self._h1_fmt)}，"
+                      f"当前行使用了 {self._fmt_label(fmt)} 格式")
+
+    # ---- 二级标题格式验证 ----
+
+    def _validate_h2_format(self, idx: int, raw_title: str, is_special: bool) -> None:
+        """验证二级标题格式并跟踪编号（多体系）。"""
+        if is_special:
+            return
+
+        # 尝试「X.Y 标题」
+        m = _H2_ARABIC_RE.match(raw_title)
+        if m:
+            chap = int(m.group(1))
+            sec = int(m.group(2))
+            self._h2_nums.append((idx, chap, sec, "arabic"))
+            self._section = f"{chap}.{sec}"
+            self._set_h2_fmt("arabic")
+            # 章节号一致性（仅当 H1 也用阿拉伯数字时）
+            if self._h1_fmt == "arabic" and self._chapter_int is not None and chap != self._chapter_int:
+                self._add("ERROR", idx, "HEADING2_CHAPTER_MISMATCH",
+                          f"二级标题章节号不一致：当前章节为 {self._chapter}，但二级标题以 {chap} 开头")
+            if self._chapter_int is None:
+                self._chapter_int = chap  # 推断当前章节
+            return
+
+        # 尝试「（一）标题」
+        m = _H2_CN_RE.match(raw_title)
+        if m:
+            num = _cn_to_int(m.group(1))
+            if num is not None:
+                chap = self._chapter_int or 1  # 中文体系通常在章节上下文中
+                self._h2_nums.append((idx, chap, num, "chinese_paren"))
+                self._section = f"{chap}.{num}"
+                self._set_h2_fmt("chinese_paren")
+                return
+
+        # 尝试「一、标题」（中文裸序号，无括号）
+        m = _H2_CN_BARE_RE.match(raw_title)
+        if m:
+            num = _cn_to_int(m.group(1))
+            if num is not None:
+                chap = self._chapter_int or 1
+                self._h2_nums.append((idx, chap, num, "chinese_bare"))
+                self._section = f"{chap}.{num}"
+                self._set_h2_fmt("chinese_bare")
+                return
+
+        # 尝试「（1）标题」
+        m = _H2_ARABIC_PAREN_RE.match(raw_title)
+        if m:
+            num = int(m.group(1))
+            chap = self._chapter_int or 1
+            self._h2_nums.append((idx, chap, num, "arabic_paren"))
+            self._section = f"{chap}.{num}"
+            self._set_h2_fmt("arabic_paren")
+            return
+
+        # 尝试「1. 标题」（带点/顿号，用于中文章节体系下的二级标题）
+        m = _H2_SIMPLE_RE.match(raw_title)
+        if m:
+            num = int(m.group(1))
+            chap = self._chapter_int or 1
+            self._h2_nums.append((idx, chap, num, "arabic_simple"))
+            self._section = f"{chap}.{num}"
+            self._set_h2_fmt("arabic_simple")
+            return
+
+        # 完全不匹配
+        self._add("ERROR", idx, "HEADING2_FORMAT",
+                  "二级标题必须包含编号（如 '1.1 标题'、'（一）标题'、'一、标题'、'（1）标题' 或 '1. 标题'）")
+
+    def _set_h2_fmt(self, fmt: str) -> None:
+        if self._h2_fmt is None:
+            self._h2_fmt = fmt
+        elif self._h2_fmt != fmt:
+            self._add("WARN", 0, "HEADING2_CONSISTENCY",
+                      f"二级标题编号格式不一致：之前使用 {self._fmt_label(self._h2_fmt)}，"
+                      f"当前行使用了 {self._fmt_label(fmt)} 格式")
+
+    # ---- 三级标题格式验证 ----
+
+    def _validate_h3_format(self, idx: int, raw_title: str, is_special: bool) -> None:
+        """验证三级标题格式并跟踪编号（多体系）。"""
+        if is_special:
+            return
+
+        chap = self._chapter_int or 1
+        # 从 _section 提取当前二级编号
+        sec = 1
+        if self._section:
+            parts = self._section.split(".")
+            if len(parts) >= 2:
+                try:
+                    sec = int(parts[1])
+                except ValueError:
+                    pass
+
+        # 尝试「X.Y.Z 标题」
+        m = _H3_ARABIC_RE.match(raw_title)
+        if m:
+            ch = int(m.group(1))
+            s = int(m.group(2))
+            sub = int(m.group(3))
+            self._h3_nums.append((idx, ch, s, sub, "arabic"))
+            self._set_h3_fmt("arabic")
+            if self._section and f"{ch}.{s}" != self._section:
+                self._add("ERROR", idx, "HEADING3_SECTION_MISMATCH",
+                          f"三级标题编号不一致：当前二级为 {self._section}，但三级标题以 {ch}.{s} 开头")
+            return
+
+        # 尝试「X.Y 标题」（两段式，用于中文章节体系：三 → 3.1）
+        m = _H3_TWO_DOT_RE.match(raw_title)
+        if m:
+            ch = int(m.group(1))
+            sub = int(m.group(2))
+            s = sec  # 从当前 H2 上下文推断
+            self._h3_nums.append((idx, ch, s, sub, "arabic_twodot"))
+            self._set_h3_fmt("arabic_twodot")
+            return
+
+        # 尝试「（一）标题」（中文括号序号）
+        m = _H3_CN_RE.match(raw_title)
+        if m:
+            num = _cn_to_int(m.group(1))
+            if num is not None:
+                self._h3_nums.append((idx, chap, sec, num, "chinese_paren"))
+                self._set_h3_fmt("chinese_paren")
+                return
+
+        # 尝试「（1）标题」（阿拉伯括号序号）
+        m = _H3_ARABIC_PAREN_RE.match(raw_title)
+        if m:
+            num = int(m.group(1))
+            self._h3_nums.append((idx, chap, sec, num, "arabic_paren"))
+            self._set_h3_fmt("arabic_paren")
+            return
+
+        # 尝试「1. 标题」（带点/顿号，用于中文体系下的三级标题）
+        m = _H3_SIMPLE_RE.match(raw_title)
+        if m:
+            num = int(m.group(1))
+            self._h3_nums.append((idx, chap, sec, num, "arabic_simple"))
+            self._set_h3_fmt("arabic_simple")
+            return
+
+        # 完全不匹配
+        self._add("ERROR", idx, "HEADING3_FORMAT",
+                  "三级标题必须包含编号（如 '1.1.1 标题'、'3.1 标题'、'（一）标题'、'（1）标题' 或 '1. 标题'）")
+
+    def _set_h3_fmt(self, fmt: str) -> None:
+        if self._h3_fmt is None:
+            self._h3_fmt = fmt
+        elif self._h3_fmt != fmt:
+            self._add("WARN", 0, "HEADING3_CONSISTENCY",
+                      f"三级标题编号格式不一致：之前使用 {self._fmt_label(self._h3_fmt)}，"
+                      f"当前行使用了 {self._fmt_label(fmt)} 格式")
+
+    @staticmethod
+    def _fmt_label(fmt: str) -> str:
+        """格式标识 → 人类可读标签。"""
+        return {
+            "arabic": "'1 引言'（阿拉伯数字）",
+            "chinese": "'一、引言'（中文序号）",
+            "chapter": "'第一章 引言'（章节式）",
+            "arabic_dotted": "'1.1'（阿拉伯数字）",
+            "chinese_paren": "'（一）'（中文括号）",
+            "chinese_bare": "'一、'（中文序号）",
+            "arabic_paren": "'（1）'（阿拉伯括号）",
+            "arabic_simple": "'1.'（数字加点）",
+            "arabic_twodot": "'3.1'（两段数字）",
+        }.get(fmt, fmt)
+
+    # ---- 标题编号连续性与一致性检查（_post_scan 中调用） ----
+
+    def _check_heading_continuity(self) -> None:
+        """检查各级标题编号是否连续（无重复、无跳号、从 1 开始）。"""
+        self._check_h1_continuity()
+        self._check_h2_continuity()
+        self._check_h3_continuity()
+
+    def _check_h1_continuity(self) -> None:
+        if not self._h1_nums:
+            return
+        seen: set[int] = set()
+        expected = 1
+        for line_no, num, fmt in self._h1_nums:
+            if num in seen:
+                self._add("ERROR", line_no, "HEADING1_DUPLICATE", f"一级标题编号重复：{self._num_label(num, fmt)}")
+            seen.add(num)
+            if num != expected:
+                self._add("ERROR", line_no, "HEADING1_DISCONTINUITY",
+                          f"一级标题编号不连续：期望 {self._num_label(expected, fmt)}，"
+                          f"实际为 {self._num_label(num, fmt)}")
+                expected = num
+            expected += 1
+
+    def _check_h2_continuity(self) -> None:
+        if not self._h2_nums:
+            return
+        # 按章节分组检查
+        chapters: dict[int, list[tuple[int, int, int]]] = {}  # chapter → [(line, section, idx)]
+        for i, (line_no, chap, sec, fmt) in enumerate(self._h2_nums):
+            chapters.setdefault(chap, []).append((line_no, sec, i))
+
+        for chap, items in chapters.items():
+            seen: set[int] = set()
+            expected = 1
+            items.sort(key=lambda x: x[2])  # 按原始出现顺序
+            for line_no, sec, _idx in items:
+                if sec in seen:
+                    self._add("ERROR", line_no, "HEADING2_DUPLICATE",
+                              f"二级标题编号重复：第{chap}章下序号 {sec} 重复")
+                seen.add(sec)
+                if sec != expected:
+                    self._add("ERROR", line_no, "HEADING2_DISCONTINUITY",
+                              f"二级标题编号不连续：第{chap}章期望序号 {expected}，实际为 {sec}")
+                    expected = sec
+                expected += 1
+
+    def _check_h3_continuity(self) -> None:
+        if not self._h3_nums:
+            return
+        # 按章节-小节分组检查
+        sections: dict[tuple[int, int], list[tuple[int, int, int]]] = {}
+        for i, (line_no, chap, sec, sub, fmt) in enumerate(self._h3_nums):
+            sections.setdefault((chap, sec), []).append((line_no, sub, i))
+
+        for (chap, sec), items in sections.items():
+            seen: set[int] = set()
+            expected = 1
+            items.sort(key=lambda x: x[2])
+            for line_no, sub, _idx in items:
+                if sub in seen:
+                    self._add("ERROR", line_no, "HEADING3_DUPLICATE",
+                              f"三级标题编号重复：第{chap}.{sec}节下序号 {sub} 重复")
+                seen.add(sub)
+                if sub != expected:
+                    self._add("ERROR", line_no, "HEADING3_DISCONTINUITY",
+                              f"三级标题编号不连续：第{chap}.{sec}节期望序号 {expected}，实际为 {sub}")
+                    expected = sub
+                expected += 1
+
+    @staticmethod
+    def _num_label(num: int, fmt: str) -> str:
+        """将编号整数值转为人类可读标签。"""
+        cn_map = {1: "一", 2: "二", 3: "三", 4: "四", 5: "五", 6: "六", 7: "七", 8: "八", 9: "九", 10: "十"}
+        if fmt == "chinese":
+            return cn_map.get(num, str(num))
+        if fmt == "chapter":
+            return f"第{cn_map.get(num, str(num))}章"
+        return str(num)
+
+    # ---- 图片检查 ----
+
+    def _check_images_in_line(self, idx: int, line: str) -> None:
+        for m in IMAGE_MD_RE.finditer(line):
+            alt = m.group(1).strip()
+            rel = m.group(2).strip()
+            if not alt:
+                self._add("WARN", idx, "IMAGE_ALT_EMPTY", "图片 alt 为空，建议填写图题（如 图1 xxx 或 图3-1 xxx）")
+            elif not FIGURE_TITLE_RE.match(alt):
+                self._add("WARN", idx, "IMAGE_TITLE_STYLE", '图片标题建议使用"图N 标题"或"图N-M 标题"格式')
+            if FORMULA_IMG_KEYWORDS_RE.search(alt):
+                self._add("ERROR", idx, "FORMULA_AS_IMAGE",
+                          "禁止将公式以图片形式插入，请使用 LaTeX 数学语法（如 $E=mc^2$ 或 $$...$$）")
+            self._images.append((idx, alt, self._chapter))
+            if not re.match(r"^(https?://|data:)", rel, re.IGNORECASE):
+                local = (self.path.parent / rel).resolve()
+                if not local.exists():
+                    self._add("WARN", idx, "IMAGE_PATH_MISSING", f"图片路径不存在: {rel}")
+
+    # ---- 引用检查 ----
+
+    def _check_citations(self, idx: int, line: str) -> None:
+        if "[" not in line or "]" not in line:
+            return
+        for m in CITATION_RE.finditer(line):
+            if int(m.group(1)) <= 0:
+                self._add("WARN", idx, "CITATION_INVALID", "引用编号应为正整数")
+
+    # ---- 行内验证 ----
+
+    def _validate_paired_quotes(self, idx: int, text: str) -> None:
+        sanitized = _strip_inline_code(text)
+        ascii_count = sanitized.count('"')
+        if ascii_count % 2 != 0:
+            self._add("ERROR", idx, "UNPAIRED_DOUBLE_QUOTES", "ASCII 双引号未成对出现，请检查本行是否完整")
+        left_count = sanitized.count("“")
+        right_count = sanitized.count("”")
+        if left_count != right_count:
+            self._add("ERROR", idx, "UNPAIRED_DOUBLE_QUOTES",
+                      f"中文双引号未成对出现（左引号 {left_count} 个，右引号 {right_count} 个），请检查本行的中英文双引号是否完整")
+
+    def _validate_markdown_pairs(self, idx: int, text: str) -> None:
+        code_free = re.sub(r"`[^`]*`", "", text)
+        if code_free.count("**") % 2 != 0:
+            self._add("ERROR", idx, "UNPAIRED_BOLD", "加粗标记 ** 未成对，请检查是否缺少闭合标记")
+        no_bold = code_free.replace("**", "")
+        if no_bold.count("*") % 2 != 0:
+            self._add("ERROR", idx, "UNPAIRED_ITALIC", "斜体标记 * 未成对，请检查是否缺少闭合标记")
+        if code_free.count("~~") % 2 != 0:
+            self._add("ERROR", idx, "UNPAIRED_STRIKE", "删除线标记 ~~ 未成对，请检查是否缺少闭合标记")
+        if code_free.count("`") % 2 != 0:
+            self._add("ERROR", idx, "UNPAIRED_INLINE_CODE", "行内代码标记 ` 未成对，请检查是否缺少闭合标记")
+        if code_free.count("[") != code_free.count("]"):
+            self._add("ERROR", idx, "UNPAIRED_BRACKETS",
+                      f"方括号 [] 不匹配：左 {code_free.count('[')} 个，右 {code_free.count(']')} 个")
+        if code_free.count("(") != code_free.count(")"):
+            self._add("ERROR", idx, "UNPAIRED_PARENTHESES",
+                      f"圆括号 () 不匹配：左 {code_free.count('(')} 个，右 {code_free.count(')')} 个")
+
+    def _validate_line_breaks(self, idx: int, text: str) -> None:
+        stripped = text.rstrip("\n\r")
+        if stripped.endswith("  ") and not stripped.endswith("    "):
+            self._add("ERROR", idx, "INTRAPARAGRAPH_LINE_BREAK",
+                      "检测到段内换行（行末两个空格），请使用空行分隔段落，不要使用段内换行符")
+        if re.search(r"<br\s*/?>", text, re.IGNORECASE):
+            self._add("ERROR", idx, "HTML_LINE_BREAK", "检测到 <br> 标签，请使用空行分隔段落")
+
+    def _validate_formula(self, idx: int, text: str) -> None:
+        m = FORMULA_NUMBER_RE.search(text)
+        if not m:
+            return
+        if m.group(1) is not None:
+            chapter = int(m.group(1))
+            seq = int(m.group(2))
+        else:
+            chapter = int(m.group(3))
+            seq = int(m.group(4))
+        if self._chapter is not None and chapter != int(self._chapter):
+            self._add("WARN", idx, "FORMULA_NUMBER_MISMATCH",
+                      f"公式编号章节号不一致：当前章节为 {self._chapter}，但公式编号为 ({chapter}-{seq})")
+        expected = self._formula_seq.get(chapter, 0) + 1
+        if seq != expected:
+            self._add("ERROR", idx, "FORMULA_NUMBER_DISCONTINUITY",
+                      f"公式编号不连续：章节 {chapter} 当前期望 ({chapter}-{expected})，实际为 ({chapter}-{seq})")
+        self._formula_seq[chapter] = seq
+
+    # ---- 阶段 4：扫描后全局检查 ----
+
+    def _post_scan(self) -> None:
+        self._check_heading_continuity()
+        self._check_figure_duplicates()
+        self._check_table_captions()
+        self._check_figure_table_sequence()
+        self._check_text_around_blocks()
+        self._check_reference_continuity()
+
+    def _check_figure_duplicates(self) -> None:
+        for img_line, alt, _chapter in self._images:
+            if not alt:
+                continue
+            normalized_alt = _normalize_caption(alt)
+            nxt = img_line
+            while nxt < len(self._lines) and not self._lines[nxt].strip():
+                nxt += 1
+            if nxt < len(self._lines):
+                nxt_stripped = self._lines[nxt].strip()
+                if FIGURE_TITLE_RE_LOOSE.match(nxt_stripped):
+                    nxt_norm = _normalize_caption(nxt_stripped)
+                    if nxt_norm == normalized_alt:
+                        self._add("ERROR", nxt + 1, "DUPLICATE_FIGURE_CAPTION",
+                                  f'图片下方重复出现图题"{nxt_norm}"，标题应仅在图片 alt 中体现')
+
+    def _check_table_captions(self) -> None:
+        for start, _tbl_chapter in self._table_starts:
+            look = start - 1
+            while look >= 1 and not self._lines[look - 1].strip():
+                look -= 1
+            if look < 1:
+                self._add("WARN", start, "TABLE_CAPTION_MISSING",
+                          '表格前缺少表题（建议"表N 标题"或"表N-M 标题"）')
+                continue
+            if not TABLE_CAPTION_RE.match(self._lines[look - 1]):
+                self._add("WARN", start, "TABLE_CAPTION_STYLE",
+                          '表格前一行不是规范表题（建议"表N 标题"或"表N-M 标题"）')
+
+    def _check_figure_table_sequence(self) -> None:
+        """检查图片和表格的序号是否连续、章节号是否匹配。"""
+        # 图片
+        figure_seq: dict[int, int] = {}
+        global_fig = 0
+        for img_line, alt, chapter_no in self._images:
+            m = re.search(r"(?:图|Figure|Fig\.|Fi\.)\s*(\d+)(?:\s*[-－.]\s*(\d+))?", alt)
+            if m:
+                if m.group(2) is not None:
+                    chapter = int(m.group(1))
+                    seq = int(m.group(2))
+                    if chapter_no is not None and chapter != int(chapter_no):
+                        self._add("WARN", img_line, "FIGURE_NUMBER_MISMATCH",
+                                  f"图片编号章节号不一致：当前章节为 {chapter_no}，但图片编号为 {chapter}-{seq}")
+                    expected = figure_seq.get(chapter, 0) + 1
+                    if seq != expected:
+                        self._add("ERROR", img_line, "FIGURE_NUMBER_DISCONTINUITY",
+                                  f"图片编号不连续：章节 {chapter} 当前期望 {chapter}-{expected}，实际为 {chapter}-{seq}")
+                    figure_seq[chapter] = seq
+                else:
+                    num = int(m.group(1))
+                    global_fig += 1
+                    if num != global_fig:
+                        self._add("ERROR", img_line, "FIGURE_NUMBER_DISCONTINUITY",
+                                  f"图片编号不连续：当前期望 {global_fig}，实际为 {num}")
+                        global_fig = num
+            else:
+                self._add("WARN", img_line, "FIGURE_NUMBER_MISSING",
+                          "图片缺少规范的序号（建议格式：图N 标题 或 图N-M 标题）")
+
+        # 表格
+        table_seq: dict[int, int] = {}
+        global_tbl = 0
+        for start, chapter_no in self._table_starts:
+            look = start - 1
+            while look >= 1 and not self._lines[look - 1].strip():
+                look -= 1
+            if look >= 1:
+                caption = self._lines[look - 1].strip()
+                m = re.search(r"(?:表|Table)\s*(\d+)(?:\s*[-－.]\s*(\d+))?", caption)
+                if m:
+                    if m.group(2) is not None:
+                        chapter = int(m.group(1))
+                        seq = int(m.group(2))
+                        if chapter_no is not None and chapter != int(chapter_no):
+                            self._add("WARN", start, "TABLE_NUMBER_MISMATCH",
+                                      f"表格编号章节号不一致：当前章节为 {chapter_no}，但表格编号为 {chapter}-{seq}")
+                        expected = table_seq.get(chapter, 0) + 1
+                        if seq != expected:
+                            self._add("ERROR", start, "TABLE_NUMBER_DISCONTINUITY",
+                                      f"表格编号不连续：章节 {chapter} 当前期望 {chapter}-{expected}，实际为 {chapter}-{seq}")
+                        table_seq[chapter] = seq
+                    else:
+                        num = int(m.group(1))
+                        global_tbl += 1
+                        if num != global_tbl:
+                            self._add("ERROR", start, "TABLE_NUMBER_DISCONTINUITY",
+                                      f"表格编号不连续：当前期望 {global_tbl}，实际为 {num}")
+                            global_tbl = num
+                else:
+                    self._add("WARN", start, "TABLE_NUMBER_MISSING",
+                              "表格缺少规范的序号（建议格式：表N 标题 或 表N-M 标题）")
+
+    def _check_text_around_blocks(self) -> None:
+        """检查图片和表格前后是否有段落文字描述。"""
+
+        def _is_valid_text(line: str) -> bool:
+            s = line.strip()
+            if not s:
+                return False
+            if ATX_HEADING_RE.match(s):
+                return False
+            if IMAGE_MD_RE.search(s):
+                return False
+            if _is_table_row(s) or _is_table_separator(s):
+                return False
+            if TABLE_CAPTION_RE.match(s):
+                return False
+            if FIGURE_TITLE_RE_LOOSE.match(s):
+                return False
+            if s.startswith("```") or s.startswith("$$") or s.startswith(">"):
+                return False
+            if s == "---":
+                return False
+            if SETEXT_RE.match(s):
+                return False
+            if REFERENCE_ITEM_RE.match(s):
+                return False
+            return True
+
+        for img_line, _alt, _chapter in self._images:
+            has_before = any(_is_valid_text(self._lines[i]) for i in range(img_line - 2, -1, -1)
+                             if self._lines[i].strip() or i == 0)
+            if not has_before:
+                has_before = any(_is_valid_text(self._lines[i]) for i in range(img_line - 2, -1, -1)
+                                 if not self._lines[i].strip())
+            # 简化为直接扫描
+            has_before = False
+            for i in range(img_line - 2, -1, -1):
+                if _is_valid_text(self._lines[i]):
+                    has_before = True
+                    break
+                if self._lines[i].strip():
+                    break
+            has_after = False
+            for i in range(img_line, len(self._lines)):
+                if _is_valid_text(self._lines[i]):
+                    has_after = True
+                    break
+                if self._lines[i].strip():
+                    break
+            if not has_before and not has_after:
+                self._add("ERROR", img_line, "MISSING_TEXT_AROUND_IMAGE",
+                          "图片前后均缺少段落文字描述，请在图片前或图片后添加对图片的说明或分析文字")
+
+        for start, _chapter in self._table_starts:
+            table_end = start
+            for j in range(start, len(self._lines)):
+                if not _is_table_row(self._lines[j].strip()):
+                    break
+                table_end = j
+            has_before = False
+            look = start - 2
+            while look >= 0 and not self._lines[look].strip():
+                look -= 1
+            if look >= 0 and TABLE_CAPTION_RE.match(self._lines[look].strip()):
+                look -= 1
+            while look >= 0 and not self._lines[look].strip():
+                look -= 1
+            if look >= 0 and _is_valid_text(self._lines[look]):
+                has_before = True
+            has_after = False
+            look = table_end
+            while look < len(self._lines) and not self._lines[look].strip():
+                look += 1
+            if look < len(self._lines) and _is_valid_text(self._lines[look]):
+                has_after = True
+            if not has_before and not has_after:
+                self._add("ERROR", start, "MISSING_TEXT_AROUND_TABLE",
+                          "表格前后均缺少段落文字描述，请在表格前或表格后添加对表格的说明或分析文字")
+
+    def _check_reference_continuity(self) -> None:
+        if not self._refs:
+            return
+        numbers = [n for _ln, n in self._refs]
+        seen: set[int] = set()
+        if numbers[0] != 1:
+            self._add("ERROR", self._refs[0][0], "REF_NUMBER_NOT_START_AT_ONE",
+                      f"参考文献编号应从 [1] 开始，当前首条为 [{numbers[0]}]")
+        for i, (line_no, n) in enumerate(self._refs):
+            if n in seen:
+                self._add("ERROR", line_no, "REF_NUMBER_DUPLICATE", f"参考文献编号重复：[{n}] 出现多次")
+            seen.add(n)
+            if i > 0:
+                prev_n = numbers[i - 1]
+                if n != prev_n + 1:
+                    self._add("ERROR", line_no, "REF_NUMBER_DISCONTINUITY",
+                              f"参考文献编号不连续：前一条为 [{prev_n}]，当前为 [{n}]，期望 [{prev_n + 1}]")
+
+    # ---- 工具方法 ----
+
+    def _add(self, level: str, line: int, code: str, message: str) -> None:
+        self.findings.append(Finding(level=level, line=line, code=code, message=message))
+
+
+# ---------------------------------------------------------------------------
+# 公开 API（保持兼容）
+# ---------------------------------------------------------------------------
+
+def check_markdown(path: Path) -> tuple[list[Finding], list[str]]:
+    """对 Markdown 文件执行格式规范检查。"""
+    checker = MarkdownChecker(path)
+    checker.run()
+    return checker.findings, checker.notes
+
+
+# ---------------------------------------------------------------------------
+# 保留的模块级函数（check_markdown 内部不再使用，但可能被外部引用）
+# ---------------------------------------------------------------------------
+
 def _validate_paired_double_quotes(findings: list[Finding], line_no: int, text: str) -> None:
     sanitized = _strip_inline_code(text)
-    quote_count = sanitized.count('"') + sanitized.count("“") + sanitized.count("”")
-    if quote_count % 2 != 0:
-        add_findings(
-            findings,
-            "ERROR",
-            line_no,
-            "UNPAIRED_DOUBLE_QUOTES",
-            "双引号未成对出现，请检查本行的中英文双引号是否完整",
-        )
+    ascii_count = sanitized.count('"')
+    if ascii_count % 2 != 0:
+        add_findings(findings, "ERROR", line_no, "UNPAIRED_DOUBLE_QUOTES", "ASCII 双引号未成对出现，请检查本行是否完整")
+    left_count = sanitized.count("“")
+    right_count = sanitized.count("”")
+    if left_count != right_count:
+        add_findings(findings, "ERROR", line_no, "UNPAIRED_DOUBLE_QUOTES",
+                     f"中文双引号未成对出现（左引号 {left_count} 个，右引号 {right_count} 个），请检查本行的中英文双引号是否完整")
 
 
 def _validate_markdown_pairs(findings: list[Finding], line_no: int, text: str) -> None:
-    """检查 Markdown 行内标记是否成对出现（排除已闭合的行内代码后检查）。"""
-    # 去掉已闭合的行内代码，保留不完整/未闭合的部分
     code_free = re.sub(r"`[^`]*`", "", text)
-
-    # 加粗 **
-    bold_count = code_free.count("**")
-    if bold_count % 2 != 0:
-        add_findings(
-            findings,
-            "ERROR",
-            line_no,
-            "UNPAIRED_BOLD",
-            "加粗标记 ** 未成对，请检查是否缺少闭合标记",
-        )
-
-    # 斜体 *（去掉 ** 后统计剩余的单个 *）
+    if code_free.count("**") % 2 != 0:
+        add_findings(findings, "ERROR", line_no, "UNPAIRED_BOLD", "加粗标记 ** 未成对，请检查是否缺少闭合标记")
     no_bold = code_free.replace("**", "")
-    italic_count = no_bold.count("*")
-    if italic_count % 2 != 0:
-        add_findings(
-            findings,
-            "ERROR",
-            line_no,
-            "UNPAIRED_ITALIC",
-            "斜体标记 * 未成对，请检查是否缺少闭合标记",
-        )
-
-    # 删除线 ~~
-    strike_count = code_free.count("~~")
-    if strike_count % 2 != 0:
-        add_findings(
-            findings,
-            "ERROR",
-            line_no,
-            "UNPAIRED_STRIKE",
-            "删除线标记 ~~ 未成对，请检查是否缺少闭合标记",
-        )
-
-    # 行内代码 `（去掉成对的后，检查剩余反引号）
-    leftover_ticks = code_free.count("`")
-    if leftover_ticks % 2 != 0:
-        add_findings(
-            findings,
-            "ERROR",
-            line_no,
-            "UNPAIRED_INLINE_CODE",
-            "行内代码标记 ` 未成对，请检查是否缺少闭合标记",
-        )
-
-    # 方括号 []
-    bracket_open = code_free.count("[")
-    bracket_close = code_free.count("]")
-    if bracket_open != bracket_close:
-        add_findings(
-            findings,
-            "ERROR",
-            line_no,
-            "UNPAIRED_BRACKETS",
-            f"方括号 [] 不匹配：左 {bracket_open} 个，右 {bracket_close} 个",
-        )
-
-    # 圆括号 ()
-    paren_open = code_free.count("(")
-    paren_close = code_free.count(")")
-    if paren_open != paren_close:
-        add_findings(
-            findings,
-            "ERROR",
-            line_no,
-            "UNPAIRED_PARENTHESES",
-            f"圆括号 () 不匹配：左 {paren_open} 个，右 {paren_close} 个",
-        )
+    if no_bold.count("*") % 2 != 0:
+        add_findings(findings, "ERROR", line_no, "UNPAIRED_ITALIC", "斜体标记 * 未成对，请检查是否缺少闭合标记")
+    if code_free.count("~~") % 2 != 0:
+        add_findings(findings, "ERROR", line_no, "UNPAIRED_STRIKE", "删除线标记 ~~ 未成对，请检查是否缺少闭合标记")
+    if code_free.count("`") % 2 != 0:
+        add_findings(findings, "ERROR", line_no, "UNPAIRED_INLINE_CODE", "行内代码标记 ` 未成对，请检查是否缺少闭合标记")
+    if code_free.count("[") != code_free.count("]"):
+        add_findings(findings, "ERROR", line_no, "UNPAIRED_BRACKETS",
+                     f"方括号 [] 不匹配：左 {code_free.count('[')} 个，右 {code_free.count(']')} 个")
+    if code_free.count("(") != code_free.count(")"):
+        add_findings(findings, "ERROR", line_no, "UNPAIRED_PARENTHESES",
+                     f"圆括号 () 不匹配：左 {code_free.count('(')} 个，右 {code_free.count(')')} 个")
 
 
-def _validate_cjk_ascii_spacing(
-    findings: list[Finding],
-    line_no: int,
-    text: str,
-) -> None:
-    """检查中文字符与英文/数字之间是否存在空格。"""
-    stripped = text.strip()
-    if not stripped:
-        return
-    # 跳过标题行
-    if ATX_HEADING_RE.match(stripped):
-        return
-    # 跳过表格行
-    if TABLE_ROW_RE.match(stripped) or TABLE_SEP_RE.match(stripped):
-        return
-    # 跳过引用块中的图片占位符和描述
-    if stripped.startswith("> [") or stripped.startswith("> 描述："):
-        return
-    # 跳过参考文献列表行
-    if REFERENCE_ITEM_RE.match(stripped):
-        return
-    # 跳过表题和图题行（支持加粗格式）
-    if stripped.startswith("表") or stripped.startswith("图") or stripped.startswith("**表") or stripped.startswith("**图"):
-        return
-
-    # 先保护行内代码、URL、图片语法中的内容
-    protected_text = re.sub(r"`[^`]*`", lambda m: "\x00" * len(m.group(0)), text)
-    protected_text = re.sub(r"!\[[^\]]*\]\([^)]*\)", lambda m: "\x00" * len(m.group(0)), protected_text)
-    protected_text = re.sub(r"\[[^\]]+\]\([^)]+\)", lambda m: "\x00" * len(m.group(0)), protected_text)
-
-    # 检查 中文 + 空格 + ASCII/数字
-    for m in re.finditer(r"[一-鿿㐀-䶿　-〿＀-￯]\s+[A-Za-z0-9]", protected_text):
-        add_findings(
-            findings,
-            "ERROR",
-            line_no,
-            "CJK_ASCII_SPACE",
-            "中文字符与英文/数字之间不得有空格，请删除空格",
-        )
-        break  # 每行只报一次
-
-    # 检查 ASCII/数字 + 空格 + 中文
-    for m in re.finditer(r"[A-Za-z0-9]\s+[一-鿿㐀-䶿　-〿＀-￯]", protected_text):
-        add_findings(
-            findings,
-            "ERROR",
-            line_no,
-            "ASCII_CJK_SPACE",
-            "英文/数字与中文字符之间不得有空格，请删除空格",
-        )
-        break
+def _validate_no_intra_paragraph_line_breaks(findings: list[Finding], line_no: int, text: str) -> None:
+    stripped = text.rstrip("\n\r")
+    if stripped.endswith("  ") and not stripped.endswith("    "):
+        add_findings(findings, "ERROR", line_no, "INTRAPARAGRAPH_LINE_BREAK",
+                     "检测到段内换行（行末两个空格），请使用空行分隔段落，不要使用段内换行符")
+    if re.search(r"<br\s*/?>", text, re.IGNORECASE):
+        add_findings(findings, "ERROR", line_no, "HTML_LINE_BREAK", "检测到 <br> 标签，请使用空行分隔段落")
 
 
 def _validate_formula_number(
-    findings: list[Finding],
-    line_no: int,
-    text: str,
-    current_chapter_no: str | None,
-    formula_seq_in_chapter: dict[int, int],
+    findings: list[Finding], line_no: int, text: str,
+    current_chapter_no: str | None, formula_seq_in_chapter: dict[int, int],
 ) -> None:
     m = FORMULA_NUMBER_RE.search(text)
     if not m:
         return
-    # \tag{X-Y} -> groups 1,2; (X-Y) or \(X-Y\) -> groups 3,4
     if m.group(1) is not None:
         chapter = int(m.group(1))
         seq = int(m.group(2))
@@ -219,24 +1025,13 @@ def _validate_formula_number(
         chapter = int(m.group(3))
         seq = int(m.group(4))
     if current_chapter_no is not None and chapter != int(current_chapter_no):
-        add_findings(
-            findings,
-            "WARN",
-            line_no,
-            "FORMULA_NUMBER_MISMATCH",
-            f"公式编号章节号不一致：当前章节为 {current_chapter_no}，但公式编号为 ({chapter}-{seq})",
-        )
+        add_findings(findings, "WARN", line_no, "FORMULA_NUMBER_MISMATCH",
+                     f"公式编号章节号不一致：当前章节为 {current_chapter_no}，但公式编号为 ({chapter}-{seq})")
     expected = formula_seq_in_chapter.get(chapter, 0) + 1
     if seq != expected:
-        add_findings(
-            findings,
-            "ERROR",
-            line_no,
-            "FORMULA_NUMBER_DISCONTINUITY",
-            f"公式编号不连续：章节 {chapter} 当前期望 ({chapter}-{expected})，实际为 ({chapter}-{seq})",
-        )
+        add_findings(findings, "ERROR", line_no, "FORMULA_NUMBER_DISCONTINUITY",
+                     f"公式编号不连续：章节 {chapter} 当前期望 ({chapter}-{expected})，实际为 ({chapter}-{seq})")
     formula_seq_in_chapter[chapter] = seq
-
 
 
 def _validate_figure_table_sequence(
@@ -246,78 +1041,88 @@ def _validate_figure_table_sequence(
     lines: list[str],
 ) -> None:
     """检查图片和表格的序号是否连续、章节号是否匹配。"""
-    # 图片序号检查
+    # 图片
     figure_seq: dict[int, int] = {}
+    global_figure_seq: int = 0
     for img_line, alt, chapter_no in image_lines:
-        m = re.search(r"(?:图|Figure|Fi\.)\s*(\d+)\s*[-－]\s*(\d+)", alt)
+        m = re.search(r"(?:图|Figure|Fig\.|Fi\.)\s*(\d+)(?:\s*[-－.]\s*(\d+))?", alt)
         if m:
-            chapter = int(m.group(1))
-            seq = int(m.group(2))
-            if chapter_no is not None and chapter != int(chapter_no):
-                add_findings(
-                    findings,
-                    "WARN",
-                    img_line,
-                    "FIGURE_NUMBER_MISMATCH",
-                    f"图片编号章节号不一致：当前章节为 {chapter_no}，但图片编号为 {chapter}-{seq}",
-                )
-            expected = figure_seq.get(chapter, 0) + 1
-            if seq != expected:
-                add_findings(
-                    findings,
-                    "ERROR",
-                    img_line,
-                    "FIGURE_NUMBER_DISCONTINUITY",
-                    f"图片编号不连续：章节 {chapter} 当前期望 {chapter}-{expected}，实际为 {chapter}-{seq}",
-                )
-            figure_seq[chapter] = seq
+            if m.group(2) is not None:
+                chapter = int(m.group(1))
+                seq = int(m.group(2))
+                if chapter_no is not None and chapter != int(chapter_no):
+                    add_findings(findings, "WARN", img_line, "FIGURE_NUMBER_MISMATCH",
+                                 f"图片编号章节号不一致：当前章节为 {chapter_no}，但图片编号为 {chapter}-{seq}")
+                expected = figure_seq.get(chapter, 0) + 1
+                if seq != expected:
+                    add_findings(findings, "ERROR", img_line, "FIGURE_NUMBER_DISCONTINUITY",
+                                 f"图片编号不连续：章节 {chapter} 当前期望 {chapter}-{expected}，实际为 {chapter}-{seq}")
+                figure_seq[chapter] = seq
+            else:
+                num = int(m.group(1))
+                global_figure_seq += 1
+                if num != global_figure_seq:
+                    add_findings(findings, "ERROR", img_line, "FIGURE_NUMBER_DISCONTINUITY",
+                                 f"图片编号不连续：当前期望 {global_figure_seq}，实际为 {num}")
+                    global_figure_seq = num
         else:
-            add_findings(
-                findings,
-                "WARN",
-                img_line,
-                "FIGURE_NUMBER_MISSING",
-                "图片缺少规范的序号（建议格式：图x-x 标题）",
-            )
+            add_findings(findings, "WARN", img_line, "FIGURE_NUMBER_MISSING",
+                         "图片缺少规范的序号（建议格式：图N 标题 或 图N-M 标题）")
 
-    # 表格序号检查
+    # 表格
     table_seq: dict[int, int] = {}
+    global_table_seq: int = 0
     for start, chapter_no in table_starts:
         look = start - 1
         while look >= 1 and not lines[look - 1].strip():
             look -= 1
         if look >= 1:
             caption = lines[look - 1].strip()
-            m = re.search(r"(?:表|Table)\s*(\d+)\s*[-－]\s*(\d+)", caption)
+            m = re.search(r"(?:表|Table)\s*(\d+)(?:\s*[-－.]\s*(\d+))?", caption)
             if m:
-                chapter = int(m.group(1))
-                seq = int(m.group(2))
-                if chapter_no is not None and chapter != int(chapter_no):
-                    add_findings(
-                        findings,
-                        "WARN",
-                        start,
-                        "TABLE_NUMBER_MISMATCH",
-                        f"表格编号章节号不一致：当前章节为 {chapter_no}，但表格编号为 {chapter}-{seq}",
-                    )
-                expected = table_seq.get(chapter, 0) + 1
-                if seq != expected:
-                    add_findings(
-                        findings,
-                        "ERROR",
-                        start,
-                        "TABLE_NUMBER_DISCONTINUITY",
-                        f"表格编号不连续：章节 {chapter} 当前期望 {chapter}-{expected}，实际为 {chapter}-{seq}",
-                    )
-                table_seq[chapter] = seq
+                if m.group(2) is not None:
+                    chapter = int(m.group(1))
+                    seq = int(m.group(2))
+                    if chapter_no is not None and chapter != int(chapter_no):
+                        add_findings(findings, "WARN", start, "TABLE_NUMBER_MISMATCH",
+                                     f"表格编号章节号不一致：当前章节为 {chapter_no}，但表格编号为 {chapter}-{seq}")
+                    expected = table_seq.get(chapter, 0) + 1
+                    if seq != expected:
+                        add_findings(findings, "ERROR", start, "TABLE_NUMBER_DISCONTINUITY",
+                                     f"表格编号不连续：章节 {chapter} 当前期望 {chapter}-{expected}，实际为 {chapter}-{seq}")
+                    table_seq[chapter] = seq
+                else:
+                    num = int(m.group(1))
+                    global_table_seq += 1
+                    if num != global_table_seq:
+                        add_findings(findings, "ERROR", start, "TABLE_NUMBER_DISCONTINUITY",
+                                     f"表格编号不连续：当前期望 {global_table_seq}，实际为 {num}")
+                        global_table_seq = num
             else:
-                add_findings(
-                    findings,
-                    "WARN",
-                    start,
-                    "TABLE_NUMBER_MISSING",
-                    "表格缺少规范的序号（建议格式：表x-x 标题）",
-                )
+                add_findings(findings, "WARN", start, "TABLE_NUMBER_MISSING",
+                             "表格缺少规范的序号（建议格式：表N 标题 或 表N-M 标题）")
+
+
+def _validate_reference_number_continuity(
+    findings: list[Finding],
+    ref_items: list[tuple[int, int]],
+) -> None:
+    if not ref_items:
+        return
+    numbers = [n for _ln, n in ref_items]
+    seen: set[int] = set()
+    if numbers[0] != 1:
+        add_findings(findings, "ERROR", ref_items[0][0], "REF_NUMBER_NOT_START_AT_ONE",
+                     f"参考文献编号应从 [1] 开始，当前首条为 [{numbers[0]}]")
+    for i, (line_no, n) in enumerate(ref_items):
+        if n in seen:
+            add_findings(findings, "ERROR", line_no, "REF_NUMBER_DUPLICATE", f"参考文献编号重复：[{n}] 出现多次")
+        seen.add(n)
+        if i > 0:
+            prev_n = numbers[i - 1]
+            if n != prev_n + 1:
+                add_findings(findings, "ERROR", line_no, "REF_NUMBER_DISCONTINUITY",
+                             f"参考文献编号不连续：前一条为 [{prev_n}]，当前为 [{n}]，期望 [{prev_n + 1}]")
 
 
 def _validate_text_around_blocks(
@@ -326,7 +1131,7 @@ def _validate_text_around_blocks(
     table_starts: list[tuple[int, str | None]],
     lines: list[str],
 ) -> None:
-    """检查图片和表格前后是否有段落文字描述（不能只有表题/图题）。"""
+    """检查图片和表格前后是否有段落文字描述。"""
 
     def _is_valid_text(line: str) -> bool:
         s = line.strip()
@@ -336,7 +1141,7 @@ def _validate_text_around_blocks(
             return False
         if IMAGE_MD_RE.search(s):
             return False
-        if TABLE_ROW_RE.match(s) or TABLE_SEP_RE.match(s):
+        if _is_table_row(s) or _is_table_separator(s):
             return False
         if TABLE_CAPTION_RE.match(s):
             return False
@@ -352,7 +1157,6 @@ def _validate_text_around_blocks(
             return False
         return True
 
-    # 图片前后文字描述（前后至少有一个即可）
     for img_line, _alt, _chapter in image_lines:
         has_text_before = False
         for i in range(img_line - 2, -1, -1):
@@ -361,7 +1165,6 @@ def _validate_text_around_blocks(
                 break
             if lines[i].strip():
                 break
-
         has_text_after = False
         for i in range(img_line, len(lines)):
             if _is_valid_text(lines[i]):
@@ -369,24 +1172,16 @@ def _validate_text_around_blocks(
                 break
             if lines[i].strip():
                 break
-
         if not has_text_before and not has_text_after:
-            add_findings(
-                findings,
-                "ERROR",
-                img_line,
-                "MISSING_TEXT_AROUND_IMAGE",
-                "图片前后均缺少段落文字描述，请在图片前或图片后添加对图片的说明或分析文字",
-            )
+            add_findings(findings, "ERROR", img_line, "MISSING_TEXT_AROUND_IMAGE",
+                         "图片前后均缺少段落文字描述，请在图片前或图片后添加对图片的说明或分析文字")
 
-    # 表格前后文字描述（前后至少有一个即可）
     for start, _chapter in table_starts:
         table_end = start
         for j in range(start, len(lines)):
-            if not TABLE_ROW_RE.match(lines[j].strip()):
+            if not _is_table_row(lines[j].strip()):
                 break
             table_end = j
-
         has_text_before = False
         look = start - 2
         while look >= 0 and not lines[look].strip():
@@ -397,332 +1192,20 @@ def _validate_text_around_blocks(
             look -= 1
         if look >= 0 and _is_valid_text(lines[look]):
             has_text_before = True
-
         has_text_after = False
-        look = table_end + 1
+        look = table_end
         while look < len(lines) and not lines[look].strip():
             look += 1
         if look < len(lines) and _is_valid_text(lines[look]):
             has_text_after = True
-
         if not has_text_before and not has_text_after:
-            add_findings(
-                findings,
-                "ERROR",
-                start,
-                "MISSING_TEXT_AROUND_TABLE",
-                "表格前后均缺少段落文字描述，请在表格前或表格后添加对表格的说明或分析文字",
-            )
-
-def check_markdown(path: Path) -> tuple[list[Finding], list[str]]:
-    raw = path.read_bytes()
-    findings: list[Finding] = []
-    notes: list[str] = []
-
-    try:
-        text = raw.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        add_findings(findings, "ERROR", exc.start + 1, "ENCODING", "文件不是有效 UTF-8 编码")
-        return findings, notes
-
-    if "\r\n" in text:
-        notes.append("检测到 CRLF 行尾，建议统一为 LF（非强制）")
-
-    lines = text.splitlines()
-    in_fence = False
-    table_starts: list[tuple[int, str | None]] = []  # (行号, 章节号)
-    h1_count = 0
-    first_heading_line = None
-
-    # 标题层级跟踪
-    prev_heading_level = 0
-    current_chapter_no: str | None = None  # e.g. "1"
-    current_section_no: str | None = None  # e.g. "1.1"
-
-    # 记录图片位置，用于后续重复标题检查
-    image_lines: list[tuple[int, str, str | None]] = []  # (行号, alt文本, 章节号)
-
-    # 公式检查状态
-    in_math_block = False
-    pending_formula_line: int | None = None  # 等待下一行检查公式编号的行号
-    formula_seq_in_chapter: dict[int, int] = {}  # chapter -> last_seen_seq
-
-    # 禁止 Pandoc/YAML 元信息区块
-    if lines:
-        first_non_empty_idx = None
-        for i, ln in enumerate(lines, start=1):
-            if ln.strip():
-                first_non_empty_idx = i
-                break
-        if first_non_empty_idx is not None:
-            first_line = lines[first_non_empty_idx - 1].strip()
-            if first_line == "---":
-                add_findings(findings, "ERROR", first_non_empty_idx, "META_FRONT_MATTER", "禁止 YAML front matter 元信息区块")
-            if first_line.startswith("%"):
-                add_findings(findings, "ERROR", first_non_empty_idx, "META_PANDOC_BLOCK", "禁止 Pandoc 标题元信息块（% 开头）")
-
-    in_references_section = False
-    in_appendix_section = False
-
-    for idx, line in enumerate(lines, start=1):
-        stripped = line.strip()
-
-        # 处理待检查的公式编号（上一行数学块结束后第一行非空内容）
-        if pending_formula_line is not None and stripped:
-            _validate_formula_number(
-                findings, idx, stripped, current_chapter_no, formula_seq_in_chapter
-            )
-            pending_formula_line = None
-
-        # fenced code state toggle
-        if stripped.startswith("```"):
-            if MERMAID_FENCE_RE.match(stripped):
-                add_findings(findings, "WARN", idx, "MERMAID_DISABLED", "检测到 Mermaid 代码块：当前导出流程会移除该代码块")
-            in_fence = not in_fence
-            continue
-
-        if in_fence:
-            continue
-
-        # math block toggle
-        if stripped.startswith("$$"):
-            if in_math_block:
-                # 关闭数学块：当前行检查公式编号
-                _validate_formula_number(
-                    findings, idx, stripped, current_chapter_no, formula_seq_in_chapter
-                )
-                # 若当前行没有编号，标记下一行待检查
-                if not FORMULA_NUMBER_RE.search(stripped):
-                    pending_formula_line = idx
-                in_math_block = False
-            else:
-                # 开启数学块
-                if stripped.endswith("$$") and len(stripped) > 4:
-                    # 单行块：立即检查公式编号，不进入 math_block 状态
-                    _validate_formula_number(
-                        findings, idx, stripped, current_chapter_no, formula_seq_in_chapter
-                    )
-                    if not FORMULA_NUMBER_RE.search(stripped):
-                        pending_formula_line = idx
-                else:
-                    in_math_block = True
-            continue
-
-        if in_math_block:
-            continue
-
-        # 跳过表格行和表格分隔行的配对检查（单元格内标记不应作为Markdown解析）
-        is_table = bool(TABLE_ROW_RE.match(line) or TABLE_SEP_RE.match(line))
-        if not is_table:
-            _validate_paired_double_quotes(findings, idx, line)
-            _validate_markdown_pairs(findings, idx, line)
-        _validate_cjk_ascii_spacing(findings, idx, line)
-
-        heading = ATX_HEADING_RE.match(line)
-        if heading:
-            level = len(heading.group(1))
-            title = heading.group(2).strip().lower()
-            raw_title = heading.group(2).strip()
-            if first_heading_line is None:
-                first_heading_line = idx
-
-            # 附录区域判定
-            if level == 1 and title == "附录":
-                in_appendix_section = True
-            elif level == 1 and in_appendix_section:
-                in_appendix_section = False
-
-            # 跳级检查（附录区域跳过）
-            if not in_appendix_section and prev_heading_level > 0 and level > prev_heading_level + 1:
-                add_findings(
-                    findings,
-                    "ERROR",
-                    idx,
-                    "HEADING_SKIP_LEVEL",
-                    f"标题层级跳级：从 level {prev_heading_level} 直接到 level {level}，请保持层级连续",
-                )
-
-            if level == 1:
-                h1_count += 1
-                # 提取章节号（支持 "1 引言" 和 "第1章 引言" 两种格式）
-                m = re.match(r"^(?:第)?(\d+)\s*章?\s+", raw_title)
-                if m:
-                    current_chapter_no = m.group(1)
-                elif title not in SPECIAL_HEADINGS:
-                    add_findings(
-                        findings,
-                        "ERROR",
-                        idx,
-                        "THESIS_TITLE_IN_BODY",
-                        "请勿在正文中使用一级标题写论文题目（应由封面提供），章节请从 '# 1 引言' 开始",
-                    )
-                current_section_no = None
-            elif level == 2:
-                if not in_appendix_section and not re.match(r"^\d+\.\d+\s+", raw_title):
-                    add_findings(
-                        findings,
-                        "ERROR",
-                        idx,
-                        "HEADING2_FORMAT",
-                        "二级标题必须使用 '数字.数字 标题' 格式（如 '## 1.1 研究背景'）",
-                    )
-                else:
-                    m = re.match(r"^(\d+)\.\d+", raw_title)
-                    if m:
-                        section_chapter = m.group(1)
-                        if current_chapter_no is not None and section_chapter != current_chapter_no:
-                            add_findings(
-                                findings,
-                                "ERROR",
-                                idx,
-                                "HEADING2_CHAPTER_MISMATCH",
-                                f"二级标题章节号不一致：当前章节为 {current_chapter_no}，但二级标题以 {section_chapter} 开头",
-                            )
-                        current_section_no = re.match(r"^(\d+\.\d+)", raw_title).group(1)
-            elif level == 3:
-                if not in_appendix_section and not re.match(r"^\d+\.\d+\.\d+\s+", raw_title):
-                    add_findings(
-                        findings,
-                        "ERROR",
-                        idx,
-                        "HEADING3_FORMAT",
-                        "三级标题必须使用 '数字.数字.数字 标题' 格式（如 '### 1.1.1 国内外现状'）",
-                    )
-                else:
-                    m = re.match(r"^(\d+\.\d+)\.\d+", raw_title)
-                    if m:
-                        section_prefix = m.group(1)
-                        if current_section_no is not None and section_prefix != current_section_no:
-                            add_findings(
-                                findings,
-                                "ERROR",
-                                idx,
-                                "HEADING3_SECTION_MISMATCH",
-                                f"三级标题编号不一致：当前二级为 {current_section_no}，但三级标题以 {section_prefix} 开头",
-                            )
-
-            if title in SPECIAL_HEADINGS and level != 1:
-                add_findings(findings, "ERROR", idx, "SPECIAL_HEADING_LEVEL", "摘要/Abstract/参考文献/致谢必须使用一级标题（#）")
-
-            prev_heading_level = level
-
-            # 参考文献区域边界判定
-            if level == 1 and title == "参考文献":
-                in_references_section = True
-            elif level == 1 and in_references_section:
-                in_references_section = False
-
-            continue
-
-        # 顶部元信息字段（Key: Value）不允许
-        if first_heading_line is None and idx <= 40 and META_FIELD_RE.match(stripped):
-            add_findings(findings, "ERROR", idx, "META_FIELD", "检测到顶部元信息字段（Key: Value），请移除")
-
-        # forbid html img
-        if IMG_HTML_RE.search(line):
-            add_findings(findings, "ERROR", idx, "HTML_IMG", "不建议使用 <img>，请改用 Markdown 图片语法")
-
-        # setext heading warning
-        if idx > 1 and SETEXT_RE.match(stripped):
-            prev = lines[idx - 2]
-            if is_setext_candidate(prev):
-                add_findings(findings, "WARN", idx, "SETEXT_HEADING", "检测到 Setext 标题风格，建议改用 #/##/###")
-
-        # image checks
-        for m in IMAGE_MD_RE.finditer(line):
-            alt = m.group(1).strip()
-            rel = m.group(2).strip()
-            if not alt:
-                add_findings(findings, "WARN", idx, "IMAGE_ALT_EMPTY", "图片 alt 为空，建议填写图题（如 图3-1 xxx）")
-            elif not FIGURE_TITLE_RE.match(alt):
-                add_findings(findings, "WARN", idx, "IMAGE_TITLE_STYLE", "图片标题建议使用“图x-x 标题”格式")
-
-            if FORMULA_IMG_KEYWORDS_RE.search(alt):
-                add_findings(
-                    findings,
-                    "ERROR",
-                    idx,
-                    "FORMULA_AS_IMAGE",
-                    "禁止将公式以图片形式插入，请使用 LaTeX 数学语法（如 $E=mc^2$ 或 $$...$$）",
-                )
-
-            image_lines.append((idx, alt, current_chapter_no))
-
-            # local path existence check (ignore URL)
-            if not re.match(r"^(https?://|data:)", rel, re.IGNORECASE):
-                local = (path.parent / rel).resolve()
-                if not local.exists():
-                    add_findings(findings, "WARN", idx, "IMAGE_PATH_MISSING", f"图片路径不存在: {rel}")
-
-        # citation simple check
-        if "[" in line and "]" in line:
-            for m in CITATION_RE.finditer(line):
-                if int(m.group(1)) <= 0:
-                    add_findings(findings, "WARN", idx, "CITATION_INVALID", "引用编号应为正整数")
-
-        # markdown table start check
-        if TABLE_ROW_RE.match(line) and idx < len(lines):
-            next_line = lines[idx].strip()
-            if TABLE_SEP_RE.match(next_line):
-                table_starts.append((idx, current_chapter_no))
-
-        # 参考文献条目之间必须有空行
-        if in_references_section and REFERENCE_ITEM_RE.match(stripped) and idx < len(lines):
-            next_line = lines[idx].strip()
-            if next_line and next_line.startswith("["):
-                add_findings(
-                    findings,
-                    "ERROR",
-                    idx,
-                    "REF_MISSING_BLANK_LINE",
-                    "参考文献条目之间缺少空行，请在每条文献后添加一个空行",
-                )
-
-    # 图片下方重复标题检查
-    for img_line, alt, _chapter in image_lines:
-        if not alt:
-            continue
-        normalized_alt = _normalize_caption(alt)
-        # 检查图片之后的非空行
-        nxt = img_line
-        while nxt < len(lines) and not lines[nxt].strip():
-            nxt += 1
-        if nxt < len(lines):
-            nxt_stripped = lines[nxt].strip()
-            if FIGURE_TITLE_RE_LOOSE.match(nxt_stripped):
-                nxt_norm = _normalize_caption(nxt_stripped)
-                if nxt_norm == normalized_alt:
-                    add_findings(
-                        findings,
-                        "ERROR",
-                        nxt + 1,
-                        "DUPLICATE_FIGURE_CAPTION",
-                        f"图片下方重复出现图题“{nxt_norm}”，标题应仅在图片 alt 中体现",
-                    )
-
-    # table caption check: line before table start should be caption (allow blank spacer)
-    for start, _tbl_chapter in table_starts:
-        look = start - 1
-        blank_spacer = 0
-        while look >= 1 and not lines[look - 1].strip():
-            look -= 1
-            blank_spacer += 1
-        if look < 1:
-            add_findings(findings, "WARN", start, "TABLE_CAPTION_MISSING", "表格前缺少表题（建议“表x-x 标题”）")
-            continue
-        if not TABLE_CAPTION_RE.match(lines[look - 1]):
-            add_findings(findings, "WARN", start, "TABLE_CAPTION_STYLE", "表格前一行不是规范表题（建议“表x-x 标题”）")
-            continue
+            add_findings(findings, "ERROR", start, "MISSING_TEXT_AROUND_TABLE",
+                         "表格前后均缺少段落文字描述，请在表格前或表格后添加对表格的说明或分析文字")
 
 
-    if h1_count == 0:
-        add_findings(findings, "ERROR", 1, "NO_H1", "文档必须使用一级标题（#）组织章节")
-
-    _validate_figure_table_sequence(findings, image_lines, table_starts, lines)
-    _validate_text_around_blocks(findings, image_lines, table_starts, lines)
-
-    return findings, notes
-
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="检查 Markdown 是否符合本项目导出规范")
