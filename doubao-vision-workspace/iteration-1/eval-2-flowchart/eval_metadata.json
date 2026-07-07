@@ -1,0 +1,6 @@
+{
+  "eval_id": 2,
+  "eval_name": "algorithm-flowchart",
+  "prompt": "帮我解读这个算法流程图 /home/dc/.claude/skills/doubao-vision-workspace/iteration-1/eval-2-flowchart/test_image.png，说明每一步的作用",
+  "assertions": []
+}

@@ -1,0 +1,6 @@
+{
+  "eval_id": 1,
+  "eval_name": "bar-chart-ablation",
+  "prompt": "分析这张消融实验结果图 /home/dc/.claude/skills/doubao-vision-workspace/iteration-1/eval-1-bar-chart/test_image.png，哪个组件贡献最大？准确率提升了多少？",
+  "assertions": []
+}
