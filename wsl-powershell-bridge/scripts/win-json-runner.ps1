@@ -213,7 +213,7 @@ try {
             if ($varName) {
                 $val = [Environment]::GetEnvironmentVariable($varName, "Machine")
                 if (-not $val) { $val = [Environment]::GetEnvironmentVariable($varName, "User") }
-                if (-not $val) { $val = $env:$varName }
+                if (-not $val) { $val = [Environment]::GetEnvironmentVariable($varName, "Process") }
                 Write-JsonOutput @{ name = $varName; value = $val }
             } else {
                 $all = @{}

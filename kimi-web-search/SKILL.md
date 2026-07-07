@@ -88,13 +88,13 @@ MOONSHOT_API_KEY=your-key uv run python scripts/kimi_search.py "搜索内容"
 **普通模式**（模型总结搜索结果）：
 
 ```bash
-python /home/dc-ubuntu/.claude/skills/kimi-web-search/scripts/kimi_search.py "用户搜索查询"
+cd ~/.claude/skills && uv run python kimi-web-search/scripts/kimi_search.py "用户搜索查询"
 ```
 
 **Raw 模式**（返回原始搜索结果，不经过模型总结）：
 
 ```bash
-python /home/dc-ubuntu/.claude/skills/kimi-web-search/scripts/kimi_search.py --raw "用户搜索查询"
+cd ~/.claude/skills && uv run python kimi-web-search/scripts/kimi_search.py --raw "用户搜索查询"
 ```
 
 Raw 模式适用于：

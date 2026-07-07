@@ -30,7 +30,7 @@ def parse_args() -> argparse.Namespace:
     run.add_argument("--sql-file", help="Read SQL from file")
     run.add_argument("--config", help="Path to config JSON")
     run.add_argument("--limit", type=int, default=None, help="Row limit for SELECT-like queries")
-    run.add_argument("--jq", default=".[0:20]", help="jq filter for preview")
+    run.add_argument("--jq", default=".data[0:20]", help="jq filter for preview")
     run.add_argument("--no-preview", action="store_true", help="Skip jq preview output")
     run.add_argument("--output", help="Write results to this JSON file instead of temp file")
     run.add_argument(
