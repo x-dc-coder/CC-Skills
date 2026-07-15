@@ -61,8 +61,8 @@ graph [size="3.5,4!"]  // 宽3.5英寸, 高最多4英寸, ! 表示严格不超
 ### 2. DPI 控制（PNG 清晰度）
 
 ```bash
-dot -Tpng -Gdpi=300 architecture.dot -o architecture.png  # 300dpi 印刷级
-dot -Tpng -Gdpi=200 architecture.dot -o architecture.png  # 200dpi 屏幕级
+dot -Tpng -Gdpi=300 architecture.dot -o "$OUT_DIR/architecture.png"  # 300dpi 印刷级
+dot -Tpng -Gdpi=200 architecture.dot -o "$OUT_DIR/architecture.png"  # 200dpi 屏幕级
 ```
 
 ### 3. 紧凑度控制
@@ -82,15 +82,22 @@ graph [fontsize=12]  // 图标题
 
 ## 编译命令
 
+**输出路径约定**：遵循 CLAUDE.md 统一规则——默认输出到 `<项目>/thesis-output/diagram-architecture/architecture.<pdf|png>`，兜底到 `~/.claude/skills-output/diagram-architecture/architecture.<pdf|png>`。先创建目录再编译。
+
 ```bash
+# 创建输出目录（自动选择项目目录或兜底目录）
+OUT_DIR="thesis-output/diagram-architecture"
+[ -d "thesis-output" ] || OUT_DIR="$HOME/.claude/skills-output/diagram-architecture"
+mkdir -p "$OUT_DIR"
+
 # 生成 PDF（矢量，论文直接 \includegraphics）
-dot -Tpdf architecture.dot -o architecture.pdf
+dot -Tpdf architecture.dot -o "$OUT_DIR/architecture.pdf"
 
 # 生成 PNG（位图，PPT 用）
-dot -Tpng -Gdpi=300 architecture.dot -o architecture.png
+dot -Tpng -Gdpi=300 architecture.dot -o "$OUT_DIR/architecture.png"
 
 # 生成 SVG（网页用）
-dot -Tsvg architecture.dot -o architecture.svg
+dot -Tsvg architecture.dot -o "$OUT_DIR/architecture.svg"
 ```
 
 ## 工作流程
