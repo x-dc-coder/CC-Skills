@@ -51,7 +51,7 @@ description: >
 转换后应生成如下结构：
 
 ```
-thesis/
+thesis-output/latex/
 ├── main.tex                    # 主文件，引用各章节
 ├── tex/
 │   ├── frontinfo.tex           # 封面信息（2024年起通常注释掉）

@@ -1,3 +1,15 @@
+---
+name: paper-reader
+description: >
+  学术论文 PDF 双引擎对照阅读器。同时调用 Marker + MinerU 两个引擎转换 PDF，
+  输出双路 Markdown 用于交叉对照阅读，降低单一引擎的解析错误。
+  当用户提到"读论文"、"读 PDF"、"分析文献"、"精读"、"对照阅读"，
+  或给出 PDF 路径需要分析其中方法、公式、实验、图表时，必须使用此 skill。
+  处理学术论文（含数学公式、表格、流程图）时优先使用。支持单 PDF 或目录批量转换。
+  不要用于纯文本 PDF（小说、合同）、扫描件 OCR 单一诉求（直接用 MinerU 单路）、
+  单页快速摘要（用 look_at 即可）。
+---
+
 # Paper Reader
 
 **学术论文 PDF 双引擎对照阅读器** — 同时调用 Marker + MinerU 两个引擎转换 PDF，输出双路 Markdown

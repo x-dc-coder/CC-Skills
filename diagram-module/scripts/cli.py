@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import json
-from datetime import date
 from pathlib import Path
 
 try:
@@ -16,16 +15,15 @@ except ImportError:
 SKILLS_ROOT = Path(__file__).resolve().parent.parent.parent
 
 
-def _resolve_output_path(input_file: Path | None, skill_name: str, default_name: str = "diagram.png") -> Path:
-    """从输入文件路径推断项目目录，默认输出到 <项目目录>/thesis-output/img/"""
+def _resolve_output_path(input_file: Path | None, skill_name: str, default_name: str = "module-diagram.png") -> Path:
+    """推断输出路径：<项目目录>/thesis-output/<skill-name>/ 或 ~/.claude/skills-output/<skill-name>/"""
     if input_file and input_file.is_absolute():
         for parent in input_file.resolve().parents:
             if (parent / "thesis-output").exists() or (parent / "docs").exists():
-                output_dir = parent / "thesis-output" / "img"
+                output_dir = parent / "thesis-output" / skill_name
                 output_dir.mkdir(parents=True, exist_ok=True)
                 return output_dir / default_name
-    today = date.today().isoformat()
-    out = Path("/tmp/skills-output") / today / skill_name
+    out = Path.home() / ".claude" / "skills-output" / skill_name
     out.mkdir(parents=True, exist_ok=True)
     return out / default_name
 

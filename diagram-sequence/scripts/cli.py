@@ -13,23 +13,21 @@ import json
 import subprocess
 import sys
 import tempfile
-from datetime import date
 from pathlib import Path
 
 
 SKILLS_ROOT = Path(__file__).resolve().parent.parent.parent
 
 
-def _resolve_output_path(input_file: Path | None, skill_name: str, default_name: str = "diagram.png") -> Path:
-    """从输入文件路径推断项目目录，默认输出到 <项目目录>/thesis-output/img/"""
+def _resolve_output_path(input_file: Path | None, skill_name: str, default_name: str = "sequence-diagram.png") -> Path:
+    """推断输出路径：<项目目录>/thesis-output/<skill-name>/ 或 ~/.claude/skills-output/<skill-name>/"""
     if input_file and input_file.is_absolute():
         for parent in input_file.resolve().parents:
             if (parent / "thesis-output").exists() or (parent / "docs").exists():
-                output_dir = parent / "thesis-output" / "img"
+                output_dir = parent / "thesis-output" / skill_name
                 output_dir.mkdir(parents=True, exist_ok=True)
                 return output_dir / default_name
-    today = date.today().isoformat()
-    out = Path("/tmp/skills-output") / today / skill_name
+    out = Path.home() / ".claude" / "skills-output" / skill_name
     out.mkdir(parents=True, exist_ok=True)
     return out / default_name
 
@@ -171,10 +169,8 @@ Examples:
         json_data = json.loads(Path(args.json_file).read_text(encoding="utf-8"))
         mmd_text = _json_to_mermaid(json_data)
 
-        # 同时保存 .mmd 源文件到统一输出目录
-        tmp_dir = Path("/tmp/skills-output") / datetime.datetime.now().strftime("%Y-%m-%d") / "diagram-sequence"
-        tmp_dir.mkdir(parents=True, exist_ok=True)
-        mmd_out = tmp_dir / f"{output_path.stem}.mmd"
+        # 同时保存 .mmd 源文件到与输出 PNG 同目录
+        mmd_out = output_path.parent / f"{output_path.stem}.mmd"
         mmd_out.write_text(mmd_text, encoding="utf-8")
         print(f"Generated Mermaid: {mmd_out}")
     else:

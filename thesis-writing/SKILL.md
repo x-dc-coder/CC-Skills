@@ -105,9 +105,10 @@ description: Use when writing undergraduate thesis content for science/engineeri
 当后续调用 diagram skill 生成图片后，**必须按以下规则替换占位符**，确保不残留任何占位符内容：
 
 1. **整段删除**：删除整个引用块（包括 `> [图X-Y ...]` 和 `> 描述：...` 所有行）
-2. **替换为 Markdown 图片语法**：`![图X-Y 标题](./thesis-output/img/图X-Y_标题.png)`
-3. **路径规范**：所有图片统一放到 `./thesis-output/img/` 目录下
-4. **替换后检查清单**：
+2. **替换为 Markdown 图片语法**：`![图X-Y 标题](thesis-output/img/图X-Y_标题.png)`
+3. **路径规范**：所有图片统一放到 `thesis-output/img/` 目录下（相对项目根目录，非 cwd 相对）
+4. **diagram skill 输出对接**：diagram skill 默认输出到 `thesis-output/<skill-name>/`（如 `thesis-output/diagram-er/er-diagram.png`），引用时需指向实际输出路径，或将图片复制到 `thesis-output/img/`
+5. **替换后检查清单**：
    - [ ] 全文搜索 `> \[图`，确认无残留
    - [ ] 全文搜索 `> 描述：`，确认无残留
    - [ ] 检查图片前后是否有段落文字描述（不能只有图题）
@@ -115,7 +116,7 @@ description: Use when writing undergraduate thesis content for science/engineeri
 
 **错误示例**（残留描述）：
 ```markdown
-![图3-1 系统功能结构图](./thesis-output/img/图3-1_系统功能结构图.png)
+![图3-1 系统功能结构图](thesis-output/img/图3-1_系统功能结构图.png)
 > 描述：树状结构图，顶层为...    <-- 错误！必须整段删除
 ```
 
@@ -123,7 +124,7 @@ description: Use when writing undergraduate thesis content for science/engineeri
 ```markdown
 如图3-1所示，系统采用分层架构设计。
 
-![图3-1 系统功能结构图](./thesis-output/img/图3-1_系统功能结构图.png)
+![图3-1 系统功能结构图](thesis-output/img/图3-1_系统功能结构图.png)
 
 从图3-1可以看出，系统主要包含前台和后台两大子系统...
 ```
