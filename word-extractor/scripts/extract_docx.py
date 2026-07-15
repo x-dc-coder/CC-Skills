@@ -32,7 +32,8 @@ def extract_comments_data(doc):
     for rel in doc.part.rels.values():
         if "comments" in rel.reltype and "Extended" not in rel.reltype:
             comments_part = rel.target_part
-            root = comments_part.element
+            from docx.oxml import parse_xml
+            root = parse_xml(comments_part.blob)
             for comment in root.findall(qn("w:comment")):
                 cid = comment.get(qn("w:id"))
                 author = comment.get(qn("w:author"))

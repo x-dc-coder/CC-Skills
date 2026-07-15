@@ -1,62 +1,90 @@
 ---
 name: wsl-powershell-bridge
 description: >
-  How to invoke Windows special environments (pywin32, COM interfaces, Visio, Office,
-  .NET, Win32 API, Windows-specific Python packages) from WSL using PowerShell as a bridge.
-  Use this skill whenever the user is in WSL and needs to:
-  - interact with Windows COM objects (Visio, Word, Excel, PowerPoint)
-  - run Python scripts that require pywin32, pythonnet, or other Windows-only packages
-  - call Windows executables or services that have no Linux equivalent
-  - automate Windows software from a WSL development environment
-  - handle WSLInterop setup, cross-boundary file paths, or process management
-  - read/write Windows Registry, query WMI/CIM, access the Windows clipboard
-  - call Win32 API via P/Invoke, manage Windows scheduled tasks, read Event Logs
-  Even if the user does not explicitly mention "PowerShell" or "WSLInterop",
-  if they are in WSL and need Windows-specific capabilities, use this skill.
+  WSL → Windows 三层桥接方案：cmd.exe (GPU/Python/EXE, ~55ms) 为首选，
+  Direct EXE (注册表/服务/进程, ~10ms) 为快速通道，
+  PowerShell (COM/WMI/P/Invoke, ~600ms) 为复杂场景保留。
+  覆盖 GPU 训练、Windows Python 环境、注册表、WMI、COM 自动化、Event Log 等。
+  GPU 规则统一在 /home/dc/CLAUDE.md。
 ---
 
-# WSL PowerShell Bridge Skill
+# WSL → Windows 桥接 Skill
 
 ## Purpose
 
-WSL2 runs a Linux kernel, which means Windows-only capabilities (COM, Win32 API,
-Windows-specific Python packages, Registry, WMI) are **not directly accessible**
-from WSL. However, WSL provides `WSLInterop` — a mechanism to launch Windows
-executables from Linux. This skill teaches how to use **two complementary channels**
-to invoke **any** Windows capability from WSL:
+WSL2 runs a Linux kernel — Windows-only capabilities (COM, Win32 API, Registry, WMI, GPU) are **not directly accessible**. WSL provides `WSLInterop` to launch Windows executables from Linux.
 
-- **Channel A: PowerShell Bridge** — for complex operations (COM, WMI, P/Invoke, Event Log, JSON-structured output)
-- **Channel B: Direct Windows EXE** — for fast, simple operations (registry, services, processes, networking, certificates)
+This skill documents **three channels** ranked by speed and simplicity:
 
-## Dual-Channel Architecture
+| Channel | Launcher | Overhead | When |
+|---------|----------|----------|------|
+| **C: cmd.exe** | `cmd.exe /c` | ~55ms | **GPU / Python scripts / 任意可执行文件** |
+| **B: Direct EXE** | `reg.exe`, `sc.exe`... | ~10ms | 简单系统工具（注册表/服务/进程） |
+| **A: PowerShell** | `powershell.exe` | ~600ms | COM / WMI / P/Invoke / Event Log |
 
+**核心原则：能 cmd 不用 ps，能直调不套壳。**
+
+## Channel C: cmd.exe — GPU & Python（⭐ 首选）
+
+### Python 标准调用（`subprocess` 封装）
+
+```python
+import subprocess, os
+
+def _run_windows(python_exe, code, args=None, timeout=1800):
+    cmd = ["cmd.exe", "/c", python_exe, "-c", code] + (args or [])
+    return subprocess.run(
+        cmd, capture_output=True, text=True, timeout=timeout,
+        encoding="utf-8", errors="replace",
+        cwd="/mnt/e/temp",   # 必须：避免 UNC 路径报错
+    )
 ```
-WSL (Linux)                              Windows
-┌─────────────┐     PowerShell      ┌──────────────┐
-│ Channel A   │─── powershell.exe ──→│  COM / WMI   │
-│ (Complex)   │                      │  Win32 API   │  启动开销 ~300ms
-│             │                      │  Event Log   │
-└─────────────┘                      └──────────────┘
 
-┌─────────────┐     Direct EXE       ┌──────────────┐
-│ Channel B   │─── reg.exe ─────────→│  Registry    │
-│ (Fast)      │─── sc.exe ──────────→│  Services    │  启动开销 ~10ms
-│             │─── netsh.exe ───────→│  Firewall    │
-│             │─── certutil.exe ────→│  Certificates│
-└─────────────┘                      └──────────────┘
+**注意事项：**
+- `cwd` 必须设为 `/mnt/` 下共享盘路径，否则 `cmd.exe` 报 UNC 不支持
+- 中文输出需写文件（pipe 输出走系统 GBK 编码）：
+  ```python
+  cmd = [py, "-c", code, ">", win_out_file, "2>", win_err_file]
+  subprocess.run(["cmd.exe", "/c"] + cmd, cwd="/mnt/e/temp")
+  # 然后从 WSL 读取文件
+  ```
+- 退出码、参数传递、stderr 均正确（已验证）
+
+### GPU 环境检查 & 规则
+
+> **GPU 相关全部统一在 `/home/dc/CLAUDE.md` → "GPU 桥接" 章节**，此处不再重复。
+
+快速验证：
+```bash
+cmd.exe /c "E:\venvs\marker\Scripts\python.exe -c \"import torch; print('CUDA:', torch.cuda.is_available(), '| GPU:', torch.cuda.get_device_name(0))\""
 ```
 
-**Channel selection rule:**
+### Windows 侧 Python venv 管理
 
-| 场景 | 用哪个通道 | 原因 |
-|------|-----------|------|
-| 简单注册表查询 | `reg.exe` (B) | 无 PowerShell 开销，快 30x |
-| 服务启动/停止 | `sc.exe` (B) | 原生 Windows 工具，输出简洁 |
-| 复杂 WMI 查询 + JSON | PowerShell (A) | PowerShell 管道/对象更强大 |
-| COM/Visio 自动化 | PowerShell (A) | 必须用 `New-Object -ComObject` |
-| Win32 API P/Invoke | PowerShell (A) | 需要 `Add-Type` 动态编译 C# |
-| 网络防火墙配置 | `netsh.exe` (B) | 原生工具，无需加载 PS 模块 |
-| 文件哈希/证书管理 | `certutil.exe` (B) | 无 PowerShell 内置等价物 |
+用 `uv` 管理（路径 `C:\Users\32841\.local\bin\uv.exe`）：
+```bash
+# 创建 venv
+powershell.exe -Command "& 'C:\Users\32841\.local\bin\uv.exe' venv E:\venvs\myproj --python 3.11"
+
+# 安装 CUDA 版 PyTorch（cu128 稳定，cu130 有 DLL 问题）
+powershell.exe -Command "& 'C:\Users\32841\.local\bin\uv.exe' pip install torch==2.11.0+cu128 --python E:\venvs\myproj\Scripts\python.exe --index-url https://download.pytorch.org/whl/cu128"
+```
+
+## Channel Selection Guide
+
+| 场景 | 用哪个通道 | 命令 | 原因 |
+|------|-----------|------|------|
+| **GPU / Python 脚本** | cmd.exe (C) | `cmd.exe /c "py -c '...'"` | ~55ms, 参数不拆分, stderr 干净 |
+| **中文输出** | cmd.exe + 文件 | `cmd.exe /c "py ... > out.txt"` | pipe 编码 GBK→UTF-8 可行 |
+| **任意 EXE 调用** | cmd.exe (C) | `cmd.exe /c program.exe args` | 薄转发层, 无额外处理 |
+| 简单注册表 | reg.exe (B) | `reg query HKLM\...` | ~10ms, 原生工具 |
+| 服务启停 | sc.exe (B) | `sc start MyService` | 原生, 输出简洁 |
+| 进程管理(简单) | tasklist/taskkill (B) | `taskkill /F /PID 12345` | 快速, 无需 PS |
+| 进程管理(按命令行) | PowerShell (A) | `Get-CimInstance Win32_Process` | 只有 WMI 能按命令行过滤 |
+| WMI/CIM 查询 | PowerShell (A) | `Get-CimInstance ...` | PowerShell 独有能力 |
+| Event Log | PowerShell (A) | `Get-WinEvent ...` | PowerShell 独有能力 |
+| COM 自动化 | PowerShell (A) | `New-Object -ComObject` | COM 必须用 PS |
+| Win32 P/Invoke | PowerShell (A) | `Add-Type -TypeDefinition` | 动态编译 C# 必须用 PS |
 
 ## Environment Requirements
 
@@ -96,11 +124,9 @@ sudo apt install -y jq
 
 ## When to Use This Skill
 
-- The user is in a WSL environment (Linux shell, `/mnt/c/` paths, etc.)
-- The user needs to interact with Windows-only software or APIs
-- Common indicators: mentions of Visio, Office, COM, pywin32, Windows services,
-  .NET Framework, paths like `E:\` or `C:\`, Registry, clipboard, WMI, Event Log,
-  scheduled tasks, or Win32 API calls
+- 需要在 WSL 中调用 Windows 侧能力（EXE / Python / GPU / 系统工具）
+- 关键词: `cmd.exe`、`powershell.exe`、GPU、CUDA、torch、Windows venv、注册表、WMI、COM、Visio、Office
+- **GPU 训练/推理**: 见 `/home/dc/CLAUDE.md` → "GPU 桥接" 章节（单一事实来源）
 
 ## WSLInterop Quick Check
 
@@ -129,215 +155,40 @@ appendWindowsPath=true
 
 ---
 
-## ⚠️ CRITICAL: UTF-8 Encoding (Prevent Garbled Output)
+## Encoding Notes
 
-**Every `powershell.exe` call MUST set UTF-8 encoding first**, otherwise Chinese
-and other multibyte characters will be garbled. Always use this prefix:
-
-```bash
-POWERSHELL_UTF8='[Console]::InputEncoding = [System.Text.Encoding]::UTF8; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $OutputEncoding = [System.Text.Encoding]::UTF8;'
-
-# Correct pattern (no garbled text):
-powershell.exe -Command "${POWERSHELL_UTF8} <your command>"
-```
-
-**The psh helper (from `scripts/psh`) includes this automatically.** Source it to
-avoid manually adding the prefix every time:
-
-```bash
-source ~/.claude/skills/wsl-powershell-bridge/scripts/psh
-psh 'Get-Date'                                    # clean output guaranteed
-pshj '@{msg="中文测试"; count=42} | ConvertTo-Json'  # JSON output via jq
-```
+- **Channel C (cmd.exe)**: pipe 输出走系统 GBK 编码 → 非 ASCII 字符乱码。**写文件绕开**。
+- **Channel B (Direct EXE)**: 同样 GBK 编码。用 `grep` 提取 ASCII 字段即可。
+- **Channel A (PowerShell)**: 通过设置 `[Console]::OutputEncoding = UTF8` 可正确输出中文。
 
 ---
 
-## Channel A: PowerShell Bridge — Calling Patterns
+## Channel A: PowerShell — COM / WMI / P/Invoke / Event Log
 
-### Pattern 1: Inline PowerShell Command (Simple, One-off)
+> **仅当 cmd.exe 无法胜任时使用**：COM 对象、WMI 查询、Event Log、P/Invoke 动态编译 C#。
 
-Best for: quick checks, single commands, process management
+### Calling Patterns
 
+**简单一行**（使用单引号避免 bash 展开）：
 ```bash
-powershell.exe -Command "Get-Process -Name python | Select-Object Id"
+powershell.exe -Command 'Get-Process -Name code | ConvertTo-Json'
 ```
 
-**Limitations:**
-- Command length limited (~8000 chars)
-- Quote escaping is painful (double quotes inside double quotes)
-- No state persistence between calls
-
-**Tip:** Use single quotes for the outer shell, double quotes inside:
-
+**复杂脚本**（写 `.ps1` 文件，通过 `-File` 调用）：
 ```bash
-powershell.exe -Command 'Write-Host "Hello World"'
+# 从 WSL 写入 PS1 到共享盘
+cat > /mnt/e/temp/task.ps1 << 'EOF'
+param([string]$Name)
+$r = Get-CimInstance Win32_Process | Where-Object CommandLine -like "*$Name*"
+$r | Select-Object ProcessId,CommandLine | ConvertTo-Json
+EOF
+
+powershell.exe -File "E:\temp\task.ps1" -Name "python"
 ```
 
-### Pattern 2: PowerShell Script File (Recommended for Complex Tasks)
-
-Best for: multi-step operations, parameter passing, error handling
-
-```powershell
-# Save as E:\scripts\visio_check.ps1
-param(
-    [string]$Action = "GetVersion"
-)
-
-$env:VISIO_BRIDGE_TOKEN = "my-token"
-Import-Module -Name SomeWindowsModule
-
-switch ($Action) {
-    "GetVersion" {
-        $visio = New-Object -ComObject Visio.Application
-        Write-Output $visio.Version
-        $visio.Quit()
-    }
-    "Export" {
-        # ... complex export logic
-    }
-}
-```
-
-Call from WSL:
-
-```bash
-powershell.exe -File "E:\scripts\visio_check.ps1" -Action "GetVersion"
-```
-
-**Advantages:**
-- Clean separation of Windows logic
-- Proper parameter handling
-- Full PowerShell error handling (`try/catch`, `$ErrorActionPreference`)
-
-### Pattern 3: Python Script on Windows Side (Best for Data Exchange)
-
-Best for: passing complex data, long-running tasks, structured output
-
-```python
-# Save as E:\scripts\visio_automation.py
-import json
-import sys
-import win32com.client
-
-def main():
-    action = sys.argv[1] if len(sys.argv) > 1 else "info"
-    visio = win32com.client.Dispatch("Visio.Application")
-    visio.Visible = False
-
-    if action == "info":
-        result = {"version": visio.Version, "name": visio.Name}
-        print(json.dumps(result))
-    elif action == "export":
-        # ... export logic
-        print(json.dumps({"status": "ok", "file": "output.png"}))
-
-    visio.Quit()
-
-if __name__ == "__main__":
-    main()
-```
-
-Call from WSL:
-
-```bash
-# Windows Python with pywin32 runs the script
-powershell.exe -Command "D:\\Anconda\\python.exe E:\\scripts\\visio_automation.py info"
-```
-
-**Advantages:**
-- JSON output easy to parse from WSL
-- Both sides use Python (less context switching)
-- Can use all Windows Python packages (pywin32, pythonnet, etc.)
-
-### Pattern 4: EncodedCommand (★★★ Best for Complex One-liners)
-
-**This is the professional solution to "quote escaping hell."** PowerShell's
-`-EncodedCommand` flag accepts a Base64-encoded UTF-16LE string, allowing
-arbitrarily complex commands with **zero quoting issues**.
-
-```bash
-# Step 1: Write your PowerShell command freely (any quotes, any nesting)
-# Step 2: Encode to Base64 UTF-16LE
-cmd_b64=$(echo -n 'Write-Host "No more \"escaping hell\" — just write freely!"' | iconv -t UTF-16LE | base64 -w0)
-
-# Step 3: Execute via -EncodedCommand
-powershell.exe -EncodedCommand "$cmd_b64"
-```
-
-**⚠️ EncodedCommand Caveat (CLIXML Wrapper):** When stdout is not a TTY
-(which is always the case from WSL), `-EncodedCommand` wraps output in
-CLIXML (`#< CLIXML ... </Objs>`). The actual text is still there —
-filter it with `sed`:
-
-```bash
-powershell.exe -EncodedCommand "$cmd_b64" 2>&1 | tr -d '\r' | sed '/^#< CLIXML/d; /^<Objs /,/^<\/Objs>/d'
-```
-
-The `pshx()` function (from `scripts/psh`) does this filtering automatically.
-**Prefer `psh()` (which uses `-Command`) for everyday commands** — it produces
-clean output without CLIXML. Use `pshx()` (EncodedCommand wrapper) only when
-you have complex nested quotes that break `-Command`.
-
-**Real-world example — complex multi-line command:**
-
-```bash
-# A complex PowerShell script with nested quotes, variables, and JSON
-ps_script='
-[Console]::InputEncoding = [System.Text.Encoding]::UTF8
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-$OutputEncoding = [System.Text.Encoding]::UTF8
-$ProgressPreference = "SilentlyContinue"
-$processes = Get-Process | Where-Object {$_.WorkingSet64 -gt 100MB}
-$result = $processes | Select-Object Name,Id,@{N="MemoryMB";E={[math]::Round($_.WorkingSet64/1MB,1)}}
-$result | ConvertTo-Json -Compress
-'
-cmd_b64=$(echo -n "$ps_script" | iconv -t UTF-16LE | base64 -w0)
-powershell.exe -EncodedCommand "$cmd_b64"
-```
-
-**Why this beats inline `-Command`:**
-- Zero quote escaping — write PowerShell as you would in a `.ps1` file
-- No length limit issues (Base64 is compact)
-- Works with heredoc-style multi-line scripts
-- The preferred pattern for any non-trivial inline command
-
----
-
-## WSL-Side Helper: `psh()` Function
-
-Add this to your `~/.bashrc` to get a one-liner PowerShell bridge:
-
-```bash
-# WSL PowerShell Bridge — one-liner helper
-# Usage: psh 'Get-Date' | psh 'Get-Process -Name code | ConvertTo-Json'
-psh() {
-    local cmd="${1}"
-    local cmd_b64
-    cmd_b64=$(echo -n "$cmd" | iconv -t UTF-16LE | base64 -w0)
-    powershell.exe -EncodedCommand "$cmd_b64"
-}
-
-# Variant: parse JSON output automatically
-pshj() {
-    local cmd="${1}"
-    local cmd_b64
-    cmd_b64=$(echo -n "$cmd" | iconv -t UTF-16LE | base64 -w0)
-    powershell.exe -EncodedCommand "$cmd_b64" | tr -d '\r' | jq .
-}
-```
-
-Usage examples:
-
-```bash
-# Quick system info
-psh 'Get-ComputerInfo | Select-Object CsName,WindowsVersion,OsArchitecture | ConvertTo-Json' | jq .
-
-# Find a process by command line pattern (not just name!)
-psh 'Get-CimInstance Win32_Process | Where-Object CommandLine -like "*uvicorn*" | Select-Object ProcessId,CommandLine | ConvertTo-Json' | jq .
-
-# Read registry
-psh 'Get-ItemProperty "HKLM:\Software\Microsoft\Windows NT\CurrentVersion" | ConvertTo-Json' | jq .
-```
+**注意**：
+- PowerShell `-Command` 参数传递有 bug：含空格的参数（如 `"hello world"`）会被拆分为两个参数。复杂参数用 `-File`。
+- `-EncodedCommand` 的 stdout 在非 TTY 时会包 CLIXML，不推荐用于数据交换。
 
 ---
 
@@ -1194,42 +1045,39 @@ powershell.exe -Command "Unregister-ScheduledTask -TaskName 'WSL_Backup' -Confir
 
 ## Common Scenarios (Summary)
 
-### Scenario A: Check if a Windows Package is Available
+### Scenario A: Run Windows Python (GPU or otherwise)
 
 ```bash
-powershell.exe -Command "python -c \"import win32com.client; print('pywin32 OK')\""
+# 一行检查
+cmd.exe /c "E:\venvs\marker\Scripts\python.exe -c \"import torch; print(torch.cuda.is_available())\""
 ```
 
-### Scenario B: Manage a Windows Service (e.g., Bridge Server)
+### Scenario B: Check if a Windows Package is Available
 
 ```bash
-# Start
-powershell.exe -Command '
-    cd E:\AllProjects\DrawForge\agent\skills\visioskills\bridge_server;
-    $env:VISIO_BRIDGE_TOKEN="drawforge-test-token-2026";
-    . .venv\Scripts\Activate.ps1;
-    Start-Process -NoNewWindow uvicorn -ArgumentList "app:app","--host","0.0.0.0","--port","18761"
-'
-
-# Stop (prefer PID-based, see Capability 7)
-powershell.exe -Command "Get-CimInstance Win32_Process | Where-Object CommandLine -like '*uvicorn*app:app*' | ForEach-Object { Stop-Process -Id \$_.ProcessId -Force }"
+cmd.exe /c "D:\Anconda\python.exe -c \"import win32com.client; print('pywin32 OK')\""
 ```
 
 ### Scenario C: Cross-Boundary Clipboard Operations
 
 ```bash
-# Copy WSL output → Windows clipboard (safe with Chinese via temp file)
-dmesg | tail -20 > /tmp/clip.txt
-powershell.exe -Command "${POWERSHELL_UTF8} Set-Clipboard -Value (Get-Content -Path '\\wsl.localhost\Ubuntu\tmp\clip.txt' -Raw -Encoding UTF8)"
+# WSL → Windows clipboard
+dmesg | tail -20 | clip.exe               # ASCII only
+echo "中文" > /tmp/clip.txt                # 中文：写文件方式
+powershell.exe -Command 'Set-Clipboard -Value (Get-Content -Path "\\wsl.localhost\Ubuntu\tmp\clip.txt" -Raw -Encoding UTF8)'
 
-# ASCII-only: use clip.exe directly
-dmesg | tail -20 | clip.exe
-
-# Paste Windows clipboard → WSL
-powershell.exe -Command "Get-Clipboard" | jq .
+# Windows clipboard → WSL
+powershell.exe -Command "Get-Clipboard"
 ```
 
-### Scenario D: System Inventory from WSL
+### Scenario D: System Inventory
+
+```bash
+powershell.exe -Command "
+    Get-ComputerInfo | Select-Object CsName,WindowsVersion,OsArchitecture |
+    ConvertTo-Json
+"
+```
 
 ```bash
 # One-shot system snapshot
@@ -1301,35 +1149,26 @@ powershell.exe -Command "
 ## Limitations (Must Know)
 
 1. **No Interactive Input**: Cannot use `Read-Host`, interactive prompts, or GUI dialogs (except via `[User32]::MessageBox` w/ P/Invoke).
-2. **No State Persistence**: Each `powershell.exe` call is a fresh process. Variables set in one call don't exist in the next.
-3. **Encoding Gap (Channel B)**: Direct Windows EXE tools (`reg.exe`, `systeminfo.exe`, `tasklist.exe`) output using the **system code page** (e.g. GBK for Chinese Windows), which produces garbled text in WSL's UTF-8 terminal. **Workaround**: Use PowerShell (Channel A) with the UTF-8 prefix for Chinese-safe output, or for simple ASCII values, extract only the relevant lines with `grep`.
-4. **Process Lifecycle Complexity**: Background processes started with `Start-Process -NoNewWindow` detach from the PowerShell session. Use PID files + WMI command-line matching for reliable management.
-5. **Quote Escaping Hell** (SOLVED): Use `-EncodedCommand` with Base64-encoded UTF-16LE — it eliminates all quoting issues.
-6. **Performance Overhead (Channel A)**: Each PowerShell call spins up a new process (~200-500ms). Use Channel B direct EXE tools for high-frequency, encoding-safe operations.
-7. **COM Object Boundaries**: COM objects created in Windows cannot be referenced from WSL. They must be fully managed within the Windows-side script.
-8. **No TTY/GUI** (mostly): Cannot open Windows GUI windows or interact with desktop applications from WSL. Exception: P/Invoke `MessageBox` works, and `wslview` can open files in Windows default apps.
-9. **WSLg Note**: With WSLg, you CAN run Linux GUI apps, but you still cannot directly control Windows GUI apps from WSL.
-10. **Administrator Privileges**: Some operations (`netsh.exe firewall`, `sc.exe config`) require WSL to be launched as Administrator.
-
----
+2. **No State Persistence**: Each call is a fresh process. Variables don't persist between calls.
+3. **Encoding Gap**: cmd.exe (C) 和 Direct EXE (B) 的 pipe 输出走系统 GBK 编码，中文会乱码。**解决：写文件**（`cmd.exe /c "py ... > out.txt"`）。
+4. **cmd.exe UNC 路径**: 从 WSL `~/` 目录调用 `cmd.exe` 报 UNC 不支持。**`cwd="/mnt/e/temp"`** 解决。
+5. **ps -Command 参数拆分**: `powershell.exe -Command '...' "hello world"` 会把 hello world 拆成两个参数。复杂参数用 `-File`。
+6. **ps -EncodedCommand CLIXML**: 非 TTY 输出会包 CLIXML。不推荐用于数据交换。
+7. **ps -File 退出码**: 子进程的退出码在 `-File` 模式下会被吞掉。不推荐用于需要检测退出码的场景。
+8. **COM Object Boundaries**: COM 对象在 PowerShell 进程内创建和使用，不能传递给 WSL。
+9. **Administrator Privileges**: `netsh.exe firewall`、`sc.exe config` 等需要管理员权限。
 
 ## Best Practices
 
-- **Choose the right channel**: Channel B (direct EXE) for fast simple operations, Channel A (PowerShell) for complex/structured/Chinese-safe output
-- **Use Pattern 4 (EncodedCommand) for complex PowerShell scripts** — eliminates quoting pain
-- **Use Pattern 2 (script files) for reusable, parameterized logic**
-- **Use Pattern 3 (Python on Windows) for data-intensive workflows**
-- **Install `wslu`** for `wslview` (open files in Windows) and `wslvar` (read Windows env vars)
-- **Add `psh()` to your `~/.bashrc`** for quick PowerShell access
-- **Always output JSON** from Windows-side scripts for easy WSL-side parsing with `jq`
-- **Use PID files for background process lifecycle** — `Stop-Process -Name *` is dangerous
-- **Use WMI command-line matching** for precise process identification
-- **Always use full paths** — relative paths resolve in unpredictable contexts
-- **Set environment variables in the same command** as the execution
-- **Log to files** for debugging rather than relying on stdout capture
-- **Use `wslpath`** for robust path conversion between Linux and Windows formats
-- **Test in Windows PowerShell first** — if it fails there, it'll fail from WSL too
-- **Strip `\r` (CR) from PowerShell output** when piping to Linux tools: `| tr -d '\r'`
+- **Channel 优先级**: cmd.exe (C) > Direct EXE (B) > PowerShell (A)。能 cmd 不用 ps。
+- **GPU / Python 脚本**: 始终用 `cmd.exe /c`，`cwd="/mnt/e/temp"`。
+- **PowerShell 仅用于**: COM / WMI / Event Log / P/Invoke — 这些是 cmd.exe 做不到的。
+- **中文输出**: 写文件（`> win_file` 然后从 WSL 读取），不要依赖 pipe 编码。
+- **复杂 PS 脚本**: 写入 `/mnt/e/temp/*.ps1`，用 `-File` 调用，参数不会被拆分。
+- **安装 `wslu`**: `wslview` (打开文件), `wslvar` (读 Windows 环境变量)。
+- **用 `wslpath`** 做路径转换。
+- **用 JSON** 输出数据（`ConvertTo-Json`）便于 WSL 侧 `jq` 解析。
+- **GPU 规则**: 统一在 `/home/dc/CLAUDE.md` → "GPU 桥接" 章节。
 
 ---
 
