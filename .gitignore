@@ -72,8 +72,53 @@ tmp/
 # 论文提取输出产物（个人文件，不提交）
 output/
 
-# skill 评估工作区（临时评估数据）
-kimi-web-search-workspace/
+# skill 评估工作区（临时评估数据，skill-creator 评估残留）
+*-workspace/
+doubao-vision-workspace/
 
 # Claude Code 本地设置（机器相关，不纳入版本控制）
 .claude/settings.local.json
+
+# OpenCode / OhMyOpenCode 运行期元数据（机器相关）
+.omo/
+
+# ──────────────────────────────────────────────────────────
+# SKILL 重型 venv / 模型缓存（不可提交，单个体积 500MB-5GB+）
+# ──────────────────────────────────────────────────────────
+
+# paper-reader 独立 venvs（marker 5.1GB / mineru 613MB，含 GPU 模型权重）
+paper-reader/venvs/
+
+# paper-reader 运行期数据缓存
+paper-reader/data/
+
+# db-skill 独立 venv（应改为符号链接到统一 .venv，当前独立 venv 临时忽略）
+db-skill/.venv/
+
+# 任意 skill 内部的独立 venv 目录（防新增 skill 自建 venv）
+**/venvs/
+**/node_modules/
+
+# ──────────────────────────────────────────────────────────
+# 孤儿目录 / 半成品 skill（无 SKILL.md 的废弃目录）
+# ──────────────────────────────────────────────────────────
+
+# diagram-usecase-overview 缺 SKILL.md，仅有 scripts/，属半成品
+diagram-usecase-overview/
+
+# ──────────────────────────────────────────────────────────
+# 统一 SKILL 输出目录（运行期产物，不提交）
+# ──────────────────────────────────────────────────────────
+
+# 当 skill 输出到 ~/.claude/skills-output/ 时的兜底目录
+skills-output/
+
+# unified-search 运行期状态（SQLite 历史 + 配额计数）
+unified-search/data/history.db
+unified-search/data/quota.json
+
+# 当 skill 输出到当前项目目录时的 thesis-output（仅本仓库自身不提交）
+thesis-output/
+
+# paper-reader 默认输出目录
+paper-analysis/
