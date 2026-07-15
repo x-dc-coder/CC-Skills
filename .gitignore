@@ -1,5 +1,7 @@
 # uv 虚拟环境（由 uv.lock + pyproject.toml 重建）
 .venv/
+# .venv 符号链接（指向统一 .venv，git 视符号链接为文件，需单独匹配）
+*.venv
 
 # Python 缓存
 __pycache__/
@@ -105,6 +107,9 @@ db-skill/.venv/
 
 # diagram-usecase-overview 缺 SKILL.md，仅有 scripts/，属半成品
 diagram-usecase-overview/
+
+# 归档目录（保留代码但不作为活动 skill）
+archive/
 
 # ──────────────────────────────────────────────────────────
 # 统一 SKILL 输出目录（运行期产物，不提交）
