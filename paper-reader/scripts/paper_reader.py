@@ -33,10 +33,10 @@ _WSL_MARKER_PY = r"E:\venvs\marker\Scripts\python.exe"
 _WSL_MINERU_PY = r"E:\venvs\mineru\Scripts\python.exe"
 
 # ── GPU 资源栅栏（⭐ 防 OOM 卡死系统） ───────────────────────────────────
-# 从 wsl-powershell-bridge 共享模块导入 GPU 资源栅栏（含设备级 GpuGovernor）。
+# 从 wsl-windows-bridge 共享模块导入 GPU 资源栅栏（含设备级 GpuGovernor）。
 # 规范见 /home/dc/CLAUDE.md "GPU 多路并发铁律"。
-# 共享模块位置：~/.claude/skills/wsl-powershell-bridge/scripts/gpu_safe_subprocess.py
-_BRIDGE_SCRIPTS = (Path.home() / ".claude" / "skills" / "wsl-powershell-bridge" / "scripts")
+# 共享模块位置：~/.claude/skills/wsl-windows-bridge/scripts/gpu_safe_subprocess.py
+_BRIDGE_SCRIPTS = (Path.home() / ".claude" / "skills" / "wsl-windows-bridge" / "scripts")
 if str(_BRIDGE_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_BRIDGE_SCRIPTS))
 from gpu_safe_subprocess import (  # noqa: E402

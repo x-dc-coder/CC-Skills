@@ -56,7 +56,7 @@
 ├── md-to-thesis-latex/    # 纯 xelatex，无 Python
 ├── thesis-writing/        # 纯 Markdown，无 Python
 ├── thesis-ref-check/      # 纯 Bash/grep，无 Python
-└── wsl-powershell-bridge/ # 调 cmd.exe/powershell.exe，无 Python
+└── wsl-windows-bridge/      # WSL→Windows 三层桥接 + GPU 资源治理，无 Python venv
 ```
 
 ## 三类环境策略
@@ -65,7 +65,7 @@
 |------|------|-------------|------|
 | **A. 统一共享** | `.venv/` 符号链接 | diagram-er/ers/module/sequence/usecase, db-skill, word-extractor, unified-search, gitcode-workflow | 依赖轻量（Pillow/sqlglot/psycopg2 等），共享一份 venv |
 | **B. 独立重型** | skill 内 `venvs/` | paper-reader | 含 GPU 模型权重（5GB+），不可合并，`.gitignore` 已忽略 |
-| **C. 无 Python** | 无 venv | diagram-flow, diagram-architecture, d2-paper, doubao-vision, keenable-cli, kimi-webbridge, md-to-thesis-latex, thesis-writing, thesis-ref-check, wsl-powershell-bridge | 纯代码生成 / 调外部二进制 |
+| **C. 无 Python** | 无 venv | diagram-flow, diagram-architecture, d2-paper, doubao-vision, keenable-cli, kimi-webbridge, md-to-thesis-latex, thesis-writing, thesis-ref-check, wsl-windows-bridge | 纯代码生成 / 调外部二进制 |
 
 ## 统一执行约定（所有 Python skill 必须遵守）
 
@@ -184,7 +184,7 @@ Node 工具（非 Python 依赖）：
 | Skill | Windows 依赖 | 机制 |
 |------|------------|------|
 | `paper-reader` | `E:\venvs\marker`、`E:\venvs\mineru` | `paper_reader.py` 自动检测 WSL，通过 `cmd.exe` 桥接 GPU 到 Windows 原生 Python |
-| `wsl-powershell-bridge` | `cmd.exe`、`powershell.exe`、`reg.exe` 等 | 三层桥接：cmd.exe(~55ms) / Direct EXE(~10ms) / PowerShell(~600ms) |
+| `wsl-windows-bridge` | `cmd.exe`、`powershell.exe`、`reg.exe` 等 | 三层桥接：cmd.exe(~55ms) / Direct EXE(~10ms) / PowerShell(~600ms) + GPU 资源治理（GpuLimits + GpuGovernor） |
 
 ## 新增含 Python 的 Skill 时的 checklist
 

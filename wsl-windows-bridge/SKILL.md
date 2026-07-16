@@ -1,11 +1,11 @@
 ---
-name: wsl-powershell-bridge
+name: wsl-windows-bridge
 description: >
-  WSL → Windows 三层桥接方案：cmd.exe (GPU/Python/EXE, ~55ms) 为首选，
-  Direct EXE (注册表/服务/进程, ~10ms) 为快速通道，
-  PowerShell (COM/WMI/P/Invoke, ~600ms) 为复杂场景保留。
-  覆盖 GPU 训练、Windows Python 环境、注册表、WMI、COM 自动化、Event Log 等。
-  GPU 规则统一在 /home/dc/CLAUDE.md。
+  WSL → Windows 跨边界框架：三层调用通道（cmd.exe GPU/Python/EXE ~55ms、
+  Direct EXE 注册表/服务/进程 ~10ms、PowerShell COM/WMI/P/Invoke ~600ms）
+  + GPU 资源治理（GpuLimits 单进程配额 + GpuGovernor 设备级跨进程协调，
+  防多任务 OOM 卡死）。覆盖 GPU 训练/推理、Windows Python 环境、注册表、
+  WMI、COM 自动化、Event Log。GPU 规范统一在 /home/dc/CLAUDE.md。
 ---
 
 # WSL → Windows 桥接 Skill
@@ -90,7 +90,7 @@ cmd.exe /c "E:\venvs\marker\Scripts\python.exe -c \"import torch; print('CUDA:',
 
 当一次启动 ≥2 个 Windows GPU 子进程时，**必须**给每个子进程注入显存配额 + CPU 线程约束。规则全文在 `/home/dc/CLAUDE.md` → "GPU 多路并发铁律"，此 skill 提供现成封装：
 
-**通用模块**：`~/.claude/skills/wsl-powershell-bridge/scripts/gpu_safe_subprocess.py`
+**通用模块**：`~/.claude/skills/wsl-windows-bridge/scripts/gpu_safe_subprocess.py`
 
 ```python
 from gpu_safe_subprocess import GpuLimits, run_gpu_windows, acquire_gpu_slot
