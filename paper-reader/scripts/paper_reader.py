@@ -32,6 +32,43 @@ _WSL = "microsoft" in os.uname().release.lower()
 _WSL_MARKER_PY = r"E:\venvs\marker\Scripts\python.exe"
 _WSL_MINERU_PY = r"E:\venvs\mineru\Scripts\python.exe"
 
+# ── GPU 资源栅栏（⭐ 防 OOM 卡死系统） ───────────────────────────────────
+# 从 wsl-powershell-bridge 共享模块导入 GPU 资源栅栏（含设备级 GpuGovernor）。
+# 规范见 /home/dc/CLAUDE.md "GPU 多路并发铁律"。
+# 共享模块位置：~/.claude/skills/wsl-powershell-bridge/scripts/gpu_safe_subprocess.py
+_BRIDGE_SCRIPTS = (Path.home() / ".claude" / "skills" / "wsl-powershell-bridge" / "scripts")
+if str(_BRIDGE_SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(_BRIDGE_SCRIPTS))
+from gpu_safe_subprocess import (  # noqa: E402
+    GpuLimits, build_gpu_env, GpuGovernor, GpuLease, InsufficientGpuBudget,
+)
+
+# 运行期被 main() 依据 CLI 参数填充；(_gpu_fraction<=0, _cpu_threads) 表示不限制
+_GPU_FRACTION: float = 0.4   # 默认每进程 40% 显存（16GB GPU → 6.4GB）
+_CPU_THREADS: int = 6         # 默认每进程 6 线程（2 进程 × 6 = 12 ≤ 物理核）
+# 设备级协调器：保证多任务总显存 ≤ cap_fraction × total_vram（默认 90%）
+# 多个 paper-reader 实例 / CV 训练同时跑时，通过 fcntl 文件锁互斥，避免过载
+_GPU_GOVERNOR: GpuGovernor | None = None
+_GPU_WAIT_TIMEOUT: float = 600.0   # 设备预算不足时等待秒数（默认 10 分钟）
+
+
+def _build_gpu_env(gpu_fraction: float, cpu_threads: int) -> dict[str, str]:
+    """薄包装：用共享模块构造 GPU 限制环境变量（含 WSLENV 白名单）。"""
+    limits = GpuLimits(
+        gpu_memory_fraction=gpu_fraction if gpu_fraction > 0 else 1.0,
+        cpu_threads=cpu_threads,
+    )
+    env = build_gpu_env(limits)
+    # gpu_fraction<=0 表示用户禁用：删掉 PYTORCH_CUDA_ALLOC_CONF
+    if gpu_fraction <= 0:
+        env.pop("PYTORCH_CUDA_ALLOC_CONF", None)
+        # 同步从 WSLENV 移除（避免 Windows 侧读到空值）
+        wslenv = env.get("WSLENV", "")
+        env["WSLENV"] = ":".join(
+            x for x in wslenv.split(":") if not x.startswith("PYTORCH_CUDA_ALLOC_CONF")
+        )
+    return env
+
 
 def _wsl_to_win(path: Path) -> str:
     """WSL 路径 → Windows 路径（通过 wslpath -w）"""
@@ -40,7 +77,8 @@ def _wsl_to_win(path: Path) -> str:
     return r.stdout.strip()
 
 
-def _run_ps(py_exe: str, module: str, args: list[str], timeout: int) -> subprocess.CompletedProcess:
+def _run_ps(py_exe: str, module: str, args: list[str], timeout: int,
+            job_name: str = "gpu-task") -> subprocess.CompletedProcess:
     # marker/mineru 的 Python 模块没有 __main__ 入口，必须通过 -c 显式调用 CLI 函数
     cli_map = {
         "marker.scripts.convert_single": "from marker.scripts.convert_single import convert_single_cli; import sys; sys.exit(convert_single_cli())",
@@ -48,8 +86,29 @@ def _run_ps(py_exe: str, module: str, args: list[str], timeout: int) -> subproce
     }
     code = cli_map.get(module, f"import {module}")
     cmd = ["cmd.exe", "/c", py_exe, "-c", code] + args
+    env = _build_gpu_env(_GPU_FRACTION, _CPU_THREADS)
+
+    # 设备级协调：若 governor 已初始化，先申请预算（阻塞等待其他进程释放）
+    # 预算 = gpu_fraction × total_vram_mb（和单进程配额对齐）
+    if _GPU_GOVERNOR is not None and _GPU_FRACTION > 0:
+        budget_mb = int(_GPU_FRACTION * _GPU_GOVERNOR.total_vram_mb)
+        try:
+            with _GPU_GOVERNOR.acquire(
+                budget_mb=budget_mb, job_name=job_name,
+                timeout=_GPU_WAIT_TIMEOUT,
+            ):
+                return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
+                                      encoding="utf-8", errors="replace",
+                                      cwd="/mnt/e/temp", env=env)
+        except InsufficientGpuBudget:
+            # GPU 预算不足且等待超时：返回失败结果，让上层优雅跳过
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=124,  # 124 = timeout-like
+                stdout="", stderr=f"GPU budget unavailable for '{job_name}'; skipped\n",
+            )
+    # governor 未启用：直接跑（旧行为）
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
-                          encoding="utf-8", errors="replace", cwd="/mnt/e/temp")
+                          encoding="utf-8", errors="replace", cwd="/mnt/e/temp", env=env)
 
 
 # --------------------------------------------------------------------------- #
@@ -94,7 +153,7 @@ def run_marker(pdf: Path, out_dir: Path, pages: str | None) -> EngineResult:
             if pages:
                 args += ["--page_range", pages]
             r = _run_ps(_WSL_MARKER_PY, "marker.scripts.convert_single", args,
-                        timeout=1800)
+                        timeout=1800, job_name=f"marker:{pdf.name}")
         else:
             cmd = [str(MARKER_BIN), str(pdf), "--output_dir", str(marker_out)]
             if pages:
@@ -149,7 +208,8 @@ def run_mineru(pdf: Path, out_dir: Path, pages: str | None,
                     pass
             if backend == "hybrid-engine":
                 args += ["--effort", "high"]
-            r = _run_ps(_WSL_MINERU_PY, "mineru.cli.client", args, timeout=1800)
+            r = _run_ps(_WSL_MINERU_PY, "mineru.cli.client", args,
+                        timeout=1800, job_name=f"mineru:{pdf.name}")
         else:
             cmd = [str(MINERU_BIN), "-p", str(pdf), "-o", str(mineru_out),
                    "-b", backend, "-m", method]
@@ -813,15 +873,17 @@ def merge_md(marker_md: Path | None, mineru_md: Path | None,
 # 单篇处理
 # --------------------------------------------------------------------------- #
 def process_one(pdf: Path, output_root: Path, engines: str, pages: str | None,
-                method: str, backend: str, lang: str | None) -> PaperResult:
+                method: str, backend: str, lang: str | None,
+                max_workers: int = 2) -> PaperResult:
     stem = pdf.stem
     paper_dir = output_root / stem
     paper_dir.mkdir(parents=True, exist_ok=True)
     result = PaperResult(pdf_path=str(pdf), stem=stem)
 
-    # 双引擎并行
+    # 双引擎并行（max_workers 由 CLI 参数控制：默认 2，可降到 1 串行省显存）
     if engines == "both":
-        with ProcessPoolExecutor(max_workers=2) as ex:
+        workers = max(1, min(max_workers, 2))  # both 模式最多就 2 个引擎
+        with ProcessPoolExecutor(max_workers=workers) as ex:
             futs = {}
             futs["marker"] = ex.submit(_marker_worker, str(pdf), str(paper_dir), pages)
             futs["mineru"] = ex.submit(_mineru_worker, str(pdf), str(paper_dir), pages,
@@ -839,6 +901,9 @@ def process_one(pdf: Path, output_root: Path, engines: str, pages: str | None,
     # 生成 diff 和 merge（需要两路都成功）
     merged_path = paper_dir / "_MERGED.md"
     if result.marker and result.mineru and result.marker.ok and result.mineru.ok:
+        # 守卫已保证 ok=True；ok=True 的语义契约是 md_path 非空（见 run_marker/run_mineru）
+        assert result.marker.md_path is not None
+        assert result.mineru.md_path is not None
         diff_path = paper_dir / "_DIFF.md"
         diff_count, total = make_diff(
             Path(result.marker.md_path),
@@ -925,7 +990,50 @@ def main() -> int:
                     default="pipeline", help="MinerU 后端（hybrid 精度高但慢）")
     ap.add_argument("-l", "--lang",
                     help="PDF 语言（mineru pipeline 模式），如 ch、korean、arabic")
+    ap.add_argument("--max-workers", type=int, default=2,
+                    help="单 PDF 的引擎并发数（默认 2 = marker+mineru 同时跑）。"
+                         "减小到 1 可让两引擎串行，省显存但变慢；增大需确保 GPU 显存够用")
+    ap.add_argument("--gpu-fraction", type=float, default=0.4,
+                    help="每个 Windows GPU 子进程最多可用显存比例（0-1，默认 0.4）。"
+                         "0 表示不限制（仅用于纯 CPU 模式）。16GB GPU × 0.4 = 6.4GB/进程")
+    ap.add_argument("--cpu-threads", type=int, default=6,
+                    help="每个 GPU 子进程的 CPU 线程上限（默认 6）。"
+                         "防两个 PyTorch 进程各起 24 线程互相抢核")
+    ap.add_argument("--max-concurrent-pdfs", type=int, default=1,
+                    help="批量模式下最多同时处理的 PDF 数（默认 1 = 串行）。"
+                         "增大可大幅提速但 N×max_workers 个 GPU 进程会同时跑")
+    ap.add_argument("--gpu-cap-fraction", type=float, default=0.9,
+                    help="设备级 GPU 总显存上限（0-1，默认 0.9=90 百分比）。"
+                         "当本进程 + 其他进程（如 CV 训练）的总显存超过此值时，"
+                         "paper-reader 会排队等待（最多 --gpu-wait-timeout 秒）。"
+                         "设为 0 禁用协调，回到无序抢占模式（不推荐）")
+    ap.add_argument("--gpu-wait-timeout", type=float, default=600.0,
+                    help="设备级 GPU 预算不足时，等待其他进程释放的最长时间（秒，默认 600=10分钟）。"
+                         "超时则放弃该 PDF 并打印警告。设为 0 表示不等待、立即放弃")
     args = ap.parse_args()
+
+    # 应用 GPU 资源栅栏配置到模块级全局
+    global _GPU_FRACTION, _CPU_THREADS, _GPU_GOVERNOR, _GPU_WAIT_TIMEOUT
+    _GPU_FRACTION = args.gpu_fraction
+    _CPU_THREADS = args.cpu_threads
+    _GPU_WAIT_TIMEOUT = args.gpu_wait_timeout
+    if 0.0 < args.gpu_fraction <= 1.0:
+        print(f"GPU 限制: 每进程 {args.gpu_fraction*100:.0f}% 显存，"
+              f"{args.cpu_threads} CPU 线程", file=sys.stderr)
+    elif args.gpu_fraction != 0:
+        ap.error(f"--gpu-fraction 必须在 (0, 1] 范围内或为 0（不限制），当前 {args.gpu_fraction}")
+    else:
+        print("GPU 限制: 已禁用（纯 CPU 模式或手动管控）", file=sys.stderr)
+
+    # 初始化设备级 GPU 协调器（防 paper-reader + CV 训练同时跑时过载）
+    if 0.0 < args.gpu_cap_fraction <= 1.0:
+        _GPU_GOVERNOR = GpuGovernor(cap_fraction=args.gpu_cap_fraction)
+        print(f"GPU 协调器: 设备上限 {args.gpu_cap_fraction*100:.0f}%，"
+              f"等待超时 {args.gpu_wait_timeout:.0f}s", file=sys.stderr)
+    elif args.gpu_cap_fraction != 0:
+        ap.error(f"--gpu-cap-fraction 必须在 (0, 1] 范围内或为 0（禁用），当前 {args.gpu_cap_fraction}")
+    else:
+        print("GPU 协调器: 已禁用（抢占模式，多任务可能过载）", file=sys.stderr)
 
     # 默认输出目录: 输入 PDF/目录的同级 paper-analysis/
     if args.output is None:
@@ -951,22 +1059,57 @@ def main() -> int:
     args.output.mkdir(parents=True, exist_ok=True)
     print(f"将处理 {len(pdfs)} 个 PDF，输出到: {args.output}")
     print(f"引擎: {args.engines}  页范围: {args.pages or '全部'}")
+    print(f"单 PDF 并发: {args.max_workers} 引擎 | 批量并发: {args.max_concurrent_pdfs} PDF")
 
     results: list[PaperResult] = []
-    for i, pdf in enumerate(pdfs, 1):
-        print(f"\n[{i}/{len(pdfs)}] {pdf.name}")
-        try:
-            r = process_one(
-                pdf, args.output, args.engines, args.pages,
-                args.mineru_method, args.mineru_backend, args.lang,
-            )
-            results.append(r)
-        except KeyboardInterrupt:
-            print("\n中断。", file=sys.stderr)
-            break
-        except Exception as e:
-            print(f"  ERROR: {e}", file=sys.stderr)
-            results.append(PaperResult(pdf_path=str(pdf), stem=pdf.stem))
+    if args.max_concurrent_pdfs <= 1 or len(pdfs) == 1:
+        # 串行模式（默认）：一次一个 PDF，最稳
+        for i, pdf in enumerate(pdfs, 1):
+            print(f"\n[{i}/{len(pdfs)}] {pdf.name}")
+            try:
+                r = process_one(
+                    pdf, args.output, args.engines, args.pages,
+                    args.mineru_method, args.mineru_backend, args.lang,
+                    max_workers=args.max_workers,
+                )
+                results.append(r)
+            except KeyboardInterrupt:
+                print("\n中断。", file=sys.stderr)
+                break
+            except Exception as e:
+                print(f"  ERROR: {e}", file=sys.stderr)
+                results.append(PaperResult(pdf_path=str(pdf), stem=pdf.stem))
+    else:
+        # 批量并发模式：N 个 PDF 同时处理。
+        # 注意：总 GPU 进程数 = max_concurrent_pdfs × max_workers，
+        # 必须确保 GPU 显存够（fraction × 进程数 ≤ 1）。
+        from concurrent.futures import ThreadPoolExecutor
+        total_procs = args.max_concurrent_pdfs * args.max_workers
+        if 0.0 < args.gpu_fraction and total_procs * args.gpu_fraction > 1.0 + 1e-6:
+            print(f"⚠ 警告: {total_procs} 进程 × {args.gpu_fraction*100:.0f}% 显存 = "
+                  f"{total_procs*args.gpu_fraction*100:.0f}% > 100%，必将 OOM！",
+                  file=sys.stderr)
+            print(f"  建议：减小 --max-concurrent-pdfs 或 --gpu-fraction",
+                  file=sys.stderr)
+        with ThreadPoolExecutor(max_workers=args.max_concurrent_pdfs) as tex:
+            indexed = list(enumerate(pdfs, 1))
+            def _run_one(idx_pdf):
+                i, pdf = idx_pdf
+                print(f"\n[{i}/{len(pdfs)}] {pdf.name}")
+                try:
+                    return process_one(
+                        pdf, args.output, args.engines, args.pages,
+                        args.mineru_method, args.mineru_backend, args.lang,
+                        max_workers=args.max_workers,
+                    )
+                except Exception as e:
+                    print(f"  ERROR: {e}", file=sys.stderr)
+                    return PaperResult(pdf_path=str(pdf), stem=pdf.stem)
+            try:
+                for r in tex.map(_run_one, indexed):
+                    results.append(r)
+            except KeyboardInterrupt:
+                print("\n中断（已完成的 PDF 保留）。", file=sys.stderr)
 
     print_summary(results)
     return 0
