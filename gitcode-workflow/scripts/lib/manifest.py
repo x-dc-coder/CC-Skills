@@ -49,13 +49,17 @@ def build_review_manifest(
         files,
         key=lambda item: (item.get("old_path") or "", item["path"], item["kind"], item["raw"]),
     )
+    # stage_targets 只含工作区现存路径。
+    # rename 的 old_path 已被 git mv 删除，传给 git add 会报 "pathspec did not match"；
+    # git add 目标路径 + index 里的 R 记录会让 commit 正确识别 rename。
+    # （deleted 条目相反：路径虽不在工作区，但 git add <deleted> 能 stage 删除，必须保留。）
     stage_targets: List[str] = []
     seen_targets = set()
     for item in files:
-        for candidate in [item.get("old_path"), item["path"]]:
-            if candidate and candidate not in seen_targets:
-                seen_targets.add(candidate)
-                stage_targets.append(candidate)
+        candidate = item["path"]
+        if candidate and candidate not in seen_targets:
+            seen_targets.add(candidate)
+            stage_targets.append(candidate)
     hash_payload = {
         "head_commit": head_commit_or_none(project),
         "status_lines": preview["status_lines"],
