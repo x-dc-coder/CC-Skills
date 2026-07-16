@@ -1,22 +1,63 @@
 ---
 name: thesis-writing
-description: Use when writing undergraduate thesis content for science/engineering projects, generating structured Markdown from project code, opening reports and task specifications
+description: >
+  Dual-mode academic manuscript author. Generates structured Markdown drafts
+  with figure/table/equation placeholders wired to the diagram-* skill family,
+  and validates output against a Markdown spec checker.
+
+  Modes (auto-detected from user intent):
+  - undergraduate-thesis: writes a >=15000-word Web-system bachelor thesis
+    from project source code, following a fixed 6-chapter template
+    (绪论→需求→设计→实现→测试→结论) with use-case/ER/module/UI-shot figures.
+  - journal-paper: writes a domain-agnostic CS/engineering journal article by
+    reading a paper-analysis/ corpus (MinerU+Marker double-engine Markdown,
+    produced by the paper-reader skill), inducing the domain's section
+    skeleton, figure/table/equation placement conventions, and citation
+    style into a machine-readable profile, then drafting chapter-by-chapter
+    with framework/network/algorithm/result figures and benchmark tables.
+
+  Use this skill when the user: writes a thesis/paper draft, generates 论文/毕设
+  正文, drafts a journal manuscript from related-work PDFs, wants 期刊论文/会议
+  论文写作, says "写论文"/"draft the paper"/"generate the manuscript", or gives
+  a paper-analysis/ directory as input and asks for a draft based on it.
+
+  Do NOT use for: pure PDF→Markdown conversion (use paper-reader), figure
+  rendering (use diagram-* skills directly), LaTeX typesetting (use
+  md-to-thesis-latex), or reference-list reordering (use thesis-ref-check).
 ---
 
-# 毕业论文正文撰写 Skill
+# 学术论文正文撰写 Skill (Dual-Mode)
+
+双模式学术稿件生成器。生成结构化 Markdown 初稿，图片使用占位符（对接 `diagram-*` skill 家族），最后用 `check_markdown_spec.py` 校验。
 
 ## 适用范围
-- 理工科本科毕业论文（基于 SpringBoot 等 Web 系统类）
-- 输出格式：Markdown
-- 遵循无锡学院本科毕业论文撰写规范
 
-## 阶段一：环境检查与项目分析
+- **Mode A — undergraduate-thesis**：理工科本科毕业论文（Web 系统类，≥15000 字，固定 6 章模板）
+- **Mode B — journal-paper**：CS / 工程类期刊或会议论文（领域无关，由 `paper-analysis/` 语料归纳写作规范）
 
-### 1.1 环境检查
+## Decide the mode first
+
+每次调用本 skill 时，**首先判断模式**：
+
+| 信号 | Mode A（undergraduate） | Mode B（journal） |
+|------|------------------------|-------------------|
+| 用户关键词 | 毕设、毕业论文、本科、开题报告、任务书 | 期刊、会议、journal、conference paper、写论文、投稿、draft based on references |
+| 输入 | 项目源码 + 开题报告/任务书 | `paper-analysis/` 目录（MinerU+Marker Markdown，由 paper-reader 生成）+ 用户的实验代码/结果 |
+| 字数约束 | ≥15000 字硬下限 | 6000-15000 词软参考，由目标期刊/会议决定 |
+| 章节模板 | 固定 6 章（1绪论→6结论） | 由 profiler 从语料归纳（IMRaD-Method / IMRaD-System / Survey） |
+| 引文风格 | GB/T 7714-2015 强制 | profiler 检测（IEEE / ACM / author-year / GB-T 7714） |
+
+不确定时向用户确认。两种模式**共享** Markdown 机械化规范（见 `shared-markdown-norms.md`）、占位符语法、diagram skill 对接、`check_markdown_spec.py` 调用接口（`--mode` 区分）。
+
+## Mode A — Undergraduate Thesis Workflow
+
+### 阶段一：环境检查与项目分析
+
+#### 1.1 环境检查
 1. 确认用户是否提供了开题报告、任务书或其他参考文档（Markdown、纯文本等均可）
 2. 校验提供的文档文件是否存在且可读
 
-### 1.2 项目分析
+#### 1.2 项目分析
 1. 读取用户指定的开题报告、任务书等参考文档
 2. 扫描项目代码结构：
    - 前端：路由文件、页面组件、API 接口调用
@@ -25,9 +66,9 @@ description: Use when writing undergraduate thesis content for science/engineeri
 4. 输出"项目理解摘要"，请用户确认是否准确
    - 若用户指出遗漏或错误，补充分析后重新确认
 
-## 阶段二：大纲生成
+### 阶段二：大纲生成
 
-1. 读取 `references/thesis-template.md`，获取标准章节结构和字数分配
+1. 读取 `references/undergrad-template.md`，获取标准章节结构和字数分配
 2. 根据项目分析结果，将模板中的占位符替换为实际内容：
    - 确定相关技术栈的具体名称
    - 确定需求分析中的角色和功能
@@ -35,29 +76,29 @@ description: Use when writing undergraduate thesis content for science/engineeri
    - 确定数据库实体和表结构
    - 确定第4章各功能模块的具体子节
 3. 标注每章预估字数（确保总计 >= 15000 字）
-4. 标注所有图片位置，引用 `references/image-spec.md` 的占位符格式
+4. 标注所有图片位置，引用 `references/undergrad-image-spec.md` 的占位符格式
 5. 呈现完整大纲，等待用户确认或修改
 
-## 阶段三：逐章撰写
+### 阶段三：逐章撰写
 
-1. 读取 `references/example-output.md` 作为写作风格参考
+1. 读取 `references/undergrad-example-output.md` 作为写作风格参考
 2. 按大纲顺序逐章生成 Markdown 内容
 3. **所有图片均使用占位符**，不直接生成图片。占位符格式见下文"图片占位符规范"
-4. 每章完成后写入 `thesis-output/第X章-章节名.md`
+4. 每章完成后写入 `thesis-output/thesis-writing/第X章-章节名.md`
 5. 每章完成后询问用户：
    - 确认，继续下一章
    - 需要修改（指出具体修改点后重新生成）
    - 调整大纲（回退到阶段二，修改大纲后从当前章节继续）
 6. 全部章节完成后，进入阶段四
 
-## 阶段四：合并与质量检查
+### 阶段四：合并与质量检查
 
-1. 将所有章节合并为 `thesis-output/full-thesis.md`
+1. 将所有章节合并为 `thesis-output/thesis-writing/full-thesis.md`
 2. **执行 Markdown 规范检查**（必须）：
    ```bash
-   python tools/check_markdown_spec.py --md thesis-output/full-thesis.md
+   cd ~/.claude/skills && uv run python thesis-writing/scripts/check_markdown_spec.py \
+     --md <output_dir>/full-thesis.md --mode undergraduate
    ```
-   （如 Skill 独立使用，检查脚本位于 `scripts/check_markdown_spec.py`，用 `python` 直接运行即可）
    - 若检查失败，必须修复所有 ERROR 后才能继续
    - 建议修复所有 WARN 以获得最佳质量
 3. 执行质量检查（checker 已自动完成大部分检查，以下为补充确认）：
@@ -73,7 +114,105 @@ description: Use when writing undergraduate thesis content for science/engineeri
 4. 输出检查报告，标注发现的问题
 5. 若有问题，修复后重新检查；若无问题，完成
 
-## 图片占位符规范
+## Mode B — Journal Paper Workflow
+
+### 阶段 A：文献摄入与领域建模
+
+**目标**：将 `paper-analysis/` 语料（可能数十篇论文 × 上百 MB）转化为一份机器可读的领域写作规范摘要，**不消耗 LLM token 重读所有文献**。
+
+#### A.1 定位语料
+- 确认用户提供 `<user_paper_dir>/paper-analysis/` 目录
+- 校验目录结构：每篇论文应有 `mineru/<id>/auto/<id>_content_list.json`（由 paper-reader 生成）
+- 若用户尚未转换 PDF，**提示用户先调用 paper-reader skill**；不要自行重跑
+
+#### A.2 运行 profiler
+```bash
+cd ~/.claude/skills && uv run python thesis-writing/scripts/profile_papers.py \
+  --corpus "<user_paper_dir>/paper-analysis/" \
+  --out "<output_dir>/"
+```
+生成：
+- `<output_dir>/_domain_profile.json` — 机器可读（供阶段 C 消费）
+- `<output_dir>/_domain_profile.md` — 人类可读（供用户审阅）
+
+profiler 是纯 Python 脚本（stdlib 实现），毫秒级处理数十篇论文，零 LLM token 成本。
+
+#### A.3 LLM 辅助精炼（唯一读正文的步骤）
+读取 `_domain_profile.md` + 语料中**被引最多的 Top-N 篇论文**的 Abstract + Introduction（marker 路径，cap 在 ~15k tokens 内），补充：
+- 贡献声明句式（"Our main contributions are..." vs "In this paper, we..."）
+- 该领域的术语规范形式（如 VRP/CVRP/MDVRP/HCVRP 的使用习惯）
+- 必详写 vs 必略写的判断
+
+#### A.4 用户确认门
+将 `_domain_profile.md` 呈现给用户："这份领域写作规范摘要是否准确？有无遗漏？" **这是关键的人工校验点**——后续整个初稿都依赖它。用户修改后重新生成 profile。
+
+### 阶段 B：实验/项目数据收集
+
+#### B.1 盘点用户实验资产
+- 实验代码仓库、结果 CSV/JSON、benchmark 日志、消融表、超参配置
+- 输出结构化清单 `<output_dir>/_experimental_inventory.md`
+
+#### B.2 确认贡献点
+请用户用 1-3 句话陈述本文贡献。这决定阶段 C 的章节字数分配（benchmarking 论文 Experiments 章节会重；方法类论文 Method 章节会重）。
+
+### 阶段 C：写作规划书生成 ★
+
+**这是 Mode B 的核心交付物**——向用户明确说明：本文应如何组织、哪里放图、哪里放表、哪里放公式、字数分配。
+
+读取 `_domain_profile.json` + `_experimental_inventory.md` + 贡献陈述 → 输出 `<output_dir>/_writing_plan.md`：
+
+| 规划项 | 数据来源 |
+|--------|---------|
+| 目标章节骨架（如 Abstract→Intro→Related→Preliminaries→Method→Experiments→Conclusion） | `_domain_profile.json` → `section_skeleton`（频次排序） |
+| 各章节字数预算 | `_domain_profile.json` → `section_skeleton[].median_word_share` × 目标总字数 |
+| 图片清单（哪一节、哪一类型：framework / network / algorithm-flow / result-curve / ablation-heatmap） | `_domain_profile.json` → `figure_placement_patterns` × 用户的实际贡献 |
+| 表格清单（benchmark / ablation / hyperparameter / dataset-stats / hardware-spec / notation-table） | `_domain_profile.json` → `table_placement_patterns` |
+| 公式清单（objective-function / constraint / loss / attention / state-transition / complexity-bound） | `_domain_profile.json` → `equation_placement_patterns` |
+| 引文风格 | `_domain_profile.json` → `citation_style.detected` |
+| 参考文献数量目标 | `_domain_profile.json` → `reference_count.median ± 20%` |
+
+#### C.1 用户确认门（必须）
+用户可编辑规划书；编辑后回到此处再生成，确认后才进入阶段 D。
+
+### 阶段 D：逐章生成
+
+与 Mode A 阶段三相同的循环，两点差异：
+- 读取 `references/journal-example-output.md` 作为 few-shot 参考（而非 Web 系统示例）
+- 图片占位符使用**期刊图表词汇**（见 `references/journal-image-spec.md`），按子类型路由到对应 diagram skill：
+
+| 期刊图片类型 | 对接 skill | 备注 |
+|-------------|-----------|------|
+| 方法/框架总览图 | `diagram-architecture` 或 `d2-paper` | Graphviz / D2，学术级 |
+| 神经网络结构图 | `d2-paper` | D2 擅长层堆叠 |
+| 算法流程图 | `diagram-flow` 或 `d2-paper` | Mermaid 或 D2 |
+| 实验结果图（折线/柱状/热力/散点） | 无 diagram skill | 占位符描述 matplotlib/seaborn 调用，用户后续渲染 |
+| 消融对比表 / 硬件对比表 | 直接 Markdown 表格 | 不需 diagram skill |
+
+章节写入 `<output_dir>/sec-N-<slug>.md`，每章后用户确认循环同 Mode A。
+
+### 阶段 E：质量校验
+
+#### E.1 合并
+合并为 `<output_dir>/full-paper.md`。
+
+#### E.2 运行 checker
+```bash
+cd ~/.claude/skills && uv run python thesis-writing/scripts/check_markdown_spec.py \
+  --md <output_dir>/full-paper.md --mode journal
+```
+`--mode journal` 相对 `undergraduate` 的差异：
+- 启用更多英文特殊标题（Keywords / Introduction / Related Work / Acknowledgments / Data Availability 等，不触发编号错误）
+- **新增引用密度检查**：任一超过 500 词的章节若零引用，触发 `CITATION_DENSITY_LOW` WARN（期刊论文应密集引用前人工作）
+- 不强制 GB/T 7714 引文风格（由 profiler 决定）
+- 不强制 15000 字硬下限
+
+#### E.3 补充确认
+- 占位符残留检查（同 Mode A）
+- 参考文献编号连续性（共享逻辑，已检查）
+- 摘要长度：英文 150-250 词 / 中文 200-400 字
+- 参考文献数量 vs profile 目标 ±30%（WARN）
+
+## 图片占位符规范（两模式共享）
 
 论文初稿中**所有图片均使用文字占位符**，实际图片在后续阶段由专门的 diagram skill 生成。
 
@@ -90,6 +229,8 @@ description: Use when writing undergraduate thesis content for science/engineeri
 
 ### 占位符类型与对应生成 Skill
 
+**Mode A（本科毕设）** — 详见 `references/undergrad-image-spec.md`：
+
 | 占位符中的图片类型 | 后续调用 Skill | 所需输入 |
 |-------------------|---------------|---------|
 | 用例图 | `diagram-usecase` | JSON 文件（actor + usecases） |
@@ -100,14 +241,25 @@ description: Use when writing undergraduate thesis content for science/engineeri
 | 时序图（模块交互） | `diagram-sequence` | JSON 文件（participants + messages） |
 | 界面截图 | 不适用 | 需实际运行系统后手动截图 |
 
+**Mode B（期刊论文）** — 详见 `references/journal-image-spec.md`：
+
+| 占位符中的图片类型 | 后续调用 Skill | 所需输入 |
+|-------------------|---------------|---------|
+| 方法总览图 / 系统架构图 | `diagram-architecture` 或 `d2-paper` | 文字描述（层名 + 数据流） |
+| 神经网络结构图 | `d2-paper` | 文字描述（层名 + 维度 + 连接） |
+| 算法流程图 / 业务流程 | `diagram-flow` 或 `d2-paper` | 直接生成 Mermaid 或 D2 代码 |
+| 概念示意图 / 分类法图 | `d2-paper` | 文字描述 |
+| 实验结果图（折线/柱状/热力/散点） | 不适用（用户后续用 matplotlib 渲染） | 数据文件路径 + 轴/系列说明 |
+| 实验对比表 / 消融表 / 超参表 | 不适用（直接写 Markdown 表格） | - |
+
 ### 占位符替换规范（关键）
 
 当后续调用 diagram skill 生成图片后，**必须按以下规则替换占位符**，确保不残留任何占位符内容：
 
 1. **整段删除**：删除整个引用块（包括 `> [图X-Y ...]` 和 `> 描述：...` 所有行）
-2. **替换为 Markdown 图片语法**：`![图X-Y 标题](thesis-output/img/图X-Y_标题.png)`
-3. **路径规范**：所有图片统一放到 `thesis-output/img/` 目录下（相对项目根目录，非 cwd 相对）
-4. **diagram skill 输出对接**：diagram skill 默认输出到 `thesis-output/<skill-name>/`（如 `thesis-output/diagram-er/er-diagram.png`），引用时需指向实际输出路径，或将图片复制到 `thesis-output/img/`
+2. **替换为 Markdown 图片语法**：`![图X-Y 标题](thesis-output/thesis-writing/img/图X-Y_标题.png)`
+3. **路径规范**：所有图片统一放到 `thesis-output/thesis-writing/img/` 目录下（相对项目根目录，非 cwd 相对）
+4. **diagram skill 输出对接**：diagram skill 默认输出到 `thesis-output/<skill-name>/`，引用时需指向实际输出路径，或将图片复制到 `thesis-output/thesis-writing/img/`
 5. **替换后检查清单**：
    - [ ] 全文搜索 `> \[图`，确认无残留
    - [ ] 全文搜索 `> 描述：`，确认无残留
@@ -116,7 +268,7 @@ description: Use when writing undergraduate thesis content for science/engineeri
 
 **错误示例**（残留描述）：
 ```markdown
-![图3-1 系统功能结构图](thesis-output/img/图3-1_系统功能结构图.png)
+![图3-1 系统功能结构图](thesis-output/thesis-writing/img/图3-1_系统功能结构图.png)
 > 描述：树状结构图，顶层为...    <-- 错误！必须整段删除
 ```
 
@@ -124,112 +276,43 @@ description: Use when writing undergraduate thesis content for science/engineeri
 ```markdown
 如图3-1所示，系统采用分层架构设计。
 
-![图3-1 系统功能结构图](thesis-output/img/图3-1_系统功能结构图.png)
+![图3-1 系统功能结构图](thesis-output/thesis-writing/img/图3-1_系统功能结构图.png)
 
 从图3-1可以看出，系统主要包含前台和后台两大子系统...
 ```
 
-## Markdown 格式规范
+## Markdown 格式规范（两模式共享）
 
-所有生成的 Markdown 文档必须符合以下规范（由 `scripts/check_markdown_spec.py` 检查）：
+所有生成的 Markdown 文档必须符合 `references/shared-markdown-norms.md` 中的机械化规范（由 `check_markdown_spec.py` 检查）。要点：
 
-### 编码与文件格式
-- 文件必须使用 **UTF-8 无 BOM** 编码
-- 行尾统一使用 LF（Unix 风格），避免 CRLF
-- 禁止 YAML front matter 元信息区块（`---` 开头）
-- 禁止 Pandoc 标题元信息块（`%` 开头）
-- 正文前 40 行内禁止出现 `Key: Value` 格式的元信息字段
+- **编码**：UTF-8 无 BOM，LF 行尾
+- **标题**：ATX 风格（`#`/`##`/`###`），编号连续不跳级
+- **图片**：Markdown 语法，禁止 `<img>`，禁止公式以图片插入，图前后须有段落
+- **表格**：表题在表格前，编号连续，表前后须有段落
+- **公式**：行内 `$...$`，独立 `$$...$$`，编号 `\tag{X-Y}`
+- **段内换行**：禁止（用空行分段），禁止 `<br>`
+- **参考文献**：从 [1] 开始连续，条目间空行
+- **标记成对**：`**` / `*` / `~~` / `` ` `` / `[]` / `()` / 引号
+- **Mermaid**：保留会触发 WARN，应渲染为图片或删除
 
-### 标题规范
-
-**编号体系**：checker 支持三种一级标题编号体系，但 **本 Skill 默认使用阿拉伯数字体系**（最通用）：
-- **阿拉伯数字**（默认）：`# 1 绪论` → `## 1.1 背景` → `### 1.1.1 现状`
-- 中文序号：`# 一、绪论` → `## （一）背景` → `### （一）现状`
-- 章节式：`# 第一章 绪论` → `## 1.1 背景` → `### 1.1.1 现状`
-
-**语法要求**：
-- 必须使用 ATX 标题风格（`#` / `##` / `###`），禁止使用 Setext 风格（`===` 或 `---`）
-- **一级标题**（`#`）用于：章节号开头（如 `# 1 绪论`）和特殊标题（`# 摘要`、`# Abstract`、`# 参考文献`、`# 致谢`、`# 结论`）
-- **二级标题**（`##`）格式必须包含编号。阿拉伯数字体系下为 `数字.数字 标题`（如 `## 1.1 研究背景`）
-- **三级标题**（`###`）格式必须包含编号。阿拉伯数字体系下为 `数字.数字.数字 标题`（如 `### 1.1.1 国内现状`）
-- 标题层级必须连续，禁止跳级（如 `#` 之后不能直接跟 `###`）
-- 二级标题的第一个数字必须等于当前一级标题的章节号；三级标题的前两个数字必须等于当前二级标题的编号
-- 特殊标题（摘要/Abstract/参考文献/致谢/结论）必须使用一级标题，且不能用 `##` / `###`
-- 禁止在 Markdown 正文中写论文题目（应由封面提供）
-- 文档必须至少有一个一级标题
-
-**编号连续性**（ERROR 级别）：
-- 一级标题编号必须连续，从 1 开始，不得重复或跳号
-- 同一章节内的二级标题编号必须连续，从 1 开始，不得重复或跳号
-- 同一小节内的三级标题编号必须连续，从 1 开始，不得重复或跳号
-
-**格式一致性**（WARN 级别）：
-- 同一级别的标题应使用统一的编号格式（如全用 `1.` 还是 `（1）`），混用会触发警告
-- 建议全文各级标题格式保持一致
-
-### 图片格式
-- **必须使用 Markdown 语法**：`![图X-X 标题](./path/to/image.png)`
-- **禁止使用 HTML `<img>` 标签**（触发 ERROR）
-- 图片标题格式：`图X-Y 标题`（章节式编号，如"图3-1 系统功能结构图"）或 `图N 标题`（全局编号，如"图1 系统架构图"）。两种编号方式均可，但同一文档建议统一
-- 图片标题前缀支持：`图`、`Figure`、`Fig.`、`Fi.`
-- **禁止在图片下方重复添加标题文字**（如 `**图3-1 系统功能结构图**`），标题应仅在图片的 `alt` 属性中体现
-- 图片 alt 不能为空，必须包含图题（空 alt 触发 WARN）
-- 禁止将公式以图片形式插入（触发 ERROR：`FORMULA_AS_IMAGE`）。alt 中包含"公式"/"equation"/"formula"等关键词会触发此检查
-- 图片前后必须有段落文字描述（前或后至少一侧），否则触发 ERROR：`MISSING_TEXT_AROUND_IMAGE`
-- 本地图片路径必须存在（检查时会验证），不存在的路径触发 WARN
-
-### 表格格式
-- 表格前必须有规范表题：`表X-Y 标题`（章节式编号）或 `表N 标题`（全局编号）。两种编号方式均可，但同一文档建议统一
-- 表题支持加粗标记：`**表1-1 标题**` — checker 会自动去除 `**` 后匹配
-- 表题与表格之间不要有空行
-- 表格前后必须有段落文字描述（前或后至少一侧），否则触发 ERROR：`MISSING_TEXT_AROUND_TABLE`
-- 表格编号必须连续，章节号必须与当前章节一致（否则触发 WARN/ERROR）
-- 表格应放在离正文首次出现处的近处，先文后表
-
-### 数学公式规范
-- 行内公式使用 `$...$`，独立公式使用 `$$...$$`
-- 公式编号格式：`(X-Y)`，置于公式右侧（可使用 `\tag{X-Y}`）
-- 禁止将公式以图片形式插入
-- 公式编号必须连续，章节号必须与当前章节一致
-
-### 参考文献规范
-- 格式遵循 GB/T 7714-2015
-- 参考文献编号必须从 `[1]` 开始（否则 ERROR：`REF_NUMBER_NOT_START_AT_ONE`）
-- 编号必须连续递增，不得跳号或重复（否则 ERROR：`REF_NUMBER_DISCONTINUITY` / `REF_NUMBER_DUPLICATE`）
-- 参考文献条目之间必须有空行（否则 ERROR：`REF_MISSING_BLANK_LINE`）
-- 正文中引用编号必须为正整数（如 `[1]`，不能为 `[0]` 或 `[-1]`）
-
-### 段内换行规范
-- 禁止段内换行（行末两个空格），应使用空行分隔段落（否则 ERROR：`INTRAPARAGRAPH_LINE_BREAK`）
-- 禁止使用 `<br>` 标签换行（否则 ERROR：`HTML_LINE_BREAK`）
-
-### Mermaid 代码块
-- 正文中保留 Mermaid 代码块会触发 WARN：`MERMAID_DISABLED`
-- 应先将 Mermaid 渲染为图片后引用，或在导出前删除
-
-### Markdown 标记成对检查
-脚本会自动检查以下标记是否成对出现（不匹配则 ERROR）：
-- 加粗 `**`
-- 斜体 `*`
-- 删除线 `~~`
-- 行内代码 `` ` ``
-- 方括号 `[]`
-- 圆括号 `()`
-- ASCII 双引号 `"`
-- 中文双引号 `"` / `"`
-
-### 空格规范（写作约定，非自动检查）
-> **注意**：`check_markdown_spec.py` 目前**不检查**中英文之间的空格。以下为写作约定，需在撰写时自觉遵守。
-
-- **正文中，中文字符与英文字母/数字之间不得有空格**
-- 正确：`基于SpringBoot框架` / `MySQL 8.0数据库` / `Vue.js前端`
-- 错误：`基于 SpringBoot 框架` / `MySQL 8.0 数据库` / `Vue.js 前端`
-- 英文单词**内部**空格保留（如 `Spring Boot`、`RESTful API`）
-- 行内代码、URL、参考文献列表中的 `[数字]` 不受此限制
+各模式特有的写作规范：
+- Mode A：见 `references/writing-norms.md`（GB/T 7714 强制、≥15000 字、CY/T 35-2001 编号）
+- Mode B：见 `references/journal-writing-norms.md`（时态、引用密度、对冲语言、可复现性、引文风格由 profiler 决定）
 
 ## 写作规范要求
-- 读取 `references/writing-norms.md` 获取详细写作规范
+
+- Mode A：读取 `references/writing-norms.md` 获取本科毕设特有规范
+- Mode B：读取 `references/journal-writing-norms.md` 获取期刊论文特有规范
+- 两模式共享：读取 `references/shared-markdown-norms.md` 获取机械化 Markdown 规范
 - 章节编号使用阿拉伯数字：1, 1.1, 1.1.1
-- 图片使用文字占位符，格式见 `references/image-spec.md`
+- 图片使用文字占位符，格式见对应的 image-spec 文件
 - 表格使用 Markdown 表格格式
-- 参考文献格式遵循 GB/T 7714-2015
+- 参考文献格式：Mode A 用 GB/T 7714-2015；Mode B 用 profiler 检测的风格
+
+## 输出目录约定
+
+遵循 CLAUDE.md 的两级回退规则：
+- 用户在工作项目目录下（cwd 不在 `~/.claude/skills`）：输出到 `<cwd>/thesis-output/thesis-writing/`
+- 否则：输出到 `~/.claude/skills-output/thesis-writing/`
+
+可用 `--output` 显式覆盖。profiler 的 `_domain_profile.{json,md}` 默认写入同一输出目录。
