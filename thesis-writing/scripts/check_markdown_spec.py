@@ -20,7 +20,30 @@ FIGURE_TITLE_RE_LOOSE = re.compile(r"^\s*\*{0,2}\s*(?:图|Figure|Fig\.|Fi\.)\s*\
 MERMAID_FENCE_RE = re.compile(r"^\s*```\s*mermaid\s*$", re.IGNORECASE)
 CITATION_RE = re.compile(r"\[(\d+)\]")
 META_FIELD_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{1,30}\s*:\s*\S+")
-SPECIAL_HEADINGS = {"摘要", "abstract", "参考文献", "references", "致谢", "acknowledgements", "结论", "结  论", "致  谢"}
+_SPECIAL_HEADINGS_UNDERGRAD = {
+    "摘要", "abstract", "参考文献", "references", "致谢",
+    "acknowledgements", "结论", "结  论", "致  谢",
+}
+_SPECIAL_HEADINGS_JOURNAL_EXTRA = {
+    "keywords", "keyword", "acknowledgments",
+    "introduction", "related work", "related works",
+    "background", "preliminaries", "preliminary",
+    "discussion", "conclusions",
+    "appendix", "appendices",
+    "author contributions", "author contribution",
+    "conflict of interest", "competing interests",
+    "data availability", "data availability statement",
+    "funding", "funding sources",
+}
+
+
+def _special_headings_for(mode: str) -> set[str]:
+    if mode == "journal":
+        return _SPECIAL_HEADINGS_UNDERGRAD | _SPECIAL_HEADINGS_JOURNAL_EXTRA
+    return set(_SPECIAL_HEADINGS_UNDERGRAD)
+
+
+SPECIAL_HEADINGS = _SPECIAL_HEADINGS_UNDERGRAD
 _CN_SEQ_RE = re.compile(
     r"^[一二三四五六七八九十百]+[、.]"
     r"|^[（(][一二三四五六七八九十百]+[）)]"
@@ -142,8 +165,10 @@ class MarkdownChecker:
             print(f)
     """
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, mode: str = "undergraduate") -> None:
         self.path = path
+        self.mode = mode
+        self._special_headings = _special_headings_for(mode)
         self.findings: list[Finding] = []
         self.notes: list[str] = []
 
@@ -338,7 +363,7 @@ class MarkdownChecker:
             self._add("ERROR", idx, "HEADING_SKIP_LEVEL",
                       f"标题层级跳级：从 level {self._prev_level} 直接到 level {level}，请保持层级连续")
 
-        is_special = title in SPECIAL_HEADINGS
+        is_special = title in self._special_headings
 
         if level == 1:
             self._h1_count += 1
@@ -761,6 +786,8 @@ class MarkdownChecker:
         self._check_figure_table_sequence()
         self._check_text_around_blocks()
         self._check_reference_continuity()
+        if self.mode == "journal":
+            self._check_citation_density_journal()
 
     def _check_figure_duplicates(self) -> None:
         for img_line, alt, _chapter in self._images:
@@ -950,6 +977,44 @@ class MarkdownChecker:
                     self._add("ERROR", line_no, "REF_NUMBER_DISCONTINUITY",
                               f"参考文献编号不连续：前一条为 [{prev_n}]，当前为 [{n}]，期望 [{prev_n + 1}]")
 
+    _CITATION_DENSITY_MIN_WORDS = 500
+    _CITATION_RE_NUMERIC = re.compile(r"\[\d+\]")
+    _CITATION_RE_AUTHOR_YEAR = re.compile(r"\([A-Z][A-Za-z'’-]+(?:\s+(?:et al\.?|and|&)\s+[A-Z][A-Za-z'’-]+)*,?\s*\d{4}[a-z]?\)")
+    _CITATION_RE_NARRATIVE = re.compile(r"[A-Z][A-Za-z'’-]+(?:\s+(?:et al\.?|and|&)\s+[A-Z][A-Za-z'’-]+)*\s*\(\d{4}[a-z]?\)")
+
+    def _check_citation_density_journal(self) -> None:
+        """WARN if a top-level section exceeds _CITATION_DENSITY_MIN_WORDS with zero citations.
+
+        Only active in journal mode. Splits the document by level-1 ATX headings
+        (excluding the References section itself), counts words and citation marks.
+        """
+        h1_boundaries: list[tuple[int, str]] = []  # (line_idx, normalized_title)
+        for i, line in enumerate(self._lines):
+            m = ATX_HEADING_RE.match(line)
+            if m and len(m.group(1)) == 1:
+                h1_boundaries.append((i, m.group(2).strip().lower()))
+        if not h1_boundaries:
+            return
+        for idx, (start, title) in enumerate(h1_boundaries):
+            if title in {"references", "参考文献", "bibliography",
+                         "acknowledgments", "acknowledgements", "致谢",
+                         "appendix", "appendices"}:
+                continue
+            end = h1_boundaries[idx + 1][0] if idx + 1 < len(h1_boundaries) else len(self._lines)
+            body = self._lines[start + 1:end]
+            text = "\n".join(body)
+            word_count = len(text.split())
+            if word_count < self._CITATION_DENSITY_MIN_WORDS:
+                continue
+            has_cite = bool(
+                self._CITATION_RE_NUMERIC.search(text)
+                or self._CITATION_RE_AUTHOR_YEAR.search(text)
+                or self._CITATION_RE_NARRATIVE.search(text)
+            )
+            if not has_cite:
+                self._add("WARN", start + 1, "CITATION_DENSITY_LOW",
+                          f"该章节约 {word_count} 词但无任何文献引用：期刊论文应密集引用前人工作（建议每段至少 1 处引用）")
+
     # ---- 工具方法 ----
 
     def _add(self, level: str, line: int, code: str, message: str) -> None:
@@ -960,9 +1025,13 @@ class MarkdownChecker:
 # 公开 API（保持兼容）
 # ---------------------------------------------------------------------------
 
-def check_markdown(path: Path) -> tuple[list[Finding], list[str]]:
-    """对 Markdown 文件执行格式规范检查。"""
-    checker = MarkdownChecker(path)
+def check_markdown(path: Path, mode: str = "undergraduate") -> tuple[list[Finding], list[str]]:
+    """对 Markdown 文件执行格式规范检查。
+
+    mode: "undergraduate"（本科毕设，默认，行为与历史版本完全一致）或
+          "journal"（期刊/会议论文，启用英文特殊标题 + 引用密度检查）。
+    """
+    checker = MarkdownChecker(path, mode=mode)
     checker.run()
     return checker.findings, checker.notes
 
@@ -1210,6 +1279,12 @@ def _validate_text_around_blocks(
 def main() -> None:
     parser = argparse.ArgumentParser(description="检查 Markdown 是否符合本项目导出规范")
     parser.add_argument("--md", required=True, help="Markdown 文件路径")
+    parser.add_argument(
+        "--mode",
+        choices=["undergraduate", "journal"],
+        default="undergraduate",
+        help="写作模式：undergraduate=本科毕设（默认），journal=期刊/会议论文",
+    )
     parser.add_argument("--strict", action="store_true", help="将 WARN 也视为失败")
     args = parser.parse_args()
 
@@ -1217,7 +1292,7 @@ def main() -> None:
     if not path.exists():
         raise FileNotFoundError(f"文件不存在: {path}")
 
-    findings, notes = check_markdown(path)
+    findings, notes = check_markdown(path, mode=args.mode)
 
     print(f"[md-check] file={path}")
     for n in notes:
