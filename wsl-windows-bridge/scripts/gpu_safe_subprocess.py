@@ -157,7 +157,7 @@ def build_gpu_env(limits: GpuLimits, base: dict[str, str] | None = None) -> dict
     # https://pytorch.org/docs/stable/notes/cuda.html#optimizing-memory-usage
     conf_parts = [
         f"per_process_memory_fraction:{limits.gpu_memory_fraction}",
-        "throw_on_cudamalloc_oom:True",  # OOM 抛异常而非杀驱动
+        # "throw_on_cudamalloc_oom:True",  # PyTorch<2.13 不支持此 key
         f"garbage_collection_threshold:{limits.garbage_collection_threshold}",
     ]
     if limits.expandable_segments:
