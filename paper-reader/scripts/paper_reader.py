@@ -657,7 +657,7 @@ def _extract_metadata(md_text: str, stem: str) -> dict:
                     title = content
                     continue
             elif not title and i < 3 and not stripped.startswith("#") and len(stripped) > 15:
-                if not _re.match(r"^(Abstract|Keywords|\\[)", stripped, _re.IGNORECASE):
+                if not _re.match(r"^(Abstract|Keywords|\\\[)", stripped, _re.IGNORECASE):
                     title = stripped
                     continue
         if not authors and title and stripped != title and not stripped.startswith("#"):
