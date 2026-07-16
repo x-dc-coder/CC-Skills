@@ -50,14 +50,69 @@ def _run_windows(python_exe, code, args=None, timeout=1800):
   ```
 - 退出码、参数传递、stderr 均正确（已验证）
 
+### 后台长时间任务（会话关闭不中断）
+
+`cmd.exe /c` 启动的 Windows 进程在 WSL 父进程被杀后不受影响（实测 SIGHUP/SIGKILL 存活）。用 `Popen` 非阻塞启动，输出重定向到文件：
+
+```python
+import subprocess
+
+# 启动（不等待）
+p = subprocess.Popen(
+    ["cmd.exe", "/c", py_exe, "-c", code] + args,
+    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    cwd="/mnt/e/temp",
+)
+# p.pid 是 WSL bash 进程 — 退出时不影响 Windows 子进程
+
+# 让训练脚本自己写 Windows PID 到文件
+# Python 中: open(r"E:\temp\train_pid.txt","w").write(f"{os.getpid()}\n")
+```
+
+**监控/终止**：
+```bash
+nvidia-smi                                        # 查看 GPU
+taskkill.exe /F /PID $(cat /mnt/e/temp/pid.txt)  # 终止
+tail -f /mnt/e/temp/train.log                     # 日志
+```
+
 ### GPU 环境检查 & 规则
 
 > **GPU 相关全部统一在 `/home/dc/CLAUDE.md` → "GPU 桥接" 章节**，此处不再重复。
+> 特别注意 **"GPU 多路并发铁律"**（≥2 个 GPU 子进程时必读，防 OOM 卡死系统）。
 
 快速验证：
 ```bash
 cmd.exe /c "E:\venvs\marker\Scripts\python.exe -c \"import torch; print('CUDA:', torch.cuda.is_available(), '| GPU:', torch.cuda.get_device_name(0))\""
 ```
+
+### 资源限制（多路 GPU 子进程必备）
+
+当一次启动 ≥2 个 Windows GPU 子进程时，**必须**给每个子进程注入显存配额 + CPU 线程约束。规则全文在 `/home/dc/CLAUDE.md` → "GPU 多路并发铁律"，此 skill 提供现成封装：
+
+**通用模块**：`~/.claude/skills/wsl-powershell-bridge/scripts/gpu_safe_subprocess.py`
+
+```python
+from gpu_safe_subprocess import GpuLimits, run_gpu_windows, acquire_gpu_slot
+
+# 每个 GPU 子进程上限：40% 显存 + 6 CPU 线程
+limits = GpuLimits(gpu_memory_fraction=0.4, cpu_threads=6)
+
+# 串行：直接调用
+r = run_gpu_windows(
+    py_exe=r"E:\venvs\marker\Scripts\python.exe",
+    code="from marker.scripts.convert_single import convert_single_cli; import sys; sys.exit(convert_single_cli())",
+    args=[win_pdf, "--output_dir", win_out],
+    limits=limits,
+    timeout=1800,
+)
+
+# 并发：用 Semaphore 限流
+with acquire_gpu_slot(max_concurrent=2):
+    run_gpu_windows(...)
+```
+
+模块原理：注入 `PYTORCH_CUDA_ALLOC_CONF=per_process_memory_fraction:0.4,throw_on_cudamalloc_oom:True,...`（PyTorch 官方 OOM 防护机制），让超额进程抛异常而非杀驱动。
 
 ### Windows 侧 Python venv 管理
 

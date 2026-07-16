@@ -142,6 +142,14 @@ uv run ~/.claude/skills/paper-reader/scripts/paper_reader.py \
 uv run ~/.claude/skills/paper-reader/scripts/paper_reader.py \
   paper.pdf --pages 0-4
 
+# 资源限制调优（防 OOM 卡死，默认值已合理，无需手动设）
+# 最稳：单引擎串行 + 50% 显存
+uv run ~/.claude/skills/paper-reader/scripts/paper_reader.py \
+  paper.pdf --max-workers 1 --gpu-fraction 0.5
+# 激进批量：2 PDF 并发（需 GPU ≥ 16GB）
+uv run ~/.claude/skills/paper-reader/scripts/paper_reader.py \
+  papers/ --batch --max-concurrent-pdfs 2 --gpu-fraction 0.2
+
 # 用 read 工具读取输出（路径形如 paper-analysis/<stem>/marker/<stem>/<stem>.md）
 # read paper-analysis/paper/marker/paper/paper.md
 # read paper-analysis/paper/mineru/auto/paper.md
@@ -218,11 +226,46 @@ uv run ~/.claude/skills/paper-reader/scripts/paper_reader.py \
   - 双引擎并行: ~6 分钟（取 max）
 - 10 页摘要精读：Marker 单路 ~30 秒
 
+## 资源限制（防 OOM 卡死）
+
+**背景**：双引擎并行模式下，Marker 和 MinerU 两个 Windows GPU 进程同时吃同一块 16GB 显存。不加限制会吃满显存 → CUDA 驱动 hang → 全系统冻住。规范全文见 `/home/dc/CLAUDE.md` → "GPU 多路并发铁律"。
+
+`paper_reader.py` 默认已开启四层防护，无需额外配置：
+
+| 防护层 | 默认值 | CLI 参数 | 作用 |
+|---|---|---|---|
+| **① GPU 显存配额（单进程）** | 每进程 40% | `--gpu-fraction 0.4` | OOM 抛异常而非杀驱动（最关键） |
+| **② CPU 线程上限（单进程）** | 每进程 6 线程 | `--cpu-threads 6` | 防两进程各起 24 线程抢核 |
+| **③ 批量并发上限（进程内）** | 串行（1 PDF） | `--max-concurrent-pdfs 1` | 防进程内多 PDF 同时跑 |
+| **④ 设备级协调（跨进程）** | 总显存 ≤ 90% | `--gpu-cap-fraction 0.9` | **paper-reader + CV 训练同时跑时排队等待，不抢占** |
+
+**第④层（GpuGovernor）说明**：当 paper-reader 与其他 GPU 任务（如 CV 训练）同时跑时，通过 fcntl 文件锁 + 预算账本互斥访问 GPU。账本位置 `~/.cache/gpu-governor/ledger.json`。其他任务也用同样的 governor 即可自动协调。
+
+常用调优组合：
+
+```bash
+# 最稳（单引擎串行，省显存）
+uv run paper_reader.py paper.pdf --max-workers 1 --gpu-fraction 0.5
+
+# 默认（双引擎并行，每进程 40% 显存，设备级 90% 上限）
+uv run paper_reader.py paper.pdf   # 无需任何参数
+
+# 激进批量（需 GPU ≥ 16GB：2 PDF × 2 引擎 × 20% = 80% ≤ 100%）
+uv run paper_reader.py papers/ --batch --max-concurrent-pdfs 2 --gpu-fraction 0.2
+
+# 纯 CPU 模式（不用 GPU，可关限制）
+uv run paper_reader.py paper.pdf --gpu-fraction 0
+```
+
+**OOM 早预警**：批量并发时若 `max_concurrent_pdfs × max_workers × gpu_fraction > 100%`，脚本会打印警告但仍执行（用户自负）。
+
 ## 故障排查
 
 | 症状 | 原因 | 解决 |
 |---|---|---|
-| CUDA out of memory | 显存不足 | 加 `--engines marker` 单路，或加 `--pages 0-9` 限制 |
+| CUDA out of memory | 显存不足 | 加 `--engines marker` 单路，或 `--max-workers 1` 串行，或降 `--gpu-fraction` |
+| 系统卡死/CUDA 驱动 hang | 多进程吃满显存 | 默认 0.4 配额应能防住；若仍卡，加 `--max-workers 1` |
+| GPU 预算不足被跳过（stderr: `GPU budget unavailable`） | CV 训练等其他任务占满 90% cap | 加大 `--gpu-wait-timeout`，或暂停其他 GPU 任务，或 `--gpu-cap-fraction 0` 关协调器（不推荐） |
 | MinerU 模型下载卡住 | 网络问题 | 设 `HF_ENDPOINT=https://hf-mirror.com` |
 | Marker 公式识别差 | 已知缺陷 | 切到 mineru/ 的对应段落看 |
 | MinerU OCR 把 V 识别成 ν | 字体相似 | 切到 marker/ 看同段 |
