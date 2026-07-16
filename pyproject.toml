@@ -18,5 +18,15 @@ dependencies = [
     "feedparser>=6.0.0",
 ]
 
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["thesis-writing/scripts"]
+python_files = ["test_*.py"]
+addopts = "-q"
+
 [tool.uv]
 package = false
