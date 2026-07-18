@@ -143,14 +143,14 @@ WSL interop 使用匿名管道（非 PTY）通信，训练脚本输出经常"卡
 
 #### 进度条环境变量
 
-`build_gpu_env()` 自动注入以下 5 个环境变量，在 `_run_windows_headless()` 内部自动调用。手动覆盖场景见右列。
+`build_gpu_env()` 自动注入以下 5 个环境变量，在 `run_gpu_windows()` / `stream_gpu_windows()` / `launch_detached()` 内部自动调用（通过 `build_gpu_env()`）。手动覆盖场景见右列。
 
 | 环境变量 | 目的 | 默认值 | 覆盖时机 |
 |---------|------|-------|---------|
 | `PYTHONUNBUFFERED` | 禁用 Python stdout 缓冲 | `1`（自动设置） | 不需要覆盖 |
 | `TQDM_DISABLE` | 启用 tqdm 进度条 | 不设（tqdm 默认 disable=False→启用） | 用户想关进度条时设 `TQDM_DISABLE=1` |
 | `TTY_COMPATIBLE` | tqdm 启用 `\r` 进度条 refresh | `1` | 不需要覆盖 |
-| `TTY_INTERACTIVE` | tqdm 启用交互模式（disable=None） | `1` | 不需要覆盖 |
+| `TTY_INTERACTIVE` | 标记非交互式，tqdm 走 \r 行内刷新 | `0` | 不需要覆盖 |
 | `HF_HUB_DISABLE_PROGRESS_BARS` | 禁用 HuggingFace hub 进度条（与 tqdm 冲突时） | `1`（禁用 HF 进度条） | 单独下载模型时改 `0` |
 
 > **原理**：WSL interop 的 `CreatePipe` 返回匿名管道，`isatty()` 为 False。tqdm 源码 `tqdm/std.py#L118-120` 检测到非 TTY 时自动 `disable=None` 导致无输出。`TTY_COMPATIBLE=1` 强制 tqdm 认为 stdout 可交互，恢复 `\r` 进度条刷新。
@@ -171,7 +171,7 @@ for line in stream_gpu_windows(
 ):
     # line 已经过 \r 清洗：多个 \r 覆盖的行合并为最终状态
     # 例如 tqdm 的 " 30%|███       | 30/100 [00:15<00:35, 2.00it/s]"
-    print(line, end="", flush=True)
+    print(line.text, end="", flush=True)
 ```
 
 **`\r` 清洗说明**：管道传输保留了原始 `\r` 字符。`stream_gpu_windows` 内部以 `\r` 和 `\n` 为分隔符拆行，同一 `\r` 段内只保留最后一段文本（即该行当前状态），避免日志文件中出现同一进度条的多份残留副本。调用方收到的每条 `line` 已经是最终可读文本。
@@ -186,12 +186,11 @@ launch_detached(
     py_exe=r'E:\venvs\train\Scripts\pythonw.exe',
     code='import train; train.main()',
     limits=GpuLimits(gpu_memory_fraction=0.4, cpu_threads=6),
-    log_path='train_bert',   # → /tmp/gpu-logs/train_bert.log
-    timeout=86400,
+    job_name='train_bert',   # → /tmp/gpu-logs/train_bert_<timestamp>.log
 )
-" && tail -f /tmp/gpu-logs/train_bert.log
+" && tail -f /tmp/gpu-logs/train_bert_*.log
 # Ctrl+C 后 Windows 进程继续运行。终止：
-taskkill.exe /F /PID $(grep -oP 'PID:\K\d+' /tmp/gpu-logs/train_bert.log | head -1)
+taskkill.exe /F /PID $(cat /tmp/gpu-logs/train_bert_*.pid)
 ```
 
 > ⚠️ **WSL#4739**：`/mnt/` 路径下的 `tail -f` 使用 polling 模式（~1s 延迟），因为 WSL 的 `/mnt/` 是 DrvFs 挂载，不支持 inotify。**必须**将日志写到 Linux 原生文件系统（`/tmp/gpu-logs/`）才能获得 inotify 实时推送。`launch_detached` 默认写到 `/tmp/gpu-logs/`，自动满足此要求。
@@ -210,7 +209,7 @@ for line in stream_gpu_windows(
     limits=limits,
     use_wrapper=True,  # ← 启用 Job Object 防护
 ):
-    print(line, end="", flush=True)
+    print(line.text, end="", flush=True)
 # WSL 端 Ctrl+C → wrapper 退出 → Job Object 内所有进程被 OS 终止
 
 # detached + wrapper：后台运行 + 会话关闭自动清理
@@ -219,7 +218,7 @@ launch_detached(
     code="import train; train.main()",
     limits=limits,
     use_wrapper=True,  # ← 启用 Job Object 防护
-    log_path="train_bert",
+    job_name="train_bert",
 )
 # WSL 会话关闭 → wrapper 管道断开 → Job Object 子进程被 OS 回收
 ```
@@ -241,6 +240,37 @@ launch_detached(
 **何时不使用 wrapper**：
 - ❌ 短时一次性任务（<5min）→ 手动 `taskkill.exe` 更快
 - ❌ 需要进程在 WSL 退出后继续 → detached 模式无 wrapper 即是此用途
+
+#### AI 调用规则（⭐ 自动决策）
+
+当用户请求"跑 GPU 训练"时，AI 按以下流程决策：
+
+**必须由用户提供（缺一不可）**：
+
+1. **Windows pythonw.exe 路径**：用户的项目 venv 路径，如 `E:\projects\xxx\.venv\Scripts\pythonw.exe`
+   - 自动探测：`ls /mnt/e/venvs/*/Scripts/pythonw.exe 2>/dev/null` 和 `ls /mnt/e/projects/*/.venv/Scripts/pythonw.exe 2>/dev/null`
+   - 找到 1 个 → 直接用并告知用户
+   - 找到多个 → 列出让用户选
+   - 找到 0 个 → **AI 自动创建 venv**（见下方"Windows 侧 venv 管理"章节），无需用户手动操作
+   - 用户也可直接指定路径（如"E:\projects\myproj\.venv"），AI 直接用
+2. **训练代码**：脚本内容或脚本路径
+
+**AI 自动推断（不需问用户）**：
+
+| 参数 | 推断规则 | 默认值 |
+|------|---------|--------|
+| 函数选择 | 用户说"关终端/过夜/后台" → `launch_detached`；否则 → `stream_gpu_windows` | stream |
+| `use_wrapper` | 任务 >10 分钟 → `True`；否则 `False` | False |
+| `gpu_memory_fraction` | `nvidia-smi` 查显存，单任务 0.4；并发 N 个 → `0.9/N` | 0.4 |
+| `cpu_threads` | `nproc` 查核数，`核数/并发数`，最小 2 | 6 |
+| `timeout` | stream 模式 3600s；detached 不设 | 3600 |
+| `log_dir` | cwd 在项目目录 → `Path("log")`；否则 → `/tmp/gpu-logs` | 自适应 |
+
+**调用后必须告知用户**：
+- 用的哪个函数 + 哪个 venv
+- 日志路径（方便 `tail -f`）
+- PID（方便 `taskkill.exe /F /PID <pid>`）
+- 预计完成时间（如代码含 epoch 数）
 
 **Windows 侧手动验证清单**（确认 wrapper 生效）：
 
@@ -300,16 +330,61 @@ with acquire_gpu_slot(max_concurrent=2):
 
 > ⚠️ **不要写** `PYTORCH_CUDA_ALLOC_CONF=per_process_memory_fraction:0.4` —— 这是 Python API 不是 env var，PyTorch 会报 `Unrecognized CachingAllocator option`。详见 CLAUDE.md "GPU 显存配额" 段。
 
-### Windows 侧 Python venv 管理
+### Windows 侧 Python venv 管理（AI 可自动执行）
 
-用 `uv` 管理（路径 `C:\Users\32841\.local\bin\uv.exe`）：
+WSL 可以通过 `powershell.exe` 调用 Windows 侧的 `uv.exe` 创建 venv 和安装依赖，全程无需用户切换到 Windows 操作。
+
+**uv.exe 路径**：`C:\Users\32841\.local\bin\uv.exe`（已安装在用户机器上）
+
+#### 探测已有 venv
+
 ```bash
-# 创建 venv
-powershell.exe -Command "& 'C:\Users\32841\.local\bin\uv.exe' venv E:\venvs\myproj --python 3.11"
+# 探测 E:\venvs\ 下的 venv
+ls /mnt/e/venvs/*/Scripts/pythonw.exe 2>/dev/null
 
-# 安装 CUDA 版 PyTorch（cu128 稳定，cu130 有 DLL 问题）
-powershell.exe -Command "& 'C:\Users\32841\.local\bin\uv.exe' pip install torch==2.11.0+cu128 --python E:\venvs\myproj\Scripts\python.exe --index-url https://download.pytorch.org/whl/cu128"
+# 探测项目 .venv
+ls /mnt/e/projects/*/.venv/Scripts/pythonw.exe 2>/dev/null
 ```
+
+#### 创建新 venv + 安装 PyTorch（AI 自动化流程）
+
+当探测不到已有 venv 时，AI 直接执行以下命令创建：
+
+```bash
+# 1. 创建 venv（Python 3.11，稳定）
+powershell.exe -Command "& 'C:\Users\32841\.local\bin\uv.exe' venv E:\projects\<projname>\.venv --python 3.11"
+
+# 2. 安装 CUDA 版 PyTorch（cu128 稳定，cu130 有 DLL 兼容问题）
+powershell.exe -Command "& 'C:\Users\32841\.local\bin\uv.exe' pip install torch torchvision --python E:\projects\<projname>\.venv\Scripts\python.exe --index-url https://download.pytorch.org/whl/cu128"
+
+# 3. 安装常用训练依赖
+powershell.exe -Command "& 'C:\Users\32841\.local\bin\uv.exe' pip install tqdm transformers numpy --python E:\projects\<projname>\.venv\Scripts\python.exe"
+
+# 4. 验证 CUDA 可用
+powershell.exe -Command "& 'E:\projects\<projname>\.venv\Scripts\pythonw.exe' -c 'import torch; print(\"CUDA:\", torch.cuda.is_available(), torch.cuda.get_device_name(0))'"
+```
+
+> ⚠️ **CUDA 版本选择**：
+> - `cu128`（CUDA 12.8）：**推荐**，Windows 稳定，RTX 40/50 系列全支持
+> - `cu130`（CUDA 13.0）：有 Windows DLL 兼容问题，暂不推荐
+> - 安装命令的 `--index-url` 必须匹配 CUDA 版本
+
+#### pip 换源（安装慢时）
+
+国内访问 PyTorch 官方源可能超时，可换清华镜像：
+```bash
+powershell.exe -Command "& 'C:\Users\32841\.local\bin\uv.exe' pip install tqdm numpy --python E:\projects\<projname>\.venv\Scripts\python.exe --index-url https://pypi.tuna.tsinghua.edu.cn/simple"
+```
+
+PyTorch 本身必须用官方 `download.pytorch.org` 源（清华没有 CUDA wheel）。
+
+#### venv 路径约定
+
+| 场景 | 推荐路径 | 说明 |
+|------|---------|------|
+| 项目专用 | `E:\projects\<projname>\.venv\` | 随项目走，gitignore |
+| 多项目共享 | `E:\venvs\<name>\` | 如 marker、mineru 等重型 venv |
+| 临时实验 | `E:\venvs\temp\` | 用完可删 |
 
 ## Channel Selection Guide
 
@@ -368,6 +443,8 @@ sudo apt install -y jq
 - 需要在 WSL 中调用 Windows 侧能力（EXE / Python / GPU / 系统工具）
 - 关键词: `cmd.exe`、`powershell.exe`、GPU、CUDA、torch、Windows venv、注册表、WMI、COM、Visio、Office
 - **GPU 训练/推理**: 见 `/home/dc/CLAUDE.md` → "GPU 桥接" 章节（单一事实来源）
+- **GPU 训练流式输出/后台任务**: 使用 `stream_gpu_windows()`（实时看进度）、`launch_detached()`（后台 + tail -f）、`win-launcher.py`（Job Object 孤儿清理）。详见下方"实时输出与进度条"章节。
+- **关键词**: `stream_gpu_windows`、`launch_detached`、`use_wrapper`、`win-launcher`、`GpuLimits`、`GpuGovernor`、tqdm、进度条、孤儿进程、Job Object
 
 ## WSLInterop Quick Check
 
