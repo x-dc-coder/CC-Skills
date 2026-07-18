@@ -122,23 +122,38 @@ Python 脚本输出的 `commit_message_candidates` **仅作 fallback 参考**。
 4. 子代理必须使用 Structured Output 返回 JSON
 5. 展示给用户时：优先展示子代理候选，Python fallback 候选仅作对比参考
 
+**候选信息结构**（3 条，必须覆盖两种风格）：
+- **候选 1-2**：精简 Conventional Commits 格式 — 中文 subject ≤50 字符，动宾结构
+- **候选 3**：⭐ **详细叙述格式** — 中文 subject ≤50 字符，但**列出 diff 中每个文件的简要改动摘要作为 body**，让用户看到这次提交到底改了什么。禁止用一句泛泛的 subject 敷衍。
+
 **子代理 prompt 模板**：
 ```
 你是代码审查专家。请仔细阅读以下 git diff，分析每个文件的具体改动内容（新增/修改的函数名、类名、逻辑变更、配置项、文件重命名等）。
-基于实际改动内容生成 {N} 个精准的 Conventional Commits 格式提交信息候选。
+基于实际改动内容生成 3 个候选提交信息。
 
-要求：
-- 中文 subject，不超过 50 字符
-- subject 必须反映 diff 中实际改了什么，禁止使用"新增功能""修复问题""更新文档"等泛泛表述
+⭐ 重要：前 2 个是精简风格，第 3 个必须是详细叙述风格（必须带 body 逐文件说明改动）。
+
+候选 1-2（精简 Conventional Commits）：
+- 中文 subject，≤50 字符，动宾结构
 - 格式：<type>(<scope>): <subject>
 - type 从 {valid_types} 中选择
-- scope 从 {scope_hints} 中选择或从路径推断
+
+候选 3（详细叙述，⭐ 必须带 body）：
+- 中文 subject，≤50 字符，概括本次改动的主题
+- body 逐文件列出改动摘要，每个文件一行，格式：
+  - <文件名>: <具体的改动内容>
+- 禁止在 body 中重复 subject 或用"本次提交改动了以下文件"等废话开头
+- 示例 body：
+  gitcode_issues.py: 修复 create/close/reopen/update 四个函数的 API URL 端点，repo 从 URL path 改为 formData 参数
+  manifest.py: commit_and_push 支持多行消息，逐行传递 -m 参数
 
 改动文件：
 {file_list}
 
 Diff 内容：
 {diff_excerpt}
+
+返回 JSON，candidates 数组固定 3 个元素，第 3 个必须包含 body 字段。
 ```
 
 **结构化输出 Schema**：
@@ -148,14 +163,15 @@ Diff 内容：
   "properties": {
     "candidates": {
       "type": "array",
-      "minItems": 2,
+      "minItems": 3,
       "maxItems": 3,
       "items": {
         "type": "object",
         "properties": {
           "type": {"type": "string", "enum": ["feat","fix","docs","style","refactor","perf","test","chore","revert"]},
           "scope": {"type": "string"},
-          "subject": {"type": "string", "maxLength": 50}
+          "subject": {"type": "string", "maxLength": 50},
+          "body": {"type": "string", "description": "逐文件改动摘要，仅第 3 个候选需要"}
         },
         "required": ["type", "scope", "subject"]
       }
