@@ -26,7 +26,7 @@ description: |
 
 3. **生成用例图**
    - 使用本项目的 CLI 工具生成 PNG 图片
-   - 输出路径：`/tmp/skills-output/<date>/diagram-usecase/diagram.png`（默认，可自定义）
+   - 输出路径：`~/.claude/skills-output/diagram-usecase/usecase-diagram.png`（默认，可自定义）
 
 ## 目录结构
 
@@ -34,7 +34,7 @@ description: |
 docs/usecase/
 ├── json/       # JSON 数据文件
 
-/tmp/skills-output/<date>/diagram-usecase/    # 生成的用例图 PNG（默认输出目录）
+~/.claude/skills-output/diagram-usecase/    # 生成的用例图 PNG（默认输出目录）
 ```
 
 ## JSON 文件规范
@@ -80,7 +80,7 @@ uv run python -m scripts.cli \
   --json-file docs/usecase/json/<usecase_name>.json
 ```
 
-当输入文件使用**绝对路径**时，CLI 会自动推断项目目录（向上查找包含 `docs/` 或 `thesis-output/` 的目录），默认输出到 `<项目目录>/thesis-output/img/diagram.png`。如使用相对路径或无法推断，则回退到 `/tmp/skills-output/<date>/diagram-usecase/diagram.png`。如需自定义路径：
+当输入文件使用**绝对路径**时，CLI 会自动推断项目目录（向上查找包含 `docs/` 或 `thesis-output/` 的目录），默认输出到 `<项目目录>/thesis-output/diagram-usecase/usecase-diagram.png`。如使用相对路径或无法推断，则回退到 `~/.claude/skills-output/diagram-usecase/usecase-diagram.png`。如需自定义路径：
 
 ```bash
 cd ~/.claude/skills/diagram-usecase
@@ -130,7 +130,7 @@ cd ~/.claude/skills/diagram-usecase
 uv run python -m scripts.cli --json-file usecase.json
 ```
 
-默认输出路径由 CLI 自动推断（绝对路径输入 → `<项目目录>/thesis-output/img/diagram.png`，否则回退到 `/tmp/skills-output/<date>/diagram-usecase/diagram.png`）
+默认输出路径由 CLI 自动推断（绝对路径输入 → `<项目目录>/thesis-output/diagram-usecase/usecase-diagram.png`，否则回退到 `~/.claude/skills-output/diagram-usecase/usecase-diagram.png`）
 
 ## 多参与者格式（向后兼容）
 

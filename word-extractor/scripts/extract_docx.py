@@ -16,7 +16,6 @@ import os
 import re
 import sys
 import zipfile
-from datetime import date
 from pathlib import Path
 
 from docx import Document
@@ -703,7 +702,7 @@ def extract_all(docx_path):
 def main():
     parser = argparse.ArgumentParser(description="Extract all content from a .docx file")
     parser.add_argument("input", help="Path to the .docx file")
-    parser.add_argument("--output-dir", "-o", default=None, help="Output directory (default: /tmp/skills-output/<date>/word-extractor/)")
+    parser.add_argument("--output-dir", "-o", default=None, help="Output directory (default: auto-detect via two-level fallback)")
     parser.add_argument("--format", "-f", choices=["json", "markdown", "both"], default="both",
                         help="Output format")
     args = parser.parse_args()
@@ -720,11 +719,16 @@ def main():
     data = extract_all(args.input)
 
     base_name = Path(args.input).stem
-    if args.output_dir is None:
-        today = date.today().isoformat()
-        output_dir = Path("/tmp/skills-output") / today / "word-extractor"
-    else:
+    if args.output_dir is not None:
         output_dir = Path(args.output_dir)
+    else:
+        # Two-level fallback: cwd/<doc-output>/word-extractor/ or ~/.claude/skills-output/word-extractor/
+        skills_home = Path.home() / ".claude" / "skills"
+        cwd = Path.cwd().resolve()
+        if not str(cwd).startswith(str(skills_home)):
+            output_dir = cwd / "doc-output" / "word-extractor"
+        else:
+            output_dir = Path.home() / ".claude" / "skills-output" / "word-extractor"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     if args.format in ("json", "both"):

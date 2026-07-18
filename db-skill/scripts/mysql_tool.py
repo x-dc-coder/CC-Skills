@@ -6,7 +6,7 @@ import re
 import subprocess
 import sys
 import tempfile
-from datetime import date, datetime
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -208,8 +208,13 @@ def make_output_path(explicit: Optional[str]) -> Path:
         p.parent.mkdir(parents=True, exist_ok=True)
         return p
 
-    today = date.today().isoformat()
-    root = Path("/tmp/skills-output") / today / "db-skill"
+    # Two-level fallback: cwd/<db-output>/db-skill/ or ~/.claude/skills-output/db-skill/
+    skills_home = Path.home() / ".claude" / "skills"
+    cwd = Path.cwd().resolve()
+    if not str(cwd).startswith(str(skills_home)):
+        root = cwd / "db-output" / "db-skill"
+    else:
+        root = Path.home() / ".claude" / "skills-output" / "db-skill"
     root.mkdir(parents=True, exist_ok=True)
     fd, name = tempfile.mkstemp(prefix="mysql-result-", suffix=".json", dir=root)
     os.close(fd)
