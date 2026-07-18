@@ -127,3 +127,9 @@ thesis-output/
 
 # paper-reader 默认输出目录
 paper-analysis/
+
+# WSL UNC path test artifacts (pytest PID/log files from detached/UNC tests)
+# Paths contain literal backslashes (WSL UNC paths) and no forward slashes,
+# so git treats them as single filenames — must use * globs for substring matching.
+*wsl$*
+*wsl.localhost*
