@@ -56,6 +56,9 @@ cd ~/.claude/skills && uv run python unified-search/scripts/unified_search.py "q
 # Force academic mode (arxiv + dblp + semantic_scholar, paper links recorded)
 cd ~/.claude/skills && uv run python unified-search/scripts/unified_search.py "transformer attention" --mode academic
 
+# Export paper links as _download_manifest.json for paper-reader
+cd ~/.claude/skills && uv run python unified-search/scripts/unified_search.py "VRP GPU" --mode academic --export-manifest papers/
+
 # Fetch single URL content (markdown) — firecrawl primary, keenable fallback
 cd ~/.claude/skills && uv run python unified-search/scripts/unified_search.py --fetch https://example.com/article
 
@@ -148,6 +151,29 @@ All output is JSON to stdout. Example (general mode):
 ```
 
 For academic mode, additional `paper_links` array with DOI/PDF URLs.
+
+## Paper-Reader Bridge (`--export-manifest`)
+
+Exports academic search results as `_download_manifest.json`, ready for consumption by
+the `paper-reader` skill's `--init --from-manifest` command.
+
+```bash
+# Search + export manifest (the manifest maps arxiv IDs → expected filenames)
+uv run python unified-search/scripts/unified_search.py "MDVRP" --mode academic \
+  --export-manifest papers/
+
+# Output: papers/_download_manifest.json
+# Then paper-reader can consume it:
+#   paper_reader.py papers/ --init --from-manifest papers/_download_manifest.json
+```
+
+**Filename inference** (in priority order):
+1. `arxiv_id` → `{id}.pdf` (e.g. `2205.02453.pdf`)
+2. PDF URL basename (e.g. `abc123-Paper.pdf`)
+3. URL path stem → `{stem}.pdf`
+4. Fallback: `paper_001.pdf`, `paper_002.pdf`, ...
+
+**Warning**: duplicate filenames are flagged in stderr so you can rename before downloading.
 
 ## Integration with Sub-agents
 

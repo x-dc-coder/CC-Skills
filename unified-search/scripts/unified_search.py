@@ -725,6 +725,82 @@ def report_quota(cfg: dict) -> dict:
     return {"mode": "quota", "quota": out}
 
 
+# ─── Manifest export (paper-reader bridge) ────────────────────────────────
+def export_manifest(paper_links: list[dict], query: str, output_dir: Path) -> Path:
+    """  paper_links  paper-reader   _download_manifest.json.
+
+      → arxiv_id   filename;       .
+    """
+    output_dir = output_dir.resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    def _infer_filename(paper: dict, index: int) -> str:
+        """  arxiv_id → pdf_url → url →   ."""
+        # 1. arxiv_id (  )
+        aid = paper.get("arxiv_id") or ""
+        if aid:
+            clean = aid.split("v")[0].strip()
+            return f"{clean}.pdf"
+        # 2. pdf_url
+        pdf = paper.get("pdf_url") or paper.get("pdf_link") or ""
+        if pdf and "/" in pdf:
+            parsed = urllib.parse.urlparse(pdf)
+            fname = Path(parsed.path).name
+            if fname and fname.lower().endswith(".pdf"):
+                return fname
+            for part in reversed(parsed.path.split("/")):
+                if part and any(c.isdigit() for c in part):
+                    return f"{part}.pdf" if not part.endswith(".pdf") else part
+        # 3. url
+        url = paper.get("url") or ""
+        if url and "/" in url:
+            parsed = urllib.parse.urlparse(url)
+            stem = Path(parsed.path).name or parsed.path.strip("/").split("/")[-1]
+            if stem:
+                return f"{stem}.pdf" if not stem.endswith(".pdf") else stem
+        # 4.
+        return f"paper_{index + 1:03d}.pdf"
+
+    papers = []
+    for i, p in enumerate(paper_links):
+        manifest_entry = {
+            "filename": _infer_filename(p, i),
+            "title": p.get("title", ""),
+            "url": p.get("url", ""),
+            "pdf_url": p.get("pdf_url") or p.get("pdf_link") or "",
+            "source_db": p.get("source", "unknown"),
+        }
+        #   (  None)
+        for key in ("arxiv_id", "doi", "year", "venue", "authors"):
+            val = p.get(key)
+            if val is not None:
+                manifest_entry[key] = val
+
+        papers.append(manifest_entry)
+
+    manifest = {
+        "generated_by": "unified-search",
+        "query": query,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "papers": papers,
+    }
+
+    out_path = output_dir / "_download_manifest.json"
+    out_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    print(f"  {len(papers)}   → {out_path}", file=sys.stderr)
+
+    #    filenames
+    fnames = [p["filename"] for p in papers]
+    dups = [f for f in set(fnames) if fnames.count(f) > 1]
+    if dups:
+        print(f"  ⚠️    : {dups}——  ", file=sys.stderr)
+
+    return out_path
+
+
 # ─── CLI ─────────────────────────────────────────────────────────────────────
 def build_argparser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
@@ -741,6 +817,8 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--quota", action="store_true", help="show monthly quota usage")
     p.add_argument("--topic", default=None, help="tavily topic hint (general/news/finance)")
     p.add_argument("--time-range", default=None, help="tavily time_range (day/week/month/year)")
+    p.add_argument("--export-manifest", type=Path, default=None, metavar="DIR",
+                   help="export paper links as _download_manifest.json to DIR (academic mode)")
     return p
 
 
@@ -783,6 +861,18 @@ def main() -> int:
     # always record general search history too (top-5)
     if result.get("mode") == "general":
         save_history(cfg, args.query, result["results"][:5], mode="general")
+
+    # ── export manifest (paper-reader ) ──
+    if args.export_manifest is not None:
+        paper_links = result.get("paper_links", [])
+        if not paper_links and result.get("mode") == "academic":
+            print("⚠️    paper_links     (    )",
+                  file=sys.stderr)
+        elif paper_links:
+            export_manifest(paper_links, args.query, args.export_manifest)
+        else:
+            print("⚠️    (  general   academic   )",
+                  file=sys.stderr)
 
     print(json.dumps(result, indent=2, ensure_ascii=False))
     return 0
