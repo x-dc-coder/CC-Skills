@@ -160,14 +160,50 @@ def _extract_diff_keywords(preview: Dict[str, Any]) -> List[str]:
     diff_text = preview.get("diff_excerpt", "")
     keywords: List[str] = []
 
-    # new section headers in markdown (## Title)
+    # ── symbol-level changes from diff hunks ──────────────────────────
+    # Functions/methods (Python, Go, JS/TS, Rust, Java)
+    func_matches = re.findall(
+        r"^\+.*?(?:def |fn |func |function |async function |public |private |protected )"
+        r"(\w+(?:<[^>]+>)?(?:\(\))?)",
+        diff_text, re.MULTILINE,
+    )
+    for m in func_matches:
+        cleaned = m.strip().rstrip("()").lstrip("_")
+        if 2 < len(cleaned) < 30 and cleaned.lower() not in {
+            "init", "main", "run", "new", "get", "set", "test",
+        }:
+            keywords.append(cleaned)
+
+    # Class/struct/interface declarations
+    class_matches = re.findall(
+        r"^\+.*?(?:class |struct |interface |enum )(\w+)",
+        diff_text, re.MULTILINE,
+    )
+    for m in class_matches:
+        cleaned = m.strip()
+        if 2 < len(cleaned) < 30:
+            keywords.append(cleaned)
+
+    # Import/require additions (module names)
+    import_matches = re.findall(
+        r"^\+\s*(?:import |from |require\()['\"]?(\w+(?:\.\w+)*)",
+        diff_text, re.MULTILINE,
+    )
+    for m in import_matches:
+        parts = m.split(".")
+        if parts:
+            top = parts[-1] if len(parts[-1]) > 2 else (parts[-2] if len(parts) > 1 else "")
+            if top and top not in keywords:
+                keywords.append(top)
+
+    # ── markdown section headers ─────────────────────────────────────
     new_sections = re.findall(r"^\+##\s+(.+)$", diff_text, re.MULTILINE)
     for sec in new_sections:
         cleaned = sec.strip().rstrip(".")
-        if len(cleaned) > 2 and len(cleaned) < 40:
+        if 2 < len(cleaned) < 40:
             keywords.append(cleaned)
 
-    # new file stems (meaningful names from untracked/added files)
+    # ── new file stems ───────────────────────────────────────────────
     files_by_kind = preview.get("files_by_kind", {})
     new_files = files_by_kind.get("added", []) + files_by_kind.get("untracked", [])
     for path in new_files:
@@ -180,7 +216,7 @@ def _extract_diff_keywords(preview: Dict[str, Any]) -> List[str]:
             if stem.lower() not in {"readme", "index", "main", "config", "setup"}:
                 keywords.append(stem)
 
-    # module/skill directory names from paths
+    # ── module/skill directory names ──────────────────────────────────
     all_paths = [f["path"] for f in preview.get("files", [])]
     dirs: Counter[str] = Counter()
     for p in all_paths:
@@ -193,7 +229,14 @@ def _extract_diff_keywords(preview: Dict[str, Any]) -> List[str]:
         if d not in keywords:
             keywords.append(d)
 
-    return keywords[:4]
+    # Deduplicate while preserving order
+    seen: set[str] = set()
+    deduped: List[str] = []
+    for kw in keywords:
+        if kw.lower() not in seen:
+            seen.add(kw.lower())
+            deduped.append(kw)
+    return deduped[:5]
 
 
 def _contextual_subject(
@@ -219,31 +262,48 @@ def _chinese_subject(
 ) -> str:
     kw = "、".join(keywords[:2]) if keywords else ""
 
-    by_type: Dict[str, str] = {
-        "feat": f"新增 {kw} 功能" if kw else "新增核心功能",
+    # ── domain-specific templates when keywords exist ──────────────────
+    by_type_with_kw: Dict[str, str] = {
+        "feat": f"新增 {kw} 功能模块" if kw else "新增核心功能",
         "fix": f"修复 {kw} 相关问题" if kw else "修复已知问题",
-        "docs": f"更新 {kw} 文档与使用说明" if kw else "更新文档与使用说明",
+        "docs": f"更新 {kw} 文档" if kw else "更新文档与使用说明",
         "style": f"统一 {kw} 代码格式" if kw else "统一代码格式与细节样式",
-        "refactor": f"重构 {kw} 代码结构并提升可维护性" if kw else "重构代码结构并提升可维护性",
+        "refactor": f"重构 {kw} 代码结构" if kw else "重构代码结构并提升可维护性",
         "perf": f"优化 {kw} 性能" if kw else "优化性能并减少不必要开销",
-        "test": f"补充 {kw} 测试覆盖" if kw else "补充测试覆盖并完善校验",
+        "test": f"补充 {kw} 测试" if kw else "补充测试覆盖并完善校验",
         "chore": f"整理 {kw} 工程配置" if kw else "整理工程配置与仓库基础设置",
         "revert": f"回滚 {kw} 相关改动" if kw else "回滚存在风险的历史改动",
     }
 
-    # special cases based on file counts
-    if commit_type == "refactor" and (deleted > 0):
-        if deleted > 0 and added > 0 and modified > 0:
-            return "重构目录结构并更新相关实现"
+    # ── special cases based on file counts ─────────────────────────────
+    if commit_type == "refactor" and deleted > 0 and added > 0 and modified > 0:
+        return "重构目录结构并更新相关实现"
+    if commit_type == "refactor" and deleted > 0:
         return "重构目录结构并清理历史实现"
     if commit_type == "feat" and added > 0 and modified > 0:
-        return f"新增 {kw} 并联动更新相关实现" if kw else "新增功能并联动更新相关实现"
+        if kw:
+            return f"新增 {kw} 并联动更新相关模块"
+        return "新增功能并联动更新相关实现"
     if commit_type == "docs" and added > 0 and modified > 0:
-        return f"新增 {kw} 文档并统一格式规范" if kw else "新增项目文档并统一格式规范"
+        if kw:
+            return f"新增 {kw} 文档并统一格式规范"
+        return "新增项目文档并统一格式规范"
     if commit_type == "docs" and added > 0:
-        return f"新增 {kw} 项目文档与使用指南" if kw else "新增项目文档与使用指南"
+        if kw:
+            return f"新增 {kw} 项目文档与使用指南"
+        return "新增项目文档与使用指南"
+    if commit_type == "chore" and deleted > 0:
+        if kw:
+            return f"整理 {kw} 并清理冗余文件"
+        return "整理工程配置并清理冗余文件"
 
-    return by_type.get(commit_type, "整理本次改动并保持仓库一致性")
+    # ── deleted-only special case ─────────────────────────────────────
+    if added == 0 and modified == 0 and deleted > 0:
+        if commit_type == "chore":
+            return f"移除 {kw} 过期文件" if kw else "移除过期/冗余文件"
+        return f"清理 {kw} 废弃代码" if kw else "清理废弃代码"
+
+    return by_type_with_kw.get(commit_type, "整理本次改动并保持仓库一致性")
 
 
 def _english_subject(
@@ -322,12 +382,19 @@ def validate_commit_message(message: str) -> Dict[str, Any]:
     trimmed = message.strip()
     if not trimmed:
         return {"valid": False, "issues": ["commit message must not be empty"], "warnings": warnings}
-    match = COMMIT_MESSAGE_RE.match(trimmed)
+
+    # Split subject (first line) from body (remaining lines)
+    lines = trimmed.splitlines()
+    first_line = lines[0].strip()
+    body_lines = lines[1:]
+
+    # ── subject validation (Conventional Commits format) ────────────────
+    match = COMMIT_MESSAGE_RE.match(first_line)
     if not match:
         return {
             "valid": False,
             "issues": [
-                "commit message must match '<type>(<scope>): <subject>' "
+                "commit message subject must match '<type>(<scope>): <subject>' "
                 "and use an allowed conventional type"
             ],
             "warnings": warnings,
@@ -340,4 +407,21 @@ def validate_commit_message(message: str) -> Dict[str, Any]:
         issues.append("subject must not end with punctuation")
     if len(subject) > 50:
         warnings.append("subject is longer than 50 characters")
+
+    # ── body validation (loose — only structural checks) ────────────────
+    if body_lines:
+        # RFC: blank line between subject and body
+        if body_lines[0].strip() != "":
+            issues.append(
+                "body must be separated from subject by a blank line (RFC convention)"
+            )
+        else:
+            # Skip the blank separator, check remaining body lines
+            actual_body = [l for l in body_lines[1:] if l.strip()]
+            for i, body_line in enumerate(actual_body):
+                if len(body_line) > 72:
+                    warnings.append(
+                        f"body line {i + 1} is longer than 72 characters (wraps poorly in terminals)"
+                    )
+
     return {"valid": not issues, "issues": issues, "warnings": warnings}

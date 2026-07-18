@@ -5,407 +5,341 @@ description: Bootstrap git for local projects on WSL or Linux, apply repo-local 
 
 # GitCode Git Workflow
 
-Use this skill for WSL or Linux projects that need predictable local Git setup, safe GitCode remote creation, and commit guidance.
+## Quick Commands（快捷指令）
+
+识别用户意图后直接执行对应指令。**不要提前检查环境变量、SSH key 或配置文件** — 脚本自带完整校验，失败时根据具体报错排查即可。
+
+### 仓库操作
+
+| 用户意图 | 指令 |
+|---------|------|
+| 初始化本地 Git | `cd ~/.claude/skills && uv run python gitcode-workflow/scripts/gitcode_bootstrap.py local-only --project <path> --json` |
+| 预览待提交文件 | `cd ~/.claude/skills && uv run python gitcode-workflow/scripts/gitcode_bootstrap.py preview --project <path> --json` |
+| 创建远端仓库 | `cd ~/.claude/skills && uv run python gitcode-workflow/scripts/gitcode_bootstrap.py create-remote --project <path> --json` |
+| 提交并推送 | `cd ~/.claude/skills && uv run python gitcode-workflow/scripts/gitcode_bootstrap.py publish --project <path> --commit-message "<msg>" --json` |
+| 分析已有项目 | `cd ~/.claude/skills && uv run python gitcode-workflow/scripts/gitcode_bootstrap.py adopt-existing-project --project <path> --json` |
+| 查看个人信息 | `cd ~/.claude/skills && uv run python gitcode-workflow/scripts/gitcode_bootstrap.py profile --action show --json` |
+
+### Issue 操作
+
+| 用户意图 | 指令 |
+|---------|------|
+| 列出 Issues | `cd ~/.claude/skills && uv run python gitcode-workflow/scripts/gitcode_issues.py --owner <o> --repo <r> list [--state open\|closed\|all]` |
+| 创建 Issue | `cd ~/.claude/skills && uv run python gitcode-workflow/scripts/gitcode_issues.py --owner <o> --repo <r> create --title "..." [--body "..."] [--labels "..."]` |
+| 查看 Issue | `cd ~/.claude/skills && uv run python gitcode-workflow/scripts/gitcode_issues.py --owner <o> --repo <r> get <number>` |
+| 更新 Issue | `cd ~/.claude/skills && uv run python gitcode-workflow/scripts/gitcode_issues.py --owner <o> --repo <r> update <number> [--title "..."] [--state open\|closed]` |
+| 关闭 Issue | `cd ~/.claude/skills && uv run python gitcode-workflow/scripts/gitcode_issues.py --owner <o> --repo <r> close <number>` |
+| 重新打开 Issue | `cd ~/.claude/skills && uv run python gitcode-workflow/scripts/gitcode_issues.py --owner <o> --repo <r> reopen <number>` |
+| 查看 Issue 评论 | `cd ~/.claude/skills && uv run python gitcode-workflow/scripts/gitcode_issues.py --owner <o> --repo <r> comments <number>` |
+| 添加 Issue 评论 | `cd ~/.claude/skills && uv run python gitcode-workflow/scripts/gitcode_issues.py --owner <o> --repo <r> comment-create <number> --body "..."` |
+
+**原则：先执行，失败再排查。** `--owner` 和 `--repo` 在仓库目录下运行时自动从 git remote 推断，可不指定。
+
+---
 
 ## 执行环境约束
 
-**所有 Python 脚本必须在 `~/.claude/skills` 目录下执行**，使用 skills 项目自带的 `.venv`，绝不能依赖用户当前项目的 `pyproject.toml`。
-
-统一使用以下格式（先 `cd` 到 skills 目录再执行）：
+所有 Python 脚本必须在 `~/.claude/skills` 目录下执行：
 ```bash
 cd ~/.claude/skills && uv run python gitcode-workflow/scripts/<script>.py ...
 ```
 
-这样 uv 会自动从 `~/.claude/skills` 向上查找 `pyproject.toml` 来解析依赖，确保不会因用户项目中的平台限制包（如 `pywin32`）导致安装失败。
-
-详见 [~/.claude/skills/CLAUDE.md](../../CLAUDE.md)。
-
 ## Decide the mode first
 
-1. Determine the user intent.
-   - **local-only**: initialize a local repo, configure repo-local Git identity, and prepare ignore and safety rules.
-   - **adopt-existing-project**: analyze an existing directory and output a layered commit strategy only.
-   - **create-remote**: do the local bootstrap, create or reuse SSH material, and connect a GitCode remote without committing.
-   - **preview**: inspect the worktree, show the exact file set that would be published, and write a review manifest under `.git/`.
-   - **publish**: only after the user confirms the reviewed file set and a final commit message, verify the review manifest still matches and then push.
+1. 判断用户意图：
+   - **local-only**：初始化本地仓库、配置 Git 身份和忽略规则
+   - **adopt-existing-project**：分析已有目录，输出分层提交策略（只读，不改任何文件）
+   - **create-remote**：创建 GitCode 远端仓库（需用户明确要求）
+   - **preview**：预览待提交文件，生成候选提交信息（安全操作，写 review manifest 到 `.git/`）
+   - **publish**：提交并推送（需用户确认最终提交信息后执行）
 
-2. Respect side-effect boundaries.
-   - `local-only`: repo-local changes only.
-   - `adopt-existing-project`: analysis only, no repo mutation.
-   - `create-remote`: external side effect, so only run after the user explicitly asks to create/connect the remote.
-   - `preview`: safe to run, but it writes a review manifest inside `.git/`.
-   - `publish`: external side effect, so only run after explicit user confirmation.
+2. 副作用边界：
+   - `local-only`：仅改仓库本地配置
+   - `adopt-existing-project`：纯分析，零修改
+   - `create-remote`：外部副作用（创建远端仓库、SSH key）
+   - `preview`：写 `.git/gitcode-workflow-review.json`
+   - `publish`：外部副作用（push），需用户显式确认
 
-3. Load configuration.
-   - Prefer `~/.config/gitcode-workflow/config.json`.
-   - Use [references/config-format.md](references/config-format.md).
-   - Precedence is: explicit CLI args > environment variables > config file > built-in defaults.
-   - Recommend `GITCODE_TOKEN` or another configured token environment variable instead of writing tokens into JSON.
-   - Keep the config file outside the repository.
+3. 配置优先级：CLI args > 环境变量 > `~/.config/gitcode-workflow/config.json` > 内置默认值
 
-4. Resolve commit rules.
-   - First look for `docs/rules/Git-Commit.md` inside the project.
-   - If that file does not exist, use [references/commit-rules.md](references/commit-rules.md).
-   - Before any commit, read the active rules and keep the generated subject aligned with them.
+4. 提交规则：
+   - 优先读 `docs/rules/Git-Commit.md`（项目内）
+   - 不存在时用 `references/commit-rules.md`（内置模板）
+
+---
 
 ## local-only workflow
 
-Run:
-
 ```bash
-cd ~/.claude/skills && uv run python gitcode-workflow/scripts/gitcode_bootstrap.py local-only --project /path/to/project --config ~/.config/gitcode-workflow/config.json --json
+cd ~/.claude/skills && uv run python gitcode-workflow/scripts/gitcode_bootstrap.py local-only --project /path/to/project --json
 ```
 
-This workflow:
-- initializes Git when `.git/` is missing
-- keeps the identity **repo-local** by default
-- defaults to `x-dc-coder / x.dc0521@gmail.com` unless overridden
-- uses `master` as the default branch
-- detects common stacks (`springboot/java`, `python`, `go`)
-- appends shared ignore rules to `.gitignore`
-- appends machine-local sensitive patterns to `.git/info/exclude`
-- reports which commit-rules file is active
+此模式：初始化 Git、配置仓库级身份（默认 `x-dc-coder / x.dc0521@gmail.com`）、设置 `master` 为默认分支、检测技术栈、追加 `.gitignore` + `.git/info/exclude` 规则。
 
-When the user only asks to configure local Git, stop after this workflow and summarize the results.
+完成后汇报结果并停止。不预览、不创建远端、不提交。
+
+---
 
 ## adopt-existing-project workflow
 
-Use this mode only when the user already has a built project and wants **layered commit advice** before starting Git management.
-
-Run:
-
 ```bash
-cd ~/.claude/skills && uv run python gitcode-workflow/scripts/gitcode_bootstrap.py adopt-existing-project --project /path/to/project --max-layers 6 --config ~/.config/gitcode-workflow/config.json --json
+cd ~/.claude/skills && uv run python gitcode-workflow/scripts/gitcode_bootstrap.py adopt-existing-project --project /path/to/project --max-layers 6 --json
 ```
 
-This workflow:
-- inspects the current directory structure and common build files
-- detects likely stacks and sensitive config candidates
-- outputs a recommended layered commit order
-- gives include samples, exclude patterns, and commit-message candidates for each layer
-- labels the result as **heuristic** and **manual-review-required**
-- does **not** initialize Git
-- does **not** preview pending files
-- does **not** create a remote
-- does **not** commit or push
-- does **not** change any project files
+输出启发式分层提交建议（路径+文件名推断），标注为"需人工审查"。不初始化 Git、不修改文件。
 
-Always tell the user this is a path-and-filename heuristic draft, not an authoritative module boundary map.
+---
 
 ## create-remote workflow
 
-Run:
-
 ```bash
-cd ~/.claude/skills && uv run python gitcode-workflow/scripts/gitcode_bootstrap.py create-remote --project /path/to/project --config ~/.config/gitcode-workflow/config.json --json
+cd ~/.claude/skills && uv run python gitcode-workflow/scripts/gitcode_bootstrap.py create-remote --project /path/to/project --json
 ```
 
-This workflow:
-- performs the local-only workflow first
-- gets the GitCode user profile with `GET /api/v5/user` using the token
-- creates or reuses an ED25519 key pair
-- checks existing keys with `GET /api/v5/user/keys`
-- uploads the public key with `POST /api/v5/user/keys` only if needed
-- creates a **private** personal repository with `POST /api/v5/user/repos`
-- uses the current directory name as the default repo name unless overridden
-- configures `gitcode` as the default remote name
-- sets `remote.pushDefault` to that remote
-- does **not** commit or push
+先执行 local-only，再：获取 GitCode 用户信息、创建/复用 ED25519 SSH key、上传公钥、创建**私有**个人仓库、设置 `gitcode` 为默认 remote。
 
-Do not run this mode unless the user has clearly asked to create or connect a remote repository.
+仅在用户**明确要求**创建远端时执行。
+
+---
 
 ## preview workflow
 
-Always run this before any publish or push:
-
 ```bash
-cd ~/.claude/skills && uv run python gitcode-workflow/scripts/gitcode_bootstrap.py preview --project /path/to/project --config ~/.config/gitcode-workflow/config.json --json
+cd ~/.claude/skills && uv run python gitcode-workflow/scripts/gitcode_bootstrap.py preview --project /path/to/project --json
 ```
 
-Important behavior:
-- it groups the pending files by added, modified, deleted, renamed, and untracked
-- it shows blocked high-risk files or warnings from the safety scan
-- it uses `preview.diff_excerpt`, `preview.type_hints`, `preview.scope_hints`, and the active commit rules to draft **3 commit-message candidates**
-- it writes a review manifest to `.git/gitcode-workflow-review.json` by default, or to `--review-manifest <path>` if provided
-- the review manifest freezes the reviewed file set and content hashes for the next publish step
+预览待提交文件（按 added/modified/deleted/renamed/untracked 分组）、安全扫描高风险文件、生成候选提交信息、写入 review manifest。
 
-After `preview`:
-1. **评估改动规模**：
-   - **小规模**：待提交文件数 `<= 6` 且改动逻辑单一（如同一类 refactor 或同一 feature），按单批次处理。
-   - **大规模**：待提交文件数 `> 6` 或涉及多种改动类型（如同时包含 refactor、feat、docs、chore），**必须主动建议分批提交**。
-2. **大规模改动的分批策略**：
-   - 根据文件逻辑关系将待提交文件分组为 2-4 个批次，每组聚焦一个独立主题。例如：
-     - 批次 A：核心代码重构（新增/修改模块文件）
-     - 批次 B：新功能或 CLI 入口
-     - 批次 C：WSL/工具链支持
-     - 批次 D：文档与配置更新
-   - 为**每个批次分别生成 2-3 个独立的提交信息候选**，候选信息应反映该批次具体的 scope 和改动类型。
-   - 先向用户展示分批方案和每批的候选信息，等用户逐批确认后，再逐批执行 `git add` + `git commit`。
-   - 只有在用户**明确要求单批次提交**时，才放弃分批方案，回退到统一的 3 个候选信息。
-3. Show the pending file list grouped by added, modified, deleted, renamed, and untracked.
-4. Show blocked high-risk files or warnings from the safety scan.
-5. Draft commit-message candidates (单批次时 3 个，多批次时每批 2-3 个).
-6. Prefer concise Chinese subject lines when the active rules require Chinese subjects.
-7. Ask the user to choose one option per batch, or edit it.
-8. Surface the review-manifest path and snapshot hash.
-9. Do **not** run `publish` until the user confirms the final message(s).
+### 提交信息生成（⭐ 两阶段：脚本 fallback + 子代理主力）
 
-Example output shape:
+Python 脚本输出的 `commit_message_candidates` **仅作 fallback 参考**。最终给用户的候选信息**必须**通过子代理生成：
 
-```text
-Pending files
-- added: ...
-- modified: ...
-- deleted: ...
+1. 运行 `preview` 拿到 `diff_excerpt`、`files_by_kind`、`type_hints`、`scope_hints`
+2. 判断改动规模：
+   - **单批次**（files ≤ 6）：spawn **1 个子代理**，生成 3 个候选
+   - **多批次**（files > 6 或多种改动类型混合）：先按逻辑关系分组（如核心代码/工具链/文档），每组 spawn **1 个子代理**，每组生成 2-3 个候选
+3. 子代理模型：**deepseek-v4-flash**（快速、低成本）
+4. 子代理必须使用 Structured Output 返回 JSON
+5. 展示给用户时：优先展示子代理候选，Python fallback 候选仅作对比参考
 
-Commit message options
-1. feat(scope): <subject>
-2. fix(scope): <subject>
-3. refactor(scope): <subject>
-
-Review manifest
-- path: .git/gitcode-workflow-review.json
-- snapshot: <sha256>
+**子代理 prompt 模板**：
 ```
+你是代码审查专家。请仔细阅读以下 git diff，分析每个文件的具体改动内容（新增/修改的函数名、类名、逻辑变更、配置项、文件重命名等）。
+基于实际改动内容生成 {N} 个精准的 Conventional Commits 格式提交信息候选。
+
+要求：
+- 中文 subject，不超过 50 字符
+- subject 必须反映 diff 中实际改了什么，禁止使用"新增功能""修复问题""更新文档"等泛泛表述
+- 格式：<type>(<scope>): <subject>
+- type 从 {valid_types} 中选择
+- scope 从 {scope_hints} 中选择或从路径推断
+
+改动文件：
+{file_list}
+
+Diff 内容：
+{diff_excerpt}
+```
+
+**结构化输出 Schema**：
+```json
+{
+  "type": "object",
+  "properties": {
+    "candidates": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "properties": {
+          "type": {"type": "string", "enum": ["feat","fix","docs","style","refactor","perf","test","chore","revert"]},
+          "scope": {"type": "string"},
+          "subject": {"type": "string", "maxLength": 50}
+        },
+        "required": ["type", "scope", "subject"]
+      }
+    }
+  },
+  "required": ["candidates"]
+}
+```
+
+### 预览后的流程
+
+1. 展示分组后的待提交文件列表 + 安全扫描结果
+2. 展示子代理生成的候选信息（附 Python fallback 对比）
+3. 多批次时：先展示分批方案和各批候选，等待用户逐批确认
+4. 用户确认最终消息后，记录 review manifest 路径和 snapshot hash
+5. **不要**在用户确认前执行 publish
+
+---
 
 ## publish workflow
 
-Use this only after the user has explicitly confirmed a final commit message.
-
-Run:
+仅用户明确确认提交信息后执行：
 
 ```bash
-cd ~/.claude/skills && uv run python gitcode-workflow/scripts/gitcode_bootstrap.py publish --project /path/to/project --commit-message "feat(scope): <subject>" --config ~/.config/gitcode-workflow/config.json --json
+cd ~/.claude/skills && uv run python gitcode-workflow/scripts/gitcode_bootstrap.py publish --project /path/to/project --commit-message "<msg>" --json
 ```
 
-The publish workflow (for **single-batch** commits):
-- loads the review manifest from `.git/gitcode-workflow-review.json` by default, or `--review-manifest <path>` if provided
-- aborts if the manifest is missing, belongs to another project, or no longer matches the current worktree
-- validates the commit-message format against the allowed conventional types
-- ensures the remote exists, creating it if needed and a token is available
-- runs the safety scan before staging
-- aborts on high-risk secret files that are present but not ignored
-- stages **only the reviewed manifest targets**, commits once, and pushes the current branch to the configured remote
-- clears the review manifest after a successful publish
+**单批次**：加载 review manifest → 验证 worktree 未变 → 安全扫描 → stage 文件 → commit → push → 清除 manifest
 
-For **multi-batch** commits (user confirmed a batching plan in preview):
-- Do **not** use the publish script for batching. Instead, manually stage each batch with `git add <files>` and commit with `git commit -m "<message>"`.
-- After all batches are committed, push once with `git push <remote> <branch>`.
-- The review manifest can still be used as a reference for the full file set, but each batch commits independently.
+**多批次**：不用 publish 脚本。手动逐批 `git add <files>` + `git commit -m "<msg>"`，全部完成后一次 `git push`。
 
-If the user asks to push but the worktree changed after preview, rerun `preview` and make them review the new file set first.
+如果 worktree 在 preview 后发生了变化，必须重新运行 preview。
 
-## SSH preflight before publish
+---
 
-Before running `publish`, do a lightweight SSH preflight in WSL/Linux:
+## SSH 发布前检查
 
-1. Ensure `~/.ssh/config` contains a `Host gitcode.com` entry with:
-   - `User git`
-   - `IdentityFile ~/.ssh/<your-key>`
-   - `IdentitiesOnly yes`
-2. Verify permissions:
-   - `chmod 600 ~/.ssh/config`
-   - private key file should remain `600`
-3. Verify connectivity:
-   - `ssh -T git@gitcode.com`
+1. `~/.ssh/config` 需有 `Host gitcode.com` 条目（`User git`、`IdentityFile`、`IdentitiesOnly yes`）
+2. 权限：`chmod 600 ~/.ssh/config`，私钥 `600`
+3. 连通性：`ssh -T git@gitcode.com`
 
-If the key file is non-default (not `id_rsa` / `id_ed25519`) and no ssh-agent is loaded, publish may fail with `Permission denied (publickey)`.
-
-Temporary fallback:
-
+非默认 key 且无 ssh-agent 时可用临时 fallback：
 ```bash
 GIT_SSH_COMMAND='ssh -i ~/.ssh/<your-key> -o IdentitiesOnly=yes' git push -u gitcode master
 ```
 
-Then fix `~/.ssh/config` permanently.
+---
 
-## CJK path stability note
+## 分支与合并规范
 
-When the repository contains Chinese/Japanese/Korean filenames, set repo-local:
+### 分支命名
 
+| 前缀 | 用途 | 示例 |
+|------|------|------|
+| `feat/` | 新功能 | `feat/user-auth` |
+| `fix/` | Bug 修复 | `fix/login-redirect` |
+| `docs/` | 文档更新 | `docs/api-reference` |
+| `refactor/` | 代码重构 | `refactor/payment-flow` |
+| `chore/` | 工程杂项 | `chore/update-deps` |
+| `exp/` | 实验性分支 | `exp/new-algorithm` |
+
+### 分支策略
+
+- 默认分支：`master`
+- 新功能/修复：从 `master` 切出分支，开发完成后合并回 `master`
+- **禁止 force-push 到 `master`**
+- 合并方式：默认 `git merge`（保留完整提交历史）。小改动、单 commit 特性可用 `git merge --squash`
+- 合并前确保目标分支已拉取最新
+
+---
+
+## .gitignore 规范
+
+### 两层规则体系
+
+| 文件 | 用途 | 纳入版本控制 | 示例 |
+|------|------|-------------|------|
+| `.gitignore` | 团队共享的忽略规则 | ✅ 是 | `target/`, `__pycache__/`, `node_modules/`, `.idea/`, `*.log` |
+| `.git/info/exclude` | 本机的敏感/私有规则 | ❌ 否 | `.env`, `*.key`, `*.pem`, `application-local.yml`, `credentials*.json` |
+
+### 禁止做法
+
+- ❌ 将密钥/证书/本地配置模式放在 `.gitignore`（必须放在 `.git/info/exclude`）
+- ❌ 将 IDE 个人配置（如 `.vscode/settings.json`）放在 `.gitignore`（团队统一 IDE 配置时才放 gitignore）
+- ❌ 手动编辑 `.gitignore` 后不运行 `preview` 验证
+- ❌ 在 `.gitignore` 中逐文件列出所有环境配置变体（应使用通配符）
+
+### 标准忽略项（脚本自动追加）
+
+- **通用**：`.DS_Store`, `Thumbs.db`, `.idea/`, `.vscode/`, `*.log`, `logs/`
+- **Java/Spring**：`target/`, `build/`, `.gradle/`, `*.class`, `out/`
+- **Python**：`__pycache__/`, `*.py[cod]`, `.pytest_cache/`, `.venv/`, `venv/`, `dist/`, `*.egg-info/`
+- **Go**：`bin/`, `coverage.out`, `*.coverprofile`, `*.test`
+
+---
+
+## 提交信息规范
+
+### 格式约束
+
+- **绝对禁止**在提交信息末尾或正文添加 `Co-Authored-By` 标记
+- 格式：`<type>(<scope>): <subject>`
+- 可选 type：`feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `chore`, `revert`
+- scope 强烈建议提供，命名简短清晰
+- 中文 subject，不超过 50 字符，结尾不加标点
+- 多行消息：subject 与 body 之间空一行，body 每行不超过 72 字符
+
+### 提交规则来源
+
+优先读项目内的 `docs/rules/Git-Commit.md`，不存在时用内置模板 `references/commit-rules.md`。
+
+---
+
+## CJK 路径
+
+仓库含中文/日文/韩文文件名时，设置：
 ```bash
 git config core.quotepath false
 ```
 
-This avoids quoted/escaped paths in status output and reduces pathspec mismatch risk in automated staging/publish flows.
-
-## Commit-message constraints
-
-- **绝对禁止**在提交信息末尾或正文中添加 `Co-Authored-By` 标记，包括 `Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>`。提交信息应仅包含符合 Conventional Commits 格式的主题和正文，不得附加任何 co-author 签名。
-- 如果用户明确要求添加 co-author，才允许添加。
-
-## Commit-message drafting rules
-
-Use [references/commit-rules.md](references/commit-rules.md) when the project file is missing.
-
-When drafting options:
-- use one of `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `chore`, `revert`
-- include a scope whenever a clear scope is available
-- keep the subject concise and action-oriented
-- do not end the subject with punctuation
-- keep the final subject close to the stated length target in the active rules
-- when multiple interpretations are plausible, present a preferred option plus safer alternatives
-- **禁止**在提交信息中添加 `Co-Authored-By` 行（见上方 Commit-message constraints）
-
-## Safety rules
-
-Follow [references/safety-and-ignore.md](references/safety-and-ignore.md).
-
-Key rules:
-- put shared, team-wide ignore rules in `.gitignore`
-- put machine-local or user-local secret patterns in `.git/info/exclude`
-- keep the GitCode config file outside the repository
-- store SSH key **paths** in config, not raw private-key contents
-- prefer token environment variables instead of JSON secrets
-- before every push, check for `.env`, key stores, private keys, service-account JSON, and local Spring config files
-
-## Worked examples
-
-### Example A: first local bootstrap
-User intent: "帮我在这个项目里先初始化 Git，但先不要连远端。"
-
-Assistant behavior:
-1. run `local-only`
-2. report repo initialization, identity, stack detection, active commit rules, and ignore updates
-3. stop without preview or publish
-
-### Example B: review before first push
-User intent: "帮我看看现在会提交哪些文件，并给我几个提交信息备选。"
-
-Assistant behavior:
-1. run `preview`
-2. show grouped file list and safety findings
-3. draft 3 commit-message options
-4. surface the review-manifest path and snapshot hash
-5. wait for the user to confirm a final message
-
-### Example C: publish after confirmation (single batch)
-User intent: "就用第 2 个提交信息，开始推送。"
-
-Assistant behavior:
-1. run `publish` with the confirmed message
-2. rely on the saved review manifest
-3. abort if the worktree changed since preview
-4. report remote, branch, commit hash, staged targets, and manifest cleanup status
-
-### Example D: publish after confirmation (multi-batch)
-User intent: "第一批用选项 1，第二批用选项 2，第三批用选项 1，帮我推送。"
-
-Assistant behavior:
-1. For each batch, run `git add <batch-files>` followed by `git commit -m "<batch-message>"`
-2. After all batches are committed, run `git push <remote> <branch>`
-3. Report each commit hash, total batch count, and push status
-4. Do **not** rely on the review manifest for batching; it was only a reference for the full file set
-
-## Output expectations
-
-Always report the project path and the mode used.
-
-Additionally:
-- `local-only`: report whether the repo was initialized, Git identity values, detected stacks, active commit-rules source, and whether `.gitignore` / `.git/info/exclude` changed.
-- `adopt-existing-project`: report only the layered commit strategy, sensitive candidates, heuristic caveats, and commit-message suggestions for each proposed layer.
-- `preview` and `publish`: report the pending upload file list, generated commit-message candidates, and review-manifest details.
-- `create-remote` and `publish`: report remote name / URL and SSH key status.
+---
 
 ## Issue 管理
 
-使用 Issue 功能进行任务跟踪、bug 报告和项目管理。
+### commit message 引用关闭 Issue
 
-### Issue 工作流
+在提交信息中使用 `fix #N` 或 `close #N` **可能**自动关闭 Issue，但这取决于：
+- 仓库的 PR 设置是否启用"合并后自动关闭关联 Issue"
+- commit 是否通过 PR 合并（直接推送到默认分支的 commit 通常不会触发自动关闭）
 
-1. **列出 Issue**
-   ```bash
-   cd ~/.claude/skills && uv run python gitcode-workflow/scripts/gitcode_issues.py --owner <owner> --repo <repo> list [--state open|closed|all] [--json]
-   ```
-
-2. **创建 Issue**
-   ```bash
-   cd ~/.claude/skills && uv run python gitcode-workflow/scripts/gitcode_issues.py --owner <owner> --repo <repo> create --title "<title>" [--body "<body>"] [--labels "<labels>"] [--json]
-   ```
-
-3. **查看 Issue**
-   ```bash
-   cd ~/.claude/skills && uv run python gitcode-workflow/scripts/gitcode_issues.py --owner <owner> --repo <repo> get <number> [--json]
-   ```
-
-4. **更新 Issue**
-   ```bash
-   cd ~/.claude/skills && uv run python gitcode-workflow/scripts/gitcode_issues.py --owner <owner> --repo <repo> update <number> [--title "<title>"] [--body "<body>"] [--state open|closed] [--json]
-   ```
-
-5. **关闭 Issue**
-   ```bash
-   cd ~/.claude/skills && uv run python gitcode-workflow/scripts/gitcode_issues.py --owner <owner> --repo <repo> close <number> [--json]
-   ```
-
-6. **重新打开 Issue**
-   ```bash
-   cd ~/.claude/skills && uv run python gitcode-workflow/scripts/gitcode_issues.py --owner <owner> --repo <repo> reopen <number> [--json]
-   ```
-
-7. **列出评论**
-   ```bash
-   cd ~/.claude/skills && uv run python gitcode-workflow/scripts/gitcode_issues.py --owner <owner> --repo <repo> comments <number> [--json]
-   ```
-
-8. **添加评论**
-   ```bash
-   cd ~/.claude/skills && uv run python gitcode-workflow/scripts/gitcode_issues.py --owner <owner> --repo <repo> comment-create <number> --body "<body>" [--json]
-   ```
+**可靠做法**：commit-push 后，手动调用 `close` 命令关闭 Issue：
+```bash
+cd ~/.claude/skills && uv run python gitcode-workflow/scripts/gitcode_issues.py close <number>
+```
 
 ### Issue 使用场景
 
-- **个人 TODO**: 用 Issue 替代本地待办列表，随时随地访问
-- **Bug 跟踪**: 记录发现的问题，关联修复提交
-- **功能规划**: 标记未来要实现的功能
-- **代码审查反馈**: 在 Issue 中讨论代码改进
+- **个人 TODO**：用 Issue 替代本地待办列表
+- **Bug 跟踪**：记录发现的问题，关联修复提交
+- **功能规划**：标记未来要实现的功能
 
-### Issue 与 Git 工作流集成
+---
 
-建议在 `publish` 后自动关联 Issue:
-- 提交信息中使用 `#1` 引用 Issue
-- 使用 `fix #1` 或 `close #1` 自动关闭 Issue
+## 安全规则
 
-## 个人信息管理
+- 团队共享的忽略规则放 `.gitignore`
+- 本机敏感文件模板放 `.git/info/exclude`
+- GitCode config 文件放在仓库外（`~/.config/gitcode-workflow/config.json`）
+- SSH key 只存路径，不存私钥内容
+- Token 优先走环境变量（`GITCODE_TOKEN`），避免写入 JSON
+- 每次 push 前自动扫描：`.env`、密钥文件、证书、service-account JSON、本地 Spring 配置
 
-查看和管理 GitCode 个人主页信息。
+---
 
-```bash
-cd ~/.claude/skills && uv run python gitcode-workflow/scripts/gitcode_bootstrap.py \
-  profile --action <show|emails|starred|repos|update> \
-  --config ~/.config/gitcode-workflow/config.json [--json]
-```
+## Worked examples
 
-### 支持的操作
+### 示例 A：初始化本地 Git
+用户："帮我在这个项目里先初始化 Git，但先不要连远端。"
+→ 执行 `local-only`，汇报结果后停止。
 
-| 操作 | 说明 |
-|------|------|
-| `--action show` | 显示个人信息（`--public <username>` 查看他人） |
-| `--action emails` | 查看邮箱列表及验证状态 |
-| `--action starred` | 查看收藏的仓库 |
-| `--action repos` | 查看自己的所有仓库 |
-| `--action update` | 更新个人信息（⚠️ 当前 GitCode 维护期，暂不可用） |
+### 示例 B：预览提交
+用户："帮我看看现在会提交哪些文件，并给我几个提交信息备选。"
+→ 执行 `preview` → spawn 子代理分析 diff → 展示分组文件 + 安全发现 + 候选信息 → 等待用户确认。
 
-### 更新个人信息（等官方开放 PATCH /user 后可用）
+### 示例 C：确认后推送（单批次）
+用户："就用第 2 个提交信息，开始推送。"
+→ 执行 `publish`，校验 manifest，推送，汇报结果。
 
-```bash
-cd ~/.claude/skills && uv run python gitcode-workflow/scripts/gitcode_bootstrap.py \
-  profile --action update \
-  --description "个人简介" \
-  --company "公司" \
-  --location "所在地" \
-  --website "https://example.com" \
-  --github-account "GitHub用户名"
-```
+### 示例 D：确认后推送（多批次）
+用户："第一批用选项 1，第二批用选项 2，第三批用选项 1，帮我推送。"
+→ 逐批 `git add` + `git commit`，全部完成后 `git push`。
 
-## Resources
+---
 
-- [scripts/gitcode_bootstrap.py](scripts/gitcode_bootstrap.py): deterministic bootstrap automation
-- [scripts/gitcode_issues.py](scripts/gitcode_issues.py): Issue management automation
-- [scripts/lib/](scripts/lib/): shared library modules (common, config, git, api, profile, preview, etc.)
-- [references/config-format.md](references/config-format.md): config schema and precedence
-- [references/commit-rules.md](references/commit-rules.md): bundled fallback commit template
-- [references/safety-and-ignore.md](references/safety-and-ignore.md): secret-protection and review-manifest strategy
-- [references/api-capabilities.md](references/api-capabilities.md): full GitCode API v5 capabilities
-- [references/docs-sync-design.md](references/docs-sync-design.md): Wiki auto-doc sync design
-- [assets/config.example.json](assets/config.example.json): copyable starter config
+## 配置文件
+
+- [references/config-format.md](references/config-format.md) — 配置格式与优先级
+- [references/commit-rules.md](references/commit-rules.md) — 内置提交规范模板
+- [references/safety-and-ignore.md](references/safety-and-ignore.md) — 安全扫描与忽略策略
+- [references/api-capabilities.md](references/api-capabilities.md) — GitCode API v5 完整清单
+- [assets/config.example.json](assets/config.example.json) — 配置模板
+
+## 脚本
+
+- [scripts/gitcode_bootstrap.py](scripts/gitcode_bootstrap.py) — 核心 bootstrap CLI
+- [scripts/gitcode_issues.py](scripts/gitcode_issues.py) — Issue 管理 CLI
+- [scripts/lib/](scripts/lib/) — 共享模块（api, config, git, preview, manifest, safety 等）

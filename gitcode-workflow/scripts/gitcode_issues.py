@@ -94,7 +94,7 @@ def create_issue(
     return (
         api_request(
             config["gitcode"]["api_base"], "POST",
-            f"/repos/{owner}/{repo}/issues", token, payload=payload,
+            f"/repos/{owner}/issues", token, payload=payload,
         )
         or {}
     )
@@ -106,7 +106,7 @@ def update_issue(
     state: Optional[str] = None, labels: Optional[str] = None,
 ) -> dict:
     token = require_token(config)
-    payload: Dict[str, Any] = {}
+    payload: Dict[str, Any] = {"repo": repo}
     if title is not None:
         payload["title"] = title
     if body is not None:
@@ -118,7 +118,7 @@ def update_issue(
     return (
         api_request(
             config["gitcode"]["api_base"], "PATCH",
-            f"/repos/{owner}/{repo}/issues/{number}", token, payload=payload,
+            f"/repos/{owner}/issues/{number}", token, payload=payload,
         )
         or {}
     )
@@ -129,8 +129,8 @@ def close_issue(config: Dict[str, Any], owner: str, repo: str, number: int) -> d
     return (
         api_request(
             config["gitcode"]["api_base"], "PATCH",
-            f"/repos/{owner}/{repo}/issues/{number}", token,
-            payload={"state": "close"},
+            f"/repos/{owner}/issues/{number}", token,
+            payload={"repo": repo, "state": "close"},
         )
         or {}
     )
@@ -141,8 +141,8 @@ def reopen_issue(config: Dict[str, Any], owner: str, repo: str, number: int) -> 
     return (
         api_request(
             config["gitcode"]["api_base"], "PATCH",
-            f"/repos/{owner}/{repo}/issues/{number}", token,
-            payload={"state": "reopen"},
+            f"/repos/{owner}/issues/{number}", token,
+            payload={"repo": repo, "state": "reopen"},
         )
         or {}
     )

@@ -172,7 +172,16 @@ def commit_and_push(
             "review_snapshot_hash": review_manifest.get("snapshot_hash"),
         }
     staged_targets = stage_review_manifest(project, review_manifest)
-    run(["git", "commit", "-m", commit_message], cwd=project, check=True)
+    # Support single-line and multi-line commit messages.
+    # Single-line: use -m; multi-line: use -m per line (git joins them with a blank line).
+    lines = commit_message.strip().splitlines()
+    if len(lines) == 1:
+        run(["git", "commit", "-m", commit_message], cwd=project, check=True)
+    else:
+        cmd = ["git", "commit"]
+        for line in lines:
+            cmd.extend(["-m", line])
+        run(cmd, cwd=project, check=True)
     branch = repo_current_branch(project)
     run(["git", "push", "-u", remote_name, branch], cwd=project, check=True)
     commit_hash = run(
