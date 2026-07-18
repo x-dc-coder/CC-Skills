@@ -8,6 +8,7 @@ description: >
   Windows Python 环境、注册表、WMI、COM 自动化、Event Log。GPU 规范统一在
   /home/dc/CLAUDE.md。UTF-8 三层防护：PYTHONUTF8=1 + PYTHONIOENCODING=utf-8
   + -X utf8 + WSLENV 白名单转发。
+  venv 管理一律用 uv（禁止 conda），pythonw.exe 必须用绝对路径指定 venv。
 ---
 
 # WSL → Windows 桥接 Skill
@@ -253,6 +254,8 @@ launch_detached(
    - 找到多个 → 列出让用户选
    - 找到 0 个 → **AI 自动创建 venv**（见下方"Windows 侧 venv 管理"章节），无需用户手动操作
    - 用户也可直接指定路径（如"E:\projects\myproj\.venv"），AI 直接用
+   - ⚠️ **禁止用裸名 `pythonw.exe`**：WSL interop 会按 Windows PATH 命中 `D:\Python311`（未装 torch）或 `D:\Anconda`（conda），导致缺包或环境混乱。**必须用 uv venv 的绝对路径。**
+   - ⚠️ **禁止用 conda**：此 SKILL 一律用 uv 管理 venv。conda 的 27 个环境（`D:\Anconda\envs\`）是旧项目用的，不参与 GPU 训练。需要创建新环境时用 `uv.exe venv`（见下方"Windows 侧 venv 管理"章节）。
 2. **训练代码**：脚本内容或脚本路径
 
 **AI 自动推断（不需问用户）**：
@@ -330,16 +333,55 @@ with acquire_gpu_slot(max_concurrent=2):
 
 > ⚠️ **不要写** `PYTORCH_CUDA_ALLOC_CONF=per_process_memory_fraction:0.4` —— 这是 Python API 不是 env var，PyTorch 会报 `Unrecognized CachingAllocator option`。详见 CLAUDE.md "GPU 显存配额" 段。
 
-### Windows 侧 Python venv 管理（AI 可自动执行）
+### Windows 侧 Python venv 管理（⭐ uv 唯一，禁止 conda）
 
-WSL 可以通过 `powershell.exe` 调用 Windows 侧的 `uv.exe` 创建 venv 和安装依赖，全程无需用户切换到 Windows 操作。
+> **铁律：此 SKILL 一律使用 `uv` 管理 Windows 侧 Python venv，禁止使用 conda。**
+> 用户机器虽然有 Anaconda（`D:\Anconda`，27 个 conda 环境），但那些是旧项目用的，
+> GPU 训练/推理一律走 uv venv。conda 环境不参与此 SKILL 的任何流程。
 
-**uv.exe 路径**：`C:\Users\32841\.local\bin\uv.exe`（已安装在用户机器上）
+#### 为什么禁用 conda
 
-#### 探测已有 venv
+| 问题 | conda | uv |
+|------|-------|-----|
+| WSL 调用延迟 | ~600ms（conda 是 Python 脚本） | ~50ms（uv 是 Rust 二进制） |
+| 安装速度 | 慢（Python solver，串行） | 极快（Rust，并行下载） |
+| CUDA PyTorch | `conda install pytorch pytorch-cuda=12.8 -c pytorch -c nvidia` | `uv pip install torch --index-url https://download.pytorch.org/whl/cu128` |
+| venv 隔离 | `envs/` 目录，元数据庞大 | 标准 `.venv/`，轻量 |
+| PATH 污染 | conda 在 PATH 加了 7 个条目，优先级高 | uv 只加 1 个 `.local/bin` |
+| 跨工具兼容 | conda activate 会修改 PATH，与 WSL interop 冲突 | uv venv 不动 PATH |
+
+#### ⚠️ PATH 陷阱（AI 必读）
+
+用户机器的 Windows PATH 有以下 Python：
+
+| 优先级 | 路径 | 说明 |
+|:------:|------|------|
+| 🥇 最高 | `D:\Python311\pythonw.exe` | 裸 Python 3.11，**未装 torch**，pip 全局污染 |
+| 🥈 | `D:\Anconda\pythonw.exe` | conda base，**27 个 conda 环境**，不走 uv |
+| 🥉 | `C:\Users\32841\...\Python312\pythonw.exe` | Python 3.12，很少用 |
+
+**当 AI 写 `pythonw.exe -c "import torch"` 时，WSL interop 按 PATH 命中 `D:\Python311`，那里没装 torch → `ModuleNotFoundError`。**
+
+**正确做法**：始终用 **绝对路径** 指定 uv venv 的 pythonw.exe：
+```python
+# ✅ 正确：绝对路径，不依赖 PATH
+stream_gpu_windows(py_exe=r"E:\venvs\marker\Scripts\pythonw.exe", ...)
+
+# ❌ 错误：裸名走 PATH，命中 D:\Python311 → 缺包
+stream_gpu_windows(py_exe="pythonw.exe", ...)
+```
+
+#### uv.exe 路径
+
+```
+C:\Users\32841\.local\bin\uv.exe
+```
+版本：0.11.28（2026-07-07）。也有 WinGet 安装的副本，用哪个都行（同版本）。
+
+#### 探测已有 uv venv
 
 ```bash
-# 探测 E:\venvs\ 下的 venv
+# 探测 E:\venvs\ 下的 uv venv
 ls /mnt/e/venvs/*/Scripts/pythonw.exe 2>/dev/null
 
 # 探测项目 .venv
@@ -348,7 +390,7 @@ ls /mnt/e/projects/*/.venv/Scripts/pythonw.exe 2>/dev/null
 
 #### 创建新 venv + 安装 PyTorch（AI 自动化流程）
 
-当探测不到已有 venv 时，AI 直接执行以下命令创建：
+当探测不到已有 venv 时，AI 直接执行以下命令创建——**全程用 uv，不用 conda**：
 
 ```bash
 # 1. 创建 venv（Python 3.11，稳定）
@@ -367,16 +409,14 @@ powershell.exe -Command "& 'E:\projects\<projname>\.venv\Scripts\pythonw.exe' -c
 > ⚠️ **CUDA 版本选择**：
 > - `cu128`（CUDA 12.8）：**推荐**，Windows 稳定，RTX 40/50 系列全支持
 > - `cu130`（CUDA 13.0）：有 Windows DLL 兼容问题，暂不推荐
-> - 安装命令的 `--index-url` 必须匹配 CUDA 版本
+> - PyTorch 必须用官方 `download.pytorch.org` 源（清华镜像没有 CUDA wheel）
 
-#### pip 换源（安装慢时）
+#### pip 换源（国内安装慢时）
 
-国内访问 PyTorch 官方源可能超时，可换清华镜像：
+PyTorch 本身必须用官方源（`download.pytorch.org`），但普通依赖可换清华镜像：
 ```bash
 powershell.exe -Command "& 'C:\Users\32841\.local\bin\uv.exe' pip install tqdm numpy --python E:\projects\<projname>\.venv\Scripts\python.exe --index-url https://pypi.tuna.tsinghua.edu.cn/simple"
 ```
-
-PyTorch 本身必须用官方 `download.pytorch.org` 源（清华没有 CUDA wheel）。
 
 #### venv 路径约定
 
