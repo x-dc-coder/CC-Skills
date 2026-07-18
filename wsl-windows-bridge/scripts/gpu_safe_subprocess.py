@@ -562,7 +562,8 @@ def launch_detached(
             start_new_session=True, env=build_gpu_env(limits),
         )
     else:
-        cmd = [py_exe, "-u", "-X", "utf8", "-c", wrapped_code] + (args or [])
+        wsl_py_exe = _resolve_wsl_py_exe(py_exe)
+        cmd = [wsl_py_exe, "-u", "-X", "utf8", "-c", wrapped_code] + (args or [])
         proc = subprocess.Popen(
             cmd,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
