@@ -1,275 +1,352 @@
 ---
 name: paper-reader
 description: >
-  学术论文 PDF 双引擎对照阅读器。同时调用 Marker + MinerU 两个引擎转换 PDF，
-  输出双路 Markdown 用于交叉对照阅读，降低单一引擎的解析错误。
-  当用户提到"读论文"、"读 PDF"、"分析文献"、"精读"、"对照阅读"，
-  或给出 PDF 路径需要分析其中方法、公式、实验、图表时，必须使用此 skill。
-  处理学术论文（含数学公式、表格、流程图）时优先使用。支持单 PDF 或目录批量转换。
-  不要用于纯文本 PDF（小说、合同）、扫描件 OCR 单一诉求（直接用 MinerU 单路）、
-  单页快速摘要（用 look_at 即可）。
+  学术论文 PDF 双引擎对照阅读器 — 四阶段流水线（预检→转换→合并→总结）。
+  Marker + MinerU 双引擎并行转换，自动合并、差异对照、文献总结。
+  内置 PDF 预检、异常处理三级响应、断点续跑、流水线状态追踪。
 ---
 
-# Paper Reader
+# Paper Reader — 四阶段论文分析流水线
 
-**学术论文 PDF 双引擎对照阅读器** — 同时调用 Marker + MinerU 两个引擎转换 PDF，输出双路 Markdown
-用于交叉对照阅读，降低单一引擎的解析错误。
+## 流水线四阶段
+
+```
+源PDF目录                 转换目录                  合并目录                 文献总结
+papers/              paper-conversion/         paper-merged/           paper-summaries/
+    │                      │                        │                       │
+    ▼                      ▼                        ▼                       ▼
+┌────────┐   ┌──────────────────────┐   ┌──────────────────┐   ┌──────────────────┐
+│ 预检    │──▶│ Marker + MinerU 并行  │──▶│ 合并 + 差异对照    │──▶│ LLM 生成结构化总结 │
+│ 秒级    │   │ ~6 分钟/篇            │   │ ~2 秒             │   │                  │
+└────────┘   └──────────────────────┘   └──────────────────┘   └──────────────────┘
+```
 
 ## 何时使用（必须用）
 
 - 用户提到"读论文"、"读 PDF"、"分析文献"、"精读"、"对照阅读"
 - 用户给出 PDF 路径，需要分析其中方法、公式、实验、图表
-- 处理学术论文（含数学公式、表格、流程图）时**优先使用此 skill**
-- 给定一个目录，批量转换其中所有 PDF（如 VRP-GPU课题分析/papers/）
+- 批量处理目录中所有 PDF
 
-**不要用此 skill 处理**：纯文本 PDF（如小说、合同）、扫描件 OCR 单一诉求（直接用 MinerU 单路）、
-单页快速摘要（用 `look_at` 即可）。
+**不要用此 skill 处理**：纯文本 PDF（小说、合同）、扫描件 OCR 单一诉求（直接用 MinerU 单路）、单页快速摘要（用 `look_at` 即可）。
 
-## 双引擎设计原理
+## 输出目录结构（v2 四层架构）
 
-| 引擎 | 出品方 | 强项 | 弱项 | 用途 |
-|---|---|---|---|---|
-| **Marker** | Vik Paruchuri | 速度快、Markdown 编辑性好、`<sup>` 标签整洁 | 公式 LaTeX 化不完整 | 主路：稳定、清晰、可读 |
-| **MinerU** | OpenDataLab | 公式 LaTeX 准确（`\mathcal{G}` 等）、表格识别强 | 偶有 OCR 字符错位 | 副路：补公式/表格细节 |
-
-两者并行运行后输出：
-- `marker/` 和 `mineru/` 两份原始 Markdown
-- `_MERGED.md` **合并版**（以 MinerU 为主版，Marker 补充缺失段落，取各自 OCR 优势）
-- `_DIFF.md` 智能对照（归一化 + 模糊匹配，仅显示真实内容差异）
-- `_META.json` 含两路耗时、文件大小、图片分类统计、差异段落数
-
-## 合并策略（_MERGED.md）
-
-合并目标：生成单个最适合 LLM 读取的 Markdown 文件。
-
-### 内容来源选择
-
-| 内容类型 | 来源 | 原因 |
-|---|---|---|
-| **正文段落**（相似度 ≥ 0.85） | Marker | 英文 OCR 更准（`effective` vs `efective`） |
-| **公式段落**（相似度 < 0.85） | MinerU | 公式识别更准（`\mathcal{G}` 等） |
-| **Marker 独有段落** | Marker | 补充 MinerU 省略的通讯信息 |
-| **MinerU 独有段落** | MinerU | 保留 MinerU 识别到的额外内容 |
-
-### 5 步 LLM 友好后处理
-
-1. **OCR 错误修复**：自动纠正 15 个常见 ff→f 错误（`ofspring`→`offspring`、`diferent`→`different`、`efective`→`effective` 等）
-2. **LaTeX 间距修复**：`\mathrm{M i n i m i z e}` → `\mathrm{Minimize}`；`\mathcal { G }` → `\mathcal{G}`
-3. **HTML 表格转 Markdown**：`<table><tr><td>...</td></tr></table>` → `| ... | ... |`（LLM 更易理解）
-4. **表格恢复**：把归一化时被替换的 `[TABLE]` 标记替换回 Marker 原始 Markdown 表格内容
-5. **图片索引**：末尾附加 `## Images Index`，列出所有图片路径（Marker 14 张 + MinerU 18 张引用）
-6. **LLM 友好元数据头**：YAML front matter + 标题 + 作者 + 摘要 + 目录
-
-### 效果指标（Lei & Hao 2026 MDVRP 论文，40 页）
-
-| 指标 | 改进前 | 改进后 |
-|---|---|---|
-| OCR 错误（ofspring 等） | 42 处 | **0 处** |
-| LaTeX 字母间距问题 | 2 处 | **0 处** |
-| HTML 表格 | 12 处 | **0**（全转 Markdown） |
-| Markdown 表格行 | 0 | **146 行**（从 Marker 恢复） |
-| 图片引用 | 0（被归一化吞掉） | **32 张索引** |
-| 结构标签 | 无 | **YAML 头 + 目录 + 25 章节** |
-| 文件大小 | 89KB | 121KB |
-
-## 图片提取差异说明
-
-Marker 和 MinerU 提取的图片数量不同，**这是正常现象**：
-
-| 引擎 | 提取内容 | 典型数量 |
-|---|---|---|
-| **Marker** | 仅提取真正的图片（Figure、Picture） | 14 张 |
-| **MinerU** | 提取图片 + 公式图片 + 表格图片 + 图表图片 | 39 张 |
-
-MinerU 的 `content_list.json` 会标注每张图片的类型：
-- `image`: 真正的图片（Figure）
-- `equation`: 公式片段（MinerU 同时输出 LaTeX 文本和图片备份）
-- `table`: 表格片段（MinerU 同时输出 HTML 表格和图片备份）
-- `chart`: 图表
-
-`_META.json` 的 `img_breakdown` 字段会分类统计，例如：
-```json
-"img_breakdown": {"image": 8, "equation": 9, "table": 12, "chart": 10}
+```
+<papers_dir>/                          # 源 PDF 目录
+├── _pipeline_state.json               # ⭐ 流水线状态 → git 跟踪
+├── _download_manifest.json            # 搜索桥接文件 → git 跟踪
+├── paper-conversion/                  # 阶段1: 转换 → gitignore
+│   └── <stem>/
+│       ├── marker/                    # Marker 原始输出（含图片）
+│       │   ├── <stem>.md
+│       │   └── *.jpeg
+│       └── mineru/                    # MinerU 原始输出（含图片）
+│           └── auto/
+│               ├── <stem>.md
+│               └── images/*.jpg
+├── paper-merged/                      # 阶段2: 合并 → gitignore（可从 PDF 重现）
+│   └── <stem>/
+│       ├── images/                    # 从两引擎复制的 Figure 图片（自包含）
+│       ├── _MERGED.md                 # 合并版 Markdown
+│       ├── _DIFF.md                   # 差异对照
+│       └── _META.json                 # 转换元数据
+└── paper-summaries/                   # 阶段3: 文献总结 → git 跟踪
+    └── <stem>.md                      # 结构化总结（含期刊等级）
 ```
 
-MinerU md 中只引用 `image` 类型的图片（8 张），其余 31 张是公式/表格的图片备份（LaTeX/HTML 已在 md 中，图片只是冗余存档）。
+### 各层 git 策略
 
-## Diff 算法（v2：归一化 + 模糊匹配）
+| 目录 | 内容 | git | 理由 |
+|---|---|---|---|
+| `papers/` | 源 PDF | ✅ 跟踪 | 源文件，不可重现 |
+| `_pipeline_state.json` | 状态 + URL | ✅ 跟踪 | 追踪进度，含分析决策 |
+| `_download_manifest.json` | 搜索元数据 | ✅ 跟踪 | 论文来源信息快照 |
+| `paper-conversion/` | 引擎原始输出 | ❌ ignore | 可从 PDF 重现 |
+| `paper-merged/` | 合并产物 | ❌ ignore | 可从 PDF 重现 |
+| `paper-summaries/` | LLM 总结 | ✅ 跟踪 | 含主观分析，每次不同 |
 
-直接行级 diff 会因格式差异产生大量噪声（一篇 40 页论文原始 diff 981 行）。
-脚本做了 7 步归一化后再比较：
+### 图片策略
 
-1. 统一引号（curly → straight）
-2. 统一标题层级（`####` → `##`）
-3. `<sup>x</sup>` → `^x^`，行内 `$x$` → `x`
-4. 合并 `$$...$$` 块为单段（MinerU 切成三段）
-5. 合并连续非空行为段落 + 跨段断行合并（小写字母结尾+小写字母开头）
-6. 图片引用归一化为 `[IMAGE]`，HTML 表格归一化为 `[TABLE]`
-7. 过滤元信息行（邮箱、通讯作者、DOI、URL）
+合并阶段从两引擎复制 **仅 Figure 类型图片** 到 `paper-merged/<stem>/images/`：
+- **MinerU**: 解析 `content_list.json`，过滤 `type == "image"` 的真正图片
+- **Marker**: 无类型分类信息，全部复制（每篇约 14 张，可接受）
 
-然后用贪心最优配对（每个 Marker 段落找 MinerU 中相似度最高的段落）做模糊匹配：
-- 相似度 ≥ 0.85 → `[SAME]` 仅标注字符级差异（如 OCR 拼写 `effective` vs `efective`）
-- 相似度 < 0.85 → `[DIFF]` 真实内容差异，需人工裁决
-- 仅一方有 → `[ONLY-M]` / `[ONLY-U]`
-
-**效果**：981 行 → 166 段真实差异（降 83%），其中需人工看的 `[DIFF]` 仅 66 段。
+公式/表格图片备份留在 `paper-conversion/` 不复制（LaTeX/HTML 已在 md 中，图片冗余）。
 
 ## 快速开始
 
 ```bash
-# 转换单个 PDF（双引擎对照）
-# 默认输出到 <输入 PDF 所在目录>/paper-analysis/<pdf_stem>/
-uv run ~/.claude/skills/paper-reader/scripts/paper_reader.py \
-  /path/to/paper.pdf
+# === 初始化流水线状态 ===
+# 扫描 papers/ 目录，计算 hash，创建 _pipeline_state.json
+paper_reader.py papers/ --init
 
-# 显式指定输出目录
-uv run ~/.claude/skills/paper-reader/scripts/paper_reader.py \
-  /path/to/paper.pdf --output /tmp/pr_out
+# 从搜索桥接文件自动填入 URL/元数据
+paper_reader.py papers/ --init --from-manifest _download_manifest.json
 
-# 转换整个目录所有 PDF（默认输出到 <目录>/paper-analysis/）
-uv run ~/.claude/skills/paper-reader/scripts/paper_reader.py \
-  /path/to/papers_dir/ --batch
+# === 查看流水线状态 ===
+paper_reader.py papers/ --status
 
-# 只用 Marker（快速摘要场景）
-uv run ~/.claude/skills/paper-reader/scripts/paper_reader.py \
-  paper.pdf --engines marker
+# === 处理论文 ===
+# 基础用法（默认双引擎 + 断点续跑）
+paper_reader.py papers/ --batch --resume
 
-# 只用 MinerU（扫描版/中文 PDF 场景）
-uv run ~/.claude/skills/paper-reader/scripts/paper_reader.py \
-  paper.pdf --engines mineru --mineru-method ocr
+# 强制重做某篇
+paper_reader.py papers/2605.05208.pdf --force
 
-# 指定页范围（只转前 5 页快速过摘要）
-uv run ~/.claude/skills/paper-reader/scripts/paper_reader.py \
-  paper.pdf --pages 0-4
+# 单引擎（快速摘要）
+paper_reader.py papers/ --engines marker --resume
 
-# 资源限制调优（防 OOM 卡死，默认值已合理，无需手动设）
-# 最稳：单引擎串行 + 50% 显存
-uv run ~/.claude/skills/paper-reader/scripts/paper_reader.py \
-  paper.pdf --max-workers 1 --gpu-fraction 0.5
-# 激进批量：2 PDF 并发（需 GPU ≥ 16GB）
-uv run ~/.claude/skills/paper-reader/scripts/paper_reader.py \
-  papers/ --batch --max-concurrent-pdfs 2 --gpu-fraction 0.2
+# 指定页范围
+paper_reader.py papers/2605.05208.pdf --pages 0-4
 
-# 用 read 工具读取输出（路径形如 paper-analysis/<stem>/marker/<stem>/<stem>.md）
-# read paper-analysis/paper/marker/paper/paper.md
-# read paper-analysis/paper/mineru/auto/paper.md
-# read paper-analysis/paper/_DIFF.md
+# 资源限制
+paper_reader.py papers/ --batch --resume --max-workers 1 --gpu-fraction 0.5
 ```
 
-## 默认输出路径规则
+## 流水线状态文件
 
-不传 `--output` 时，自动写到**输入 PDF/目录的同级 `paper-analysis/` 目录**：
+`_pipeline_state.json` 跟踪每篇论文的处理进度：
 
-| 输入 | 默认输出 |
+```json
+{
+  "pipeline_version": "2.0",
+  "last_updated": "2026-07-18T15:30:00",
+  "papers": {
+    "2605.05208": {
+      "source": {
+        "url": "https://arxiv.org/abs/2605.05208",
+        "pdf_url": "https://arxiv.org/pdf/2605.05208",
+        "doi": "10.1109/xxx",
+        "arxiv_id": "2605.05208",
+        "source_db": "arxiv",
+        "title_from_source": "MDVRP: A Multi-Depot...",
+        "venue": "Transportation Science",
+        "year": 2026,
+        "authors": ["Lei, H.", "Smith, J."]
+      },
+      "pdf_hash": "sha256:abc123...",
+      "precheck": {"status": "passed", "page_count": 40},
+      "phase1_converted": {
+        "status": "done",
+        "marker_ok": true,
+        "mineru_ok": true,
+        "at": "2026-07-15T10:23:00"
+      },
+      "phase2_merged": {
+        "status": "done",
+        "diff_paragraphs": 66,
+        "images_copied": 22,
+        "at": "2026-07-15T10:23:05"
+      },
+      "phase3_summarized": {
+        "status": "done",
+        "summary_path": "paper-summaries/2605.05208.md",
+        "at": "2026-07-16T09:00:00"
+      }
+    }
+  }
+}
+```
+
+### 状态字段说明
+
+| 字段 | 值 | 含义 |
+|---|---|---|
+| `status` | `pending` | 未处理 |
+| | `passed` | 预检通过 |
+| | `done` | 阶段成功完成 |
+| | `degraded` | 部分成功（如单引擎可用） |
+| | `skipped` | 因上游失败而跳过 |
+| | `failed` | 本阶段执行失败 |
+| | `interrupted` | 被 Ctrl+C 中断 |
+
+## 预检（Phase 0：秒级，不启动 GPU）
+
+在处理前自动验证 PDF 有效性，防止坏文件浪费 GPU 资源：
+
+| 检查项 | 检测方式 | 失败动作 |
+|---|---|---|
+| 文件存在 | `pdf_path.exists()` | SKIP → 标记 `file_missing` |
+| 非空文件 | `size ≥ 1KB` | SKIP → 标记 `empty_file` |
+| PDF 格式 | magic bytes `%PDF-` | SKIP → 标记 `not_a_pdf` |
+| 密码保护 | `pypdf.PdfReader.is_encrypted` | SKIP → 标记 `encrypted` |
+| 结构损坏 | `pypdf` 读取抛异常 | SKIP → 标记 `corrupted` |
+| 页数超限 | 默认 200 页上限 | SKIP → 标记 `too_large` |
+| 扫描件检测 | 前 10 页 text 层检查 | DEGRADE → 警告，建议 MinerU OCR |
+
+## 异常处理（三级响应）
+
+| 级别 | 含义 | 行为 | 示例 |
+|---|---|---|---|
+| **FATAL** | 环境级，继续无意义 | 终止整个运行 | 磁盘满、输出目录不可写 |
+| **SKIP** | 此 PDF 不可处理 | 跳过，标记，继续下一个 | 损坏 PDF、密码保护、两引擎都失败 |
+| **DEGRADE** | 部分可用 | 继续下游降级处理 | Marker OK 但 MinerU OOM |
+
+### 各阶段异常表
+
+#### Phase 1: 转换
+
+| 异常 | 级别 | 降级策略 |
+|---|---|---|
+| Marker 失败（OOM/超时/崩溃） | DEGRADE | 单路 MinerU → merged 直接用 MinerU md |
+| MinerU 失败 | DEGRADE | 单路 Marker → merged 直接用 Marker md |
+| 两引擎都失败 | SKIP | 标记 failed，跳过此 PDF |
+| GPU 预算不足被跳过 | SKIP | 标记 `gpu_budget_unavailable` |
+
+#### Phase 2: 合并
+
+| 异常 | 级别 | 降级策略 |
+|---|---|---|
+| 仅单引擎可用 | DEGRADE | 直接拷贝该引擎输出作为 merged |
+| 归一化崩溃 | SKIP | 保留原始输出，标记 failed |
+| 图片复制失败 | DEGRADE | merged md 仍生成，图片回退到相对引用 |
+| 写入失败 | FATAL | 磁盘满或其他 I/O 问题 |
+
+## 搜索桥接文件（与 unified-search 联动）
+
+`_download_manifest.json` 存放论文的来源信息，由搜索阶段产生、paper-reader 读取：
+
+```json
+{
+  "generated_by": "unified-search",
+  "query": "MDVRP vehicle routing GPU acceleration",
+  "generated_at": "2026-07-18T15:00:00",
+  "papers": [
+    {
+      "filename": "2605.05208.pdf",
+      "arxiv_id": "2605.05208",
+      "title": "MDVRP: A Multi-Depot Vehicle Routing Problem with...",
+      "url": "https://arxiv.org/abs/2605.05208",
+      "pdf_url": "https://arxiv.org/pdf/2605.05208",
+      "doi": "10.1109/xxx",
+      "venue": "Transportation Science",
+      "year": 2026,
+      "authors": ["Lei, H.", "Smith, J."],
+      "source_db": "arxiv"
+    }
+  ]
+}
+```
+
+`--init --from-manifest` 按 `filename` 匹配，自动填入 `_pipeline_state.json` 的 `source` 字段。
+若论文损坏需要重新下载，`source.url` / `source.pdf_url` 可直接用于定位。
+
+## 文献总结模板
+
+总结 md 包含以下结构（Phase 3 由 LLM 基于 MERGED.md 生成）：
+
+```markdown
+# <论文标题>
+
+## 元信息
+| 字段 | 值 |
 |---|---|
-| `/path/to/papers/2605.05208.pdf` | `/path/to/papers/paper-analysis/2605.05208/` |
-| `/path/to/papers/` (目录批量) | `/path/to/papers/paper-analysis/` |
+| 作者 | ... |
+| 年份 | ... |
+| 期刊/会议 | ... |
+| **期刊等级** | **CCF-A / CCF-B / CCF-C / SCI一区 / SCI二区 / 顶会 / 预印本** |
+| DOI | ... |
 
-## 工作流（推荐）
+## 一句话摘要
+...
 
-1. **快速过摘要**：`--pages 0-2 --engines marker` → 5 秒提取标题/摘要/引言
-2. **决定要精读后**：`--engines both` 全文双引擎对照 → 5-7 分钟（40 页论文）
-3. **读双路 Markdown**：
-   - 先读 marker/ 的（结构清晰）
-   - 遇公式/表格再切到 mineru/ 的（LaTeX 准）
-   - 看 _DIFF.md 中的差异行，人工裁决哪个版本对
-4. **图分析**：用 `doubao-vision` skill 分析 `mineru/<stem>/auto/images/` 中的架构图、流程图
-5. **批量处理目录**：`--batch` 模式，串行处理所有 PDF，进度可见
+## 研究问题与动机
+...
 
-## 输出目录结构
+## 方法论
+...
 
+## 核心贡献
+...
+
+## 实验与结论
+...
+
+## 局限与未来工作
+...
+
+## 与我方研究的关联度
+- 技术相关性：高/中/低
+- 可复用的技术点
+
+## 阅读笔记
+- 亮点
+- 疑问/待深入
 ```
-<output_dir>/
-├── <pdf_stem>/
-│   ├── marker/                  # Marker 输出
-│   │   ├── <stem>.md
-│   │   ├── <stem>_meta.json
-│   │   └── _page_*_Figure_*.jpeg
-│   ├── mineru/                  # MinerU 输出
-│   │   └── auto/
-│   │       ├── <stem>.md
-│   │       ├── <stem>_content_list.json
-│   │       ├── <stem>_layout.pdf  # 版面分析可视化
-│   │       ├── <stem>_span.pdf
-│   │       └── images/            # 图片（哈希命名）
-│   ├── _DIFF.md                 # 行级对照差异
-│   └── _META.json               # 转换元数据
-```
 
-## 引擎调用细节
+期刊等级标注规则：
+- CCF 推荐列表 → `CCF-A` / `CCF-B` / `CCF-C`
+- 中科院分区 → `SCI一区` / `SCI二区` / `SCI三区`
+- 顶会 → 标注会议名 + CCF 等级
+- arXiv 预印本 → `预印本（未发表/在审）`
 
-> **WSL 环境**：`paper_reader.py` 会自动检测 WSL，将 Marker/MinerU 的 GPU 计算通过 `cmd.exe` 桥接到 Windows 原生 Python (`E:\venvs\marker` / `E:\venvs\mineru`) 执行，避免 vmmemWSL 内存膨胀。编排逻辑（diff/merge）仍在 WSL 侧。
+## 双引擎设计原理
 
-### Marker 调用
-```
-~/.claude/skills/paper-reader/venvs/marker/bin/marker_single <pdf> \
-  --output_dir <out>/marker [--page_range 0-4]
-```
-首次运行会下载 ~2GB 模型到 `~/.cache/datalab/`。
+| 引擎 | 出品方 | 强项 | 弱项 |
+|---|---|---|---|
+| **Marker** | Vik Paruchuri | 英文 OCR 准、结构清晰 | 公式 LaTeX 不完整 |
+| **MinerU** | OpenDataLab | 公式 LaTeX 准、表格强 | 偶有 OCR 错位 |
 
-### MinerU 调用
-```
-~/.claude/skills/paper-reader/venvs/mineru/bin/mineru -p <pdf> \
-  -o <out>/mineru -b pipeline -m auto
-```
-- `-b pipeline`：通用模式（快、稳）
-- `-b hybrid-engine --effort high`：高精度模式（含图表分析，慢 3-5 倍）
-- `-m ocr`：强制 OCR（适合扫描件）
-- `-l ch`：中文 PDF 时加这个
-首次运行会下载模型到 `~/.cache/modelscope/`。
+## 合并策略（_MERGED.md）
+
+| 内容类型 | 来源 | 原因 |
+|---|---|---|
+| 正文段落（相似度 ≥ 0.85） | Marker | 英文 OCR 更准 |
+| 公式段落（相似度 < 0.85） | MinerU | 公式更准 |
+| Marker 独有段落 | Marker | 补充通讯信息 |
+| MinerU 独有段落 | MinerU | 保留额外内容 |
+
+### LLM 友好后处理
+
+1. **OCR 错误修复**：ff→f 常见错误自动纠正
+2. **LaTeX 间距修复**：`\mathrm{M i n i m i z e}` → `\mathrm{Minimize}`
+3. **HTML 表格转 Markdown**：`<table>` → `| ... |`
+4. **表格恢复**：从 Marker 恢复被归一化的表格
+5. **图片索引**：末尾列出所有图片路径
+6. **YAML front matter** + 标题 + 摘要 + 目录
+
+## Diff 算法
+
+7 步归一化后再比较（消除格式噪声）：
+1. 统一引号（curly → straight）
+2. 统一标题层级
+3. `<sup>x</sup>` → `^x^`，行内公式提取纯文本
+4. 合并 `$$...$$` 块
+5. 合并连续非空行为段落 + 跨段断行合并
+6. 图片/HTML 表格归一化为占位符
+7. 过滤元信息行
+
+然后用贪心最优配对 + 相似度阈值（0.85）分类：
+- ≥ 0.85 → `[SAME]` 仅标注字符差异
+- < 0.85 → `[DIFF]` 真实内容差异
+- 仅一侧 → `[ONLY-M]` / `[ONLY-U]`
 
 ## 性能预期
 
-- 40 页学术论文（如 Lei&Hao MDVRP）：
-  - Marker: ~6 分钟
-  - MinerU (pipeline): ~3 分钟
-  - 双引擎并行: ~6 分钟（取 max）
-- 10 页摘要精读：Marker 单路 ~30 秒
-
-## 资源限制（防 OOM 卡死）
-
-**背景**：双引擎并行模式下，Marker 和 MinerU 两个 Windows GPU 进程同时吃同一块 16GB 显存。不加限制会吃满显存 → CUDA 驱动 hang → 全系统冻住。规范全文见 `/home/dc/CLAUDE.md` → "GPU 多路并发铁律"。
-
-`paper_reader.py` 默认已开启四层防护，无需额外配置：
-
-| 防护层 | 默认值 | CLI 参数 | 作用 |
-|---|---|---|---|
-| **① GPU 显存配额（单进程）** | 每进程 40% | `--gpu-fraction 0.4` | OOM 抛异常而非杀驱动（最关键） |
-| **② CPU 线程上限（单进程）** | 每进程 6 线程 | `--cpu-threads 6` | 防两进程各起 24 线程抢核 |
-| **③ 批量并发上限（进程内）** | 串行（1 PDF） | `--max-concurrent-pdfs 1` | 防进程内多 PDF 同时跑 |
-| **④ 设备级协调（跨进程）** | 总显存 ≤ 90% | `--gpu-cap-fraction 0.9` | **paper-reader + CV 训练同时跑时排队等待，不抢占** |
-
-**第④层（GpuGovernor）说明**：当 paper-reader 与其他 GPU 任务（如 CV 训练）同时跑时，通过 fcntl 文件锁 + 预算账本互斥访问 GPU。账本位置 `~/.cache/gpu-governor/ledger.json`。其他任务也用同样的 governor 即可自动协调。
-
-常用调优组合：
-
-```bash
-# 最稳（单引擎串行，省显存）
-uv run paper_reader.py paper.pdf --max-workers 1 --gpu-fraction 0.5
-
-# 默认（双引擎并行，每进程 40% 显存，设备级 90% 上限）
-uv run paper_reader.py paper.pdf   # 无需任何参数
-
-# 激进批量（需 GPU ≥ 16GB：2 PDF × 2 引擎 × 20% = 80% ≤ 100%）
-uv run paper_reader.py papers/ --batch --max-concurrent-pdfs 2 --gpu-fraction 0.2
-
-# 纯 CPU 模式（不用 GPU，可关限制）
-uv run paper_reader.py paper.pdf --gpu-fraction 0
-```
-
-**OOM 早预警**：批量并发时若 `max_concurrent_pdfs × max_workers × gpu_fraction > 100%`，脚本会打印警告但仍执行（用户自负）。
+- 40 页论文，双引擎并行：~6 分钟
+- 10 页，Marker 单路：~30 秒
+- 预检：< 1 秒
 
 ## 故障排查
 
 | 症状 | 原因 | 解决 |
 |---|---|---|
-| CUDA out of memory | 显存不足 | 加 `--engines marker` 单路，或 `--max-workers 1` 串行，或降 `--gpu-fraction` |
-| 系统卡死/CUDA 驱动 hang | 多进程吃满显存 | 默认 0.4 配额应能防住；若仍卡，加 `--max-workers 1` |
-| GPU 预算不足被跳过（stderr: `GPU budget unavailable`） | CV 训练等其他任务占满 90% cap | 加大 `--gpu-wait-timeout`，或暂停其他 GPU 任务，或 `--gpu-cap-fraction 0` 关协调器（不推荐） |
-| MinerU 模型下载卡住 | 网络问题 | 设 `HF_ENDPOINT=https://hf-mirror.com` |
-| Marker 公式识别差 | 已知缺陷 | 切到 mineru/ 的对应段落看 |
-| MinerU OCR 把 V 识别成 ν | 字体相似 | 切到 marker/ 看同段 |
-| venvs/ 被误删 | — | 重跑 `bash scripts/bootstrap.sh` |
+| `[SKIP] encrypted` | PDF 密码保护 | 用 `source.url` 重新下载未加密版本 |
+| `[SKIP] not_a_pdf` | 文件非 PDF 格式 | 检查下载源 |
+| `[SKIP] corrupted` | PDF 结构损坏 | 用 `source.pdf_url` 重新下载 |
+| `[DEGRADE] MinerU OOM` | 显存不足 | `--max-workers 1 --gpu-fraction 0.5` |
+| `[SKIP] gpu_budget_unavailable` | 其他 GPU 任务占满 | 等待或 `--gpu-cap-fraction 0` |
+| 批量中断 | Ctrl+C | 已完成的保留，`--resume` 续跑 |
+
+## 资源限制（防 OOM）
+
+默认四层防护：
+- ① 单进程 GPU 显存配额 40%
+- ② 单进程 CPU 线程上限 6
+- ③ 批量串行（1 PDF）
+- ④ 设备级协调器（总显存 ≤ 90%）
+
+详见 `/home/dc/CLAUDE.md` "GPU 多路并发铁律"。
 
 ## 文件
 
@@ -277,8 +354,8 @@ uv run paper_reader.py paper.pdf --gpu-fraction 0
 paper-reader/
 ├── SKILL.md                    # 本文
 ├── scripts/
-│   ├── paper_reader.py         # 主脚本（双引擎调度 + diff）
-│   └── bootstrap.sh            # 重装 venvs（如需）
+│   ├── paper_reader.py         # 主脚本（流水线编排 + CLI）
+│   └── bootstrap.sh            # 重装 venvs
 ├── venvs/
 │   ├── marker/                 # Marker 独立 Python 环境
 │   └── mineru/                 # MinerU 独立 Python 环境

@@ -1,23 +1,27 @@
 #!/usr/bin/env python3
-"""paper-reader: Marker + MinerU 双引擎学术论文 PDF 对照阅读器.
+"""paper-reader: Marker + MinerU  PDF   +
 
-用法:
-  paper_reader.py <pdf_path_or_dir> [--output OUT] [--engines both|marker|mineru]
-                  [--pages 0-9] [--batch] [--mineru-method auto|ocr|txt]
-                  [--mineru-backend pipeline|hybrid-engine] [--lang ch]
+v2    -
+
+: paper_reader.py <pdf_path_or_dir> [--output OUT] [--engines both|marker|mineru]
+                  [--pages 0-9] [--batch] [--init] [--status] [--resume] [--force]
+                  [--from-manifest PATH] [--import-urls PATH] [--max-pages N]
 """
 
 from __future__ import annotations
 
 import argparse
 import difflib
+import enum
+import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import time
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -25,17 +29,12 @@ SKILL_ROOT = Path(__file__).resolve().parent.parent
 MARKER_BIN = SKILL_ROOT / "venvs" / "marker" / "bin" / "marker_single"
 MINERU_BIN = SKILL_ROOT / "venvs" / "mineru" / "bin" / "mineru"
 
-# ── WSL → Windows 桥接配置 ────────────────────────────────────────────────
-# 在 WSL 中运行时，将 Marker/MinerU 的 GPU 计算路由到 Windows 原生 Python，
-# 避免 vmmemWSL 进程内存膨胀（WSL2 不主动归还内核内存给 Windows）。
+# ── WSL → Windows   ────────────────────────────────────────────────
 _WSL = "microsoft" in os.uname().release.lower()
 _WSL_MARKER_PY = r"E:\venvs\marker\Scripts\python.exe"
 _WSL_MINERU_PY = r"E:\venvs\mineru\Scripts\python.exe"
 
-# ── GPU 资源栅栏（⭐ 防 OOM 卡死系统） ───────────────────────────────────
-# 从 wsl-windows-bridge 共享模块导入 GPU 资源栅栏（含设备级 GpuGovernor）。
-# 规范见 /home/dc/CLAUDE.md "GPU 多路并发铁律"。
-# 共享模块位置：~/.claude/skills/wsl-windows-bridge/scripts/gpu_safe_subprocess.py
+# ── GPU    ⭐  OOM   ───────────────────────────────────
 _BRIDGE_SCRIPTS = (Path.home() / ".claude" / "skills" / "wsl-windows-bridge" / "scripts")
 if str(_BRIDGE_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_BRIDGE_SCRIPTS))
@@ -43,26 +42,405 @@ from gpu_safe_subprocess import (  # noqa: E402
     GpuLimits, build_gpu_env, GpuGovernor, GpuLease, InsufficientGpuBudget,
 )
 
-# 运行期被 main() 依据 CLI 参数填充；(_gpu_fraction<=0, _cpu_threads) 表示不限制
-_GPU_FRACTION: float = 0.4   # 默认每进程 40% 显存（16GB GPU → 6.4GB）
-_CPU_THREADS: int = 6         # 默认每进程 6 线程（2 进程 × 6 = 12 ≤ 物理核）
-# 设备级协调器：保证多任务总显存 ≤ cap_fraction × total_vram（默认 90%）
-# 多个 paper-reader 实例 / CV 训练同时跑时，通过 fcntl 文件锁互斥，避免过载
+_GPU_FRACTION: float = 0.4
+_CPU_THREADS: int = 6
 _GPU_GOVERNOR: GpuGovernor | None = None
-_GPU_WAIT_TIMEOUT: float = 600.0   # 设备预算不足时等待秒数（默认 10 分钟）
+_GPU_WAIT_TIMEOUT: float = 600.0
 
+# ──    ─────────────────────────────────────────────────
+_PIPELINE_VERSION = "2.0"
+_DEFAULT_MAX_PAGES = 200
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#   Enums
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class ErrorType(str, enum.Enum):
+    """.  enum  JSON ."""
+    # 0:
+    FILE_MISSING = "file_missing"
+    EMPTY_FILE = "empty_file"
+    NOT_A_PDF = "not_a_pdf"
+    ENCRYPTED = "encrypted"
+    CORRUPTED = "corrupted"
+    TOO_LARGE = "too_large"
+    PRECHECK_CRASHED = "precheck_crashed"
+    # 1:
+    CUDA_OOM = "cuda_oom"
+    TIMEOUT = "timeout"
+    ENGINE_CRASH = "engine_crash"
+    SILENT_CRASH = "silent_crash"
+    NO_OUTPUT = "no_output"
+    GPU_BUDGET_UNAVAILABLE = "gpu_budget_unavailable"
+    # 2:
+    BOTH_ENGINES_FAILED = "both_engines_failed"
+    NORMALIZE_CRASH = "normalize_crash"
+    IMG_COPY_FAILED = "img_copy_failed"
+    WRITE_FAILED = "write_failed"
+    DISK_FULL = "disk_full"
+    #
+    WSL_BRIDGE_FAILED = "wsl_bridge_failed"
+    PERMISSION_DENIED = "permission_denied"
+    INTERRUPTED = "interrupted"
+
+    def __str__(self) -> str:
+        return self.value
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_SEVERITY_EMOJI = {
+    "fatal":    "💥",
+    "skip":     "⏭️",
+    "degrade":  "⚠️",
+    "ok":       "✅",
+    "pending":  "⏳",
+}
+
+_PHASE_NAMES = {
+    "precheck": "PRECHECK",
+    "phase1_converted": "CONVERTED",
+    "phase2_merged": "MERGED",
+    "phase3_summarized": "SUMMARIZED",
+}
+
+
+def _precheck_emoji(status: str) -> str:
+    """    emoji ."""
+    if status == "passed":
+        return _SEVERITY_EMOJI["ok"]
+    if status == "pending":
+        return _SEVERITY_EMOJI["pending"]
+    return _SEVERITY_EMOJI["skip"]
+
+
+def _engine_pair_emoji(phase: dict) -> str:
+    """ marker/mineru   ."""
+    status = phase.get("status", "pending")
+    if status == "done":
+        return f"{_SEVERITY_EMOJI['ok']} {_SEVERITY_EMOJI['ok']}"
+    if status == "degraded":
+        m = _SEVERITY_EMOJI["ok"] if phase.get("marker_ok") else _SEVERITY_EMOJI["skip"]
+        u = _SEVERITY_EMOJI["ok"] if phase.get("mineru_ok") else _SEVERITY_EMOJI["skip"]
+        err = ""
+        for eng in ("marker", "mineru"):
+            if not phase.get(f"{eng}_ok"):
+                etype = phase.get(f"{eng}_error_type", "unknown")
+                err = f"💥{ErrorType(etype).value[:6]}" if etype != "unknown" else "💥err"
+        return f"{m} {u}{err}"
+    if status == "failed":
+        return "❌ ❌"
+    if status == "skipped":
+        return "⏭️"
+    return _SEVERITY_EMOJI["pending"]
+
+
+def _phase_emoji(phase: dict, key: str) -> str:
+    """    emoji."""
+    if not phase:
+        return _SEVERITY_EMOJI["pending"]
+    status = phase.get("status", "pending")
+    if status == "done":
+        return _SEVERITY_EMOJI["ok"]
+    if status == "degraded":
+        return _SEVERITY_EMOJI["degrade"]
+    if status in ("failed", "skipped"):
+        return _SEVERITY_EMOJI["skip"]
+    return _SEVERITY_EMOJI["pending"]
+
+
+def _severity_emoji(status: str) -> str:
+    """    -> emoji."""
+    return _SEVERITY_EMOJI.get(status, "  ")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@dataclass
+class PrecheckResult:
+    """PDF   ."""
+    ok: bool
+    status: str = "pending"          # passed | failed | skipped
+    reason: str = ""                 # ErrorType value
+    detail: str = ""
+    page_count: int = 0
+    pdf_hash: str = ""
+    scan_warning: bool = False       # True =
+
+    @classmethod
+    def failed(cls, reason: ErrorType, detail: str = "") -> "PrecheckResult":
+        return cls(ok=False, status="failed", reason=reason.value, detail=detail)
+
+    @classmethod
+    def skipped(cls, reason: ErrorType, detail: str = "") -> "PrecheckResult":
+        return cls(ok=False, status="skipped", reason=reason.value, detail=detail)
+
+    def to_record(self) -> dict:
+        return {
+            "status": self.status,
+            "reason": self.reason,
+            "detail": self.detail,
+            "page_count": self.page_count,
+            "pdf_hash": self.pdf_hash,
+            "scan_warning": self.scan_warning,
+        }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def run_precheck(pdf: Path, max_pages: int = _DEFAULT_MAX_PAGES) -> PrecheckResult:
+    """PDF    ——   GPU ,  CPU   ."""
+
+    if not pdf.exists():
+        return PrecheckResult.skipped(ErrorType.FILE_MISSING, str(pdf))
+
+    size = pdf.stat().st_size
+    if size < 1024:
+        return PrecheckResult.skipped(ErrorType.EMPTY_FILE, f"{size} bytes")
+
+    # Magic bytes
+    try:
+        with open(pdf, "rb") as f:
+            header = f.read(5)
+    except (OSError, IOError) as e:
+        return PrecheckResult.failed(ErrorType.PERMISSION_DENIED, str(e))
+
+    if not header.startswith(b"%PDF-"):
+        return PrecheckResult.skipped(
+            ErrorType.NOT_A_PDF,
+            detail=f"magic bytes: {header[:10]!r}",
+        )
+
+    # pypdf
+    try:
+        from pypdf import PdfReader
+    except ImportError:
+        # pypdf   →   +
+        pdf_hash = hashlib.sha256(pdf.read_bytes()).hexdigest()[:16]
+        return PrecheckResult(
+            ok=True, status="passed", page_count=-1, pdf_hash=pdf_hash,
+            reason="", detail="pypdf not installed, skipped deep check",
+        )
+
+    try:
+        reader = PdfReader(str(pdf))
+    except Exception as e:
+        return PrecheckResult.skipped(ErrorType.CORRUPTED, str(e)[:500])
+
+    if reader.is_encrypted:
+        return PrecheckResult.skipped(ErrorType.ENCRYPTED, "PDF is password-protected")
+
+    page_count = len(reader.pages)
+    if page_count > max_pages:
+        return PrecheckResult.skipped(
+            ErrorType.TOO_LARGE,
+            detail=f"{page_count} pages > max {max_pages}",
+        )
+
+    #   :  10  text
+    text_pages = 0
+    for page in reader.pages[:10]:
+        try:
+            text = page.extract_text()
+            if text and len(text.strip()) > 50:
+                text_pages += 1
+        except Exception:
+            pass
+    scan_warning = text_pages < 2
+
+    pdf_hash = hashlib.sha256(pdf.read_bytes()).hexdigest()[:16]
+
+    return PrecheckResult(
+        ok=True, status="passed",
+        page_count=page_count, pdf_hash=pdf_hash,
+        scan_warning=scan_warning,
+        detail="",
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class PipelineState:
+    """_pipeline_state.json  CRUD  ."""
+
+    def __init__(self, state_path: Path):
+        self._path = state_path
+        self._data: dict = {"pipeline_version": _PIPELINE_VERSION, "last_updated": "", "papers": {}}
+        self._dirty = False
+        if state_path.exists():
+            self._load()
+        else:
+            self._dirty = True
+
+    def _load(self) -> None:
+        try:
+            self._data = json.loads(self._path.read_text(encoding="utf-8"))
+            #
+            if "papers" not in self._data:
+                self._data["papers"] = {}
+            self._data.setdefault("pipeline_version", _PIPELINE_VERSION)
+        except (json.JSONDecodeError, OSError):
+            self._data = {"pipeline_version": _PIPELINE_VERSION, "last_updated": "", "papers": {}}
+            self._dirty = True
+
+    def save(self) -> None:
+        """."""
+        import datetime
+        self._data["last_updated"] = datetime.datetime.now().isoformat()
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._path.write_text(
+            json.dumps(self._data, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        self._dirty = False
+
+    # ──   ──────────────────────────────────────────────────────────
+
+    def has(self, stem: str) -> bool:
+        return stem in self._data.get("papers", {})
+
+    def get(self, stem: str) -> dict:
+        return self._data.get("papers", {}).get(stem, {})
+
+    def ensure_entry(self, stem: str) -> dict:
+        """   ,  ."""
+        papers = self._data.setdefault("papers", {})
+        if stem not in papers:
+            papers[stem] = {
+                "source": {},
+                "pdf_hash": None,
+                "precheck": {"status": "pending"},
+                "phase1_converted": {"status": "pending"},
+                "phase2_merged": {"status": "pending"},
+                "phase3_summarized": {"status": "pending"},
+            }
+            self._dirty = True
+        return papers[stem]
+
+    def set_precheck(self, stem: str, result: PrecheckResult) -> None:
+        entry = self.ensure_entry(stem)
+        entry["precheck"] = result.to_record()
+        entry["pdf_hash"] = result.pdf_hash
+        self._dirty = True
+
+    def set_source(self, stem: str, source_info: dict) -> None:
+        entry = self.ensure_entry(stem)
+        existing = entry.get("source") or {}
+        for k, v in source_info.items():
+            if v:  #
+                existing[k] = v
+        entry["source"] = existing
+        self._dirty = True
+
+    def set_phase(self, stem: str, phase: str, record: dict) -> None:
+        entry = self.ensure_entry(stem)
+        entry[phase] = record
+        self._dirty = True
+
+    def set_phase_from_error(self, stem: str, phase: str, etype: ErrorType, msg: str) -> None:
+        self.set_phase(stem, phase, {
+            "status": "failed",
+            "error_type": etype.value,
+            "error": msg[:500],
+        })
+
+    # ──   ──────────────────────────────────────────────────────────
+
+    def is_fully_done(self, stem: str) -> bool:
+        """          done  degraded."""
+        entry = self.get(stem)
+        if not entry:
+            return False
+        for phase in ("precheck", "phase1_converted"):
+            s = (entry.get(phase) or {}).get("status", "pending")
+            if s not in ("done", "degraded", "passed"):
+                return False
+        return True
+
+    def needs_precheck(self, stem: str) -> bool:
+        e = self.get(stem)
+        return (e.get("precheck") or {}).get("status") not in ("passed",)
+
+    def needs_phase1(self, stem: str) -> bool:
+        e = self.get(stem)
+        return (e.get("phase1_converted") or {}).get("status") not in ("done", "degraded")
+
+    def needs_phase2(self, stem: str) -> bool:
+        e = self.get(stem)
+        return (e.get("phase2_merged") or {}).get("status") not in ("done", "degraded")
+
+    # ──  /  ─────────────────────────────────────────────────────
+
+    def init_from_pdfs(self, pdfs: list[Path], max_pages: int) -> list[str]:
+        """ PDF   (   )."""
+        new_stems = []
+        for pdf in pdfs:
+            stem = pdf.stem
+            if self.has(stem):
+                continue
+            precheck = run_precheck(pdf, max_pages)
+            self.set_precheck(stem, precheck)
+            if not precheck.ok:
+                print(f"  [{stem}] {precheck.reason}: {precheck.detail[:80]}", file=sys.stderr)
+            else:
+                print(f"  [{stem}] ✅ {precheck.page_count} ", file=sys.stderr)
+            new_stems.append(stem)
+        if new_stems:
+            self.save()
+        return new_stems
+
+    def import_manifest(self, manifest: dict) -> int:
+        """  _download_manifest.json  source  .  filename ."""
+        papers_in_manifest = manifest.get("papers", [])
+        matched = 0
+        for paper in papers_in_manifest:
+            filename = paper.get("filename", "")
+            stem = Path(filename).stem if filename else ""
+            if not stem or not self.has(stem):
+                continue
+            source_info = {
+                k: v for k, v in paper.items()
+                if k != "filename" and v
+            }
+            if source_info:
+                self.set_source(stem, source_info)
+                matched += 1
+        if matched:
+            self.save()
+            print(f"   {matched}  PDF  source ", file=sys.stderr)
+        else:
+            print(f"  :    PDF  _pipeline_state.json ", file=sys.stderr)
+        return matched
+
+    def papers_summary(self) -> list[dict]:
+        """    ."""
+        return [
+            {"stem": stem, **entry}
+            for stem, entry in sorted(self._data.get("papers", {}).items())
+        ]
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#   GPU
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def _build_gpu_env(gpu_fraction: float, cpu_threads: int) -> dict[str, str]:
-    """薄包装：用共享模块构造 GPU 限制环境变量（含 WSLENV 白名单）。"""
     limits = GpuLimits(
         gpu_memory_fraction=gpu_fraction if gpu_fraction > 0 else 1.0,
         cpu_threads=cpu_threads,
     )
     env = build_gpu_env(limits)
-    # gpu_fraction<=0 表示用户禁用：删掉 PYTORCH_CUDA_ALLOC_CONF
     if gpu_fraction <= 0:
         env.pop("PYTORCH_CUDA_ALLOC_CONF", None)
-        # 同步从 WSLENV 移除（避免 Windows 侧读到空值）
         wslenv = env.get("WSLENV", "")
         env["WSLENV"] = ":".join(
             x for x in wslenv.split(":") if not x.startswith("PYTORCH_CUDA_ALLOC_CONF")
@@ -71,7 +449,6 @@ def _build_gpu_env(gpu_fraction: float, cpu_threads: int) -> dict[str, str]:
 
 
 def _wsl_to_win(path: Path) -> str:
-    """WSL 路径 → Windows 路径（通过 wslpath -w）"""
     r = subprocess.run(["wslpath", "-w", str(path)],
                        capture_output=True, text=True, check=True)
     return r.stdout.strip()
@@ -79,17 +456,20 @@ def _wsl_to_win(path: Path) -> str:
 
 def _run_ps(py_exe: str, module: str, args: list[str], timeout: int,
             job_name: str = "gpu-task") -> subprocess.CompletedProcess:
-    # marker/mineru 的 Python 模块没有 __main__ 入口，必须通过 -c 显式调用 CLI 函数
     cli_map = {
-        "marker.scripts.convert_single": "from marker.scripts.convert_single import convert_single_cli; import sys; sys.exit(convert_single_cli())",
-        "mineru.cli.client": "from mineru.cli.client import main; import sys; sys.exit(main())",
+        "marker.scripts.convert_single": (
+            "from marker.scripts.convert_single import convert_single_cli; "
+            "import sys; sys.exit(convert_single_cli())"
+        ),
+        "mineru.cli.client": (
+            "from mineru.cli.client import main; "
+            "import sys; sys.exit(main())"
+        ),
     }
     code = cli_map.get(module, f"import {module}")
     cmd = ["cmd.exe", "/c", py_exe, "-c", code] + args
     env = _build_gpu_env(_GPU_FRACTION, _CPU_THREADS)
 
-    # 设备级协调：若 governor 已初始化，先申请预算（阻塞等待其他进程释放）
-    # 预算 = gpu_fraction × total_vram_mb（和单进程配额对齐）
     if _GPU_GOVERNOR is not None and _GPU_FRACTION > 0:
         budget_mb = int(_GPU_FRACTION * _GPU_GOVERNOR.total_vram_mb)
         try:
@@ -101,19 +481,35 @@ def _run_ps(py_exe: str, module: str, args: list[str], timeout: int,
                                       encoding="utf-8", errors="replace",
                                       cwd="/mnt/e/temp", env=env)
         except InsufficientGpuBudget:
-            # GPU 预算不足且等待超时：返回失败结果，让上层优雅跳过
             return subprocess.CompletedProcess(
-                args=cmd, returncode=124,  # 124 = timeout-like
+                args=cmd, returncode=124,
                 stdout="", stderr=f"GPU budget unavailable for '{job_name}'; skipped\n",
             )
-    # governor 未启用：直接跑（旧行为）
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
                           encoding="utf-8", errors="replace", cwd="/mnt/e/temp", env=env)
 
 
-# --------------------------------------------------------------------------- #
-# 数据结构
-# --------------------------------------------------------------------------- #
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _classify_engine_error(result: subprocess.CompletedProcess) -> ErrorType:
+    stderr = (result.stderr or "").lower()
+    if "cuda" in stderr and ("out of memory" in stderr or "oom" in stderr):
+        return ErrorType.CUDA_OOM
+    if result.returncode == 124 or "gpu budget unavailable" in stderr:
+        return ErrorType.GPU_BUDGET_UNAVAILABLE
+    if "no output" in stderr or "produced no output" in stderr:
+        return ErrorType.NO_OUTPUT
+    if not stderr.strip():
+        return ErrorType.SILENT_CRASH
+    return ErrorType.ENGINE_CRASH
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#   —
+# ═══════════════════════════════════════════════════════════════════════════════
+
 @dataclass
 class EngineResult:
     engine: str
@@ -122,6 +518,7 @@ class EngineResult:
     md_path: str | None = None
     img_count: int = 0
     error: str | None = None
+    error_type: str | None = None
     img_breakdown: dict = field(default_factory=dict)
 
 
@@ -135,13 +532,12 @@ class PaperResult:
     diff_line_count: int = 0
     merged_path: str | None = None
     merged_supplement_count: int = 0
+    precheck: PrecheckResult | None = None
+    phases_done: list[str] = field(default_factory=list)
 
 
-# --------------------------------------------------------------------------- #
-# 引擎调用
-# --------------------------------------------------------------------------- #
 def run_marker(pdf: Path, out_dir: Path, pages: str | None) -> EngineResult:
-    """调用 marker_single 转换单个 PDF."""
+    """ marker_single  PDF."""
     marker_out = out_dir / "marker"
     marker_out.mkdir(parents=True, exist_ok=True)
     t0 = time.time()
@@ -162,29 +558,37 @@ def run_marker(pdf: Path, out_dir: Path, pages: str | None) -> EngineResult:
 
         elapsed = time.time() - t0
         if r.returncode != 0:
+            etype = _classify_engine_error(r)
             err = r.stderr[-2000:] if r.stderr else "unknown error"
-            return EngineResult("marker", False, elapsed, error=err)
+            return EngineResult("marker", False, elapsed, error=err,
+                               error_type=etype.value)
         stem = pdf.stem
         md = marker_out / stem / f"{stem}.md"
         if not md.exists():
             mds = list(marker_out.rglob("*.md"))
             md = mds[0] if mds else None
         if md is None:
+            etype = ErrorType.NO_OUTPUT
             err = "no md output; " + (r.stderr.strip()[:500] if r.stderr.strip() else "marker produced no output")
-            return EngineResult("marker", False, elapsed, error=err)
+            return EngineResult("marker", False, elapsed, error=err,
+                               error_type=etype.value)
         img_dir = md.parent
         img_count = sum(1 for _ in img_dir.glob("*.jpeg"))
         img_count += sum(1 for _ in img_dir.glob("*.png"))
         return EngineResult("marker", True, elapsed, str(md), img_count)
     except subprocess.TimeoutExpired:
-        return EngineResult("marker", False, time.time() - t0, error="timeout 30min")
+        return EngineResult("marker", False, time.time() - t0,
+                           error="timeout 30min",
+                           error_type=ErrorType.TIMEOUT.value)
     except Exception as e:
-        return EngineResult("marker", False, time.time() - t0, error=str(e))
+        return EngineResult("marker", False, time.time() - t0,
+                           error=str(e),
+                           error_type=ErrorType.ENGINE_CRASH.value)
 
 
 def run_mineru(pdf: Path, out_dir: Path, pages: str | None,
                method: str, backend: str, lang: str | None) -> EngineResult:
-    """调用 mineru 转换单个 PDF."""
+    """ mineru  PDF."""
     mineru_out = out_dir / "mineru"
     mineru_out.mkdir(parents=True, exist_ok=True)
 
@@ -230,14 +634,19 @@ def run_mineru(pdf: Path, out_dir: Path, pages: str | None,
 
         elapsed = time.time() - t0
         if r.returncode != 0:
-            return EngineResult("mineru", False, elapsed, error=r.stderr[-2000:])
+            etype = _classify_engine_error(r)
+            err = r.stderr[-2000:] if r.stderr else "unknown error"
+            return EngineResult("mineru", False, elapsed, error=err,
+                               error_type=etype.value)
         stem = pdf.stem
         md = mineru_out / stem / method / f"{stem}.md"
         if not md.exists():
             mds = list(mineru_out.rglob("*.md"))
             md = mds[0] if mds else None
         if md is None:
-            return EngineResult("mineru", False, elapsed, error="no md output")
+            return EngineResult("mineru", False, elapsed,
+                               error_type=ErrorType.NO_OUTPUT.value,
+                               error="no md output")
         img_dir = md.parent / "images"
         img_count = 0
         img_breakdown = {}
@@ -260,14 +669,19 @@ def run_mineru(pdf: Path, out_dir: Path, pages: str | None,
         result.img_breakdown = img_breakdown
         return result
     except subprocess.TimeoutExpired:
-        return EngineResult("mineru", False, time.time() - t0, error="timeout 30min")
+        return EngineResult("mineru", False, time.time() - t0,
+                           error_type=ErrorType.TIMEOUT.value,
+                           error="timeout 30min")
     except Exception as e:
-        return EngineResult("mineru", False, time.time() - t0, error=str(e))
+        return EngineResult("mineru", False, time.time() - t0,
+                           error_type=ErrorType.ENGINE_CRASH.value,
+                           error=str(e))
 
 
-# --------------------------------------------------------------------------- #
-# Worker（用于 ProcessPoolExecutor 并行调用两引擎）
-# --------------------------------------------------------------------------- #
+# ═══════════════════════════════════════════════════════════════════════════════
+#   Worker  ProcessPoolExecutor
+# ═══════════════════════════════════════════════════════════════════════════════
+
 def _marker_worker(pdf_str: str, out_str: str, pages: str | None) -> EngineResult:
     return run_marker(Path(pdf_str), Path(out_str), pages)
 
@@ -277,79 +691,80 @@ def _mineru_worker(pdf_str: str, out_str: str, pages: str | None,
     return run_mineru(Path(pdf_str), Path(out_str), pages, method, backend, lang)
 
 
-# --------------------------------------------------------------------------- #
-# 差异对照
-# --------------------------------------------------------------------------- #
-# Markdown 归一化（消除纯格式差异，只保留内容差异）
-# --------------------------------------------------------------------------- #
-import re as _re
-import re
+# ═══════════════════════════════════════════════════════════════════════════════
+#   Diff + Merge    APIdiff & merge logic (preserved from v1; nearly unchanged)
+# ═══════════════════════════════════════════════════════════════════════════════
 
-_HEADING_RE = _re.compile(r"^#{1,6}\s")
-_LATEX_BLOCK_RE = _re.compile(r"^\s*\$\$", re.MULTILINE)
-_SUPERSCRIPT_RE = _re.compile(r"<sup>([^<]*)</sup>")
-_LATEX_INLINE_RE = _re.compile(r"\$([^$]+)\$")
-_IMAGE_RE = _re.compile(r"!\[[^\]]*\]\([^)]*\)")
-_LIST_BULLET_RE = _re.compile(r"^[•·\-\*]\s+")
-_HTML_TABLE_RE = _re.compile(r"<table>.*?</table>", _re.DOTALL)
-_MD_TABLE_ROW_RE = _re.compile(r"^\|.*\|\s*$")
-_REF_ITEM_RE = _re.compile(r"^\[\d+\]\s")
+_HEADING_RE = re.compile(r"^#{1,6}\s")
+_LATEX_BLOCK_RE = re.compile(r"^\s*\$\$", re.MULTILINE)
+_SUPERSCRIPT_RE = re.compile(r"<sup>([^<]*)</sup>")
+_LATEX_INLINE_RE = re.compile(r"\$([^$]+)\$")
+_IMAGE_RE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
+_LIST_BULLET_RE = re.compile(r"^[•·\-\*]\s+")
+_HTML_TABLE_RE = re.compile(r"<table>.*?</table>", re.DOTALL)
+_MD_TABLE_ROW_RE = re.compile(r"^\|.*\|\s*$")
+_REF_ITEM_RE = re.compile(r"^\[\d+\]\s")
 
-
-_META_LINE_RE = _re.compile(
+_META_LINE_RE = re.compile(
     r"^(\^[\*∗]\^\s*)?(Email addresses|Corresponding author|"
     r"https?://|doi:|DOI:|ORCID|Received|Accepted|Published)",
-    _re.IGNORECASE,
+    re.IGNORECASE,
+)
+
+_MARKER_ONLY_RE = re.compile(
+    r"^(Email addresses|Corresponding author|<sup>|Received|Accepted)",
+    re.IGNORECASE,
+)
+
+_OCR_FIXES = {
+    "ofspring": "offspring", "diferent": "different", "eficiency": "efficiency",
+    "efective": "effective", "efectively": "effectively", "efectiveness": "effectiveness",
+    "ofers": "offers", "ofered": "offered", "ofset": "offset", "ofen": "often",
+    "afect": "affect", "afected": "affected", "aford": "afford",
+    "eiciency": "efficiency", "fective": "ffective",
+}
+
+_LATEX_SPACED_LETTERS_RE = re.compile(
+    r"\\mathrm\s*\{\s*((?:[A-Za-z]\s+){2,}[A-Za-z]?)\s*\}"
 )
 
 
 def _normalize_for_diff(text: str) -> list[str]:
-    """归一化 Markdown 文本，使 diff 只反映内容差异而非格式差异。
+    text = text.replace("’", "'").replace("‘", "'")
+    text = text.replace("“", '"').replace("”", '"')
 
-    归一化步骤：
-      1. 统一引号（curly → straight）
-      2. 统一标题层级（###+ → ##）
-      3. 将 <sup>x</sup> 转为 ^x^（与 MinerU 的 LaTeX 行内公式对齐）
-      4. 将行内 $x$ LaTeX 公式提取为纯文本（去掉 $ 符号，保留内容）
-      5. 合并 $$...$$ 块为单段（MinerU 把 $$ 公式 $$ 切成三段，导致对齐失败）
-      6. 合并连续非空行为一个段落（消除段落切分差异）
-      7. 过滤元信息行（邮箱、通讯作者、DOI、URL）——两引擎对这类信息取舍不同，会引发连锁偏移
-    """
-    text = text.replace("\u2019", "'").replace("\u2018", "'")
-    text = text.replace("\u201c", '"').replace("\u201d", '"')
-    
     lines = text.splitlines()
     n = len(lines)
     normalized_paragraphs: list[str] = []
     current_para: list[str] = []
     i = 0
-    
+
     while i < n:
         stripped = lines[i].strip()
-        
+
         if not stripped:
             if current_para:
                 normalized_paragraphs.append(" ".join(current_para))
                 current_para = []
             i += 1
             continue
-        
+
         if _HEADING_RE.match(stripped):
             if current_para:
                 normalized_paragraphs.append(" ".join(current_para))
                 current_para = []
-            content = _re.sub(r"^#{1,6}\s+", "## ", stripped)
+            content = re.sub(r"^#{1,6}\s+", "## ", stripped)
             normalized_paragraphs.append(content)
             i += 1
             continue
-        
+
         if stripped.startswith("$$"):
             if current_para:
                 normalized_paragraphs.append(" ".join(current_para))
                 current_para = []
             block_lines = [stripped]
+            j = i + 1
             if not (stripped.endswith("$$") and len(stripped) > 2):
-                j = i + 1
                 while j < n:
                     next_stripped = lines[j].strip()
                     if not next_stripped:
@@ -362,7 +777,7 @@ def _normalize_for_diff(text: str) -> list[str]:
             normalized_paragraphs.append(" ".join(block_lines))
             i = j + 1 if not (stripped.endswith("$$") and len(stripped) > 2) else i + 1
             continue
-        
+
         if _IMAGE_RE.match(stripped):
             if current_para:
                 normalized_paragraphs.append(" ".join(current_para))
@@ -370,7 +785,7 @@ def _normalize_for_diff(text: str) -> list[str]:
             normalized_paragraphs.append("[IMAGE]")
             i += 1
             continue
-        
+
         if _MD_TABLE_ROW_RE.match(stripped):
             if current_para and not _MD_TABLE_ROW_RE.match(current_para[-1] if current_para else ""):
                 normalized_paragraphs.append(" ".join(current_para))
@@ -378,27 +793,27 @@ def _normalize_for_diff(text: str) -> list[str]:
             current_para.append(stripped)
             i += 1
             continue
-        
+
         line_norm = _SUPERSCRIPT_RE.sub(r"^\1^", stripped)
         line_norm = _LATEX_INLINE_RE.sub(r"\1", line_norm)
         line_norm = _IMAGE_RE.sub("[IMAGE]", line_norm)
         line_norm = _LIST_BULLET_RE.sub("", line_norm)
         line_norm = _HTML_TABLE_RE.sub("[TABLE]", line_norm)
-        line_norm = _re.sub(r"\s+", " ", line_norm).strip()
-        
+        line_norm = re.sub(r"\s+", " ", line_norm).strip()
+
         if _META_LINE_RE.match(line_norm):
             if current_para:
                 normalized_paragraphs.append(" ".join(current_para))
                 current_para = []
             i += 1
             continue
-        
+
         current_para.append(line_norm)
         i += 1
-    
+
     if current_para:
         normalized_paragraphs.append(" ".join(current_para))
-    
+
     merged: list[str] = []
     for p in normalized_paragraphs:
         if not p:
@@ -406,36 +821,24 @@ def _normalize_for_diff(text: str) -> list[str]:
         if merged:
             prev = merged[-1]
             prev_ends_lower = prev[-1:].islower() or prev.endswith((",", ";", ":", "-"))
-            curr_starts_lower = p[:1].islower() or p.startswith(("and ", "the ", "but ", "which ", "where ", "with ", "for ", "in "))
-            if prev_ends_lower and curr_starts_lower and not _HEADING_RE.match(p) and not p.startswith("$$"):
+            curr_starts_lower = p[:1].islower() or p.startswith(
+                ("and ", "the ", "but ", "which ", "where ", "with ", "for ", "in "))
+            if (prev_ends_lower and curr_starts_lower
+                    and not _HEADING_RE.match(p) and not p.startswith("$$")):
                 merged[-1] = prev + " " + p
                 continue
         merged.append(p)
-    
+
     return merged
 
 
-def _count_real_diffs(diff_blocks: list[tuple]) -> int:
-    """统计真实内容差异块数（非格式差异）。"""
-    return sum(1 for tag, *_ in diff_blocks if tag != "equal")
-
-
-# --------------------------------------------------------------------------- #
 def make_diff(marker_md: Path | None, mineru_md: Path | None,
               out_path: Path, similarity_threshold: float = 0.85) -> tuple[int, int]:
-    """生成模糊匹配 diff。
-
-    先归一化两份 Markdown，然后用相似度阈值做段落对齐：
-      - 相似度 >= threshold: 视为相同段落，仅标注微小差异字符
-      - 相似度 < threshold: 视为真实差异，输出完整对照
-
-    返回 (真实差异段落数, 总段落数)。
-    """
     if not marker_md or not marker_md.exists():
-        out_path.write_text("# Diff Skipped\n\nMarker 输出缺失。\n", encoding="utf-8")
+        out_path.write_text("# Diff Skipped\n\nMarker output missing.\n", encoding="utf-8")
         return 0, 0
     if not mineru_md or not mineru_md.exists():
-        out_path.write_text("# Diff Skipped\n\nMinerU 输出缺失。\n", encoding="utf-8")
+        out_path.write_text("# Diff Skipped\n\nMinerU output missing.\n", encoding="utf-8")
         return 0, 0
 
     m_paras = _normalize_for_diff(
@@ -446,17 +849,17 @@ def make_diff(marker_md: Path | None, mineru_md: Path | None,
     sm = difflib.SequenceMatcher(a=m_paras, b=u_paras, autojunk=False)
 
     diff_lines: list[str] = [
-        "# 双引擎差异对照（归一化 + 模糊匹配）\n",
-        f"- Marker: {len(m_paras)} 段",
-        f"- MinerU: {len(u_paras)} 段",
-        f"- 相似度阈值: {similarity_threshold}（高于此值视为相同，仅标注字符级差异）",
-        f"- 生成时间: {time.strftime('%Y-%m-%d %H:%M:%S')}",
+        "#         +   \n",
+        f"- Marker: {len(m_paras)} ",
+        f"- MinerU: {len(u_paras)} ",
+        f"-   : {similarity_threshold}（        ）",
+        f"-  : {time.strftime('%Y-%m-%d %H:%M:%S')}",
         "",
-        "说明：",
-        "  [SAME]    两引擎段落相似度 >= 阈值（仅显示字符级差异）",
-        "  [DIFF]    两引擎段落相似度 < 阈值（真实内容差异，需人工裁决）",
-        "  [ONLY-M]  仅 Marker 有此段落",
-        "  [ONLY-U]  仅 MinerU 有此段落",
+        " ：",
+        "  [SAME]          >=   （      ）",
+        "  [DIFF]          <   （    ，    ）",
+        "  [ONLY-M]   Marker    ",
+        "  [ONLY-U]   MinerU    ",
         "",
     ]
 
@@ -472,7 +875,7 @@ def make_diff(marker_md: Path | None, mineru_md: Path | None,
 
         if not m_block and u_block:
             for para in u_block:
-                diff_lines.append(f"## [ONLY-U] 段落 {j1}-{j2}")
+                diff_lines.append(f"## [ONLY-U] {j1}-{j2}")
                 preview = para[:500] + ("..." if len(para) > 500 else "")
                 diff_lines.append(f"+ {preview}")
                 diff_lines.append("")
@@ -481,7 +884,7 @@ def make_diff(marker_md: Path | None, mineru_md: Path | None,
 
         if m_block and not u_block:
             for para in m_block:
-                diff_lines.append(f"## [ONLY-M] 段落 {i1}-{i2}")
+                diff_lines.append(f"## [ONLY-M] {i1}-{i2}")
                 preview = para[:500] + ("..." if len(para) > 500 else "")
                 diff_lines.append(f"- {preview}")
                 diff_lines.append("")
@@ -501,7 +904,7 @@ def make_diff(marker_md: Path | None, mineru_md: Path | None,
                     best_u_idx = u_idx
 
             if best_u_idx < 0:
-                diff_lines.append(f"## [ONLY-M] 段落 {i1+m_idx}")
+                diff_lines.append(f"## [ONLY-M] {i1+m_idx}")
                 diff_lines.append(f"- {m_p[:500]}")
                 diff_lines.append("")
                 real_diff_count += 1
@@ -514,7 +917,7 @@ def make_diff(marker_md: Path | None, mineru_md: Path | None,
                 char_diffs = _extract_char_diffs(m_p, u_p)
                 if char_diffs:
                     diff_lines.append(
-                        f"## [SAME] 段落 {i1+m_idx}/{j1+best_u_idx} (相似度 {best_ratio:.2f})"
+                        f"## [SAME] {i1+m_idx}/{j1+best_u_idx} (  {best_ratio:.2f})"
                     )
                     for cd in char_diffs[:5]:
                         diff_lines.append(f"  Marker: ...{cd['m']}...")
@@ -523,7 +926,7 @@ def make_diff(marker_md: Path | None, mineru_md: Path | None,
                     diff_lines.append("")
             else:
                 diff_lines.append(
-                    f"## [DIFF] 段落 {i1+m_idx}/{j1+best_u_idx} (相似度 {best_ratio:.2f})"
+                    f"## [DIFF] {i1+m_idx}/{j1+best_u_idx} (  {best_ratio:.2f})"
                 )
                 diff_lines.append(f"- {m_p[:500]}")
                 diff_lines.append(f"+ {u_p[:500]}")
@@ -532,26 +935,21 @@ def make_diff(marker_md: Path | None, mineru_md: Path | None,
 
         for u_idx, u_p in enumerate(u_block):
             if u_idx not in used_u:
-                diff_lines.append(f"## [ONLY-U] 段落 {j1+u_idx}")
+                diff_lines.append(f"## [ONLY-U] {j1+u_idx}")
                 diff_lines.append(f"+ {u_p[:500]}")
                 diff_lines.append("")
                 real_diff_count += 1
 
     diff_lines.append("---")
-    diff_lines.append(f"真实内容差异段落数 [DIFF/ONLY-*]: {real_diff_count}")
-    diff_lines.append(f"字符级微差异段落数 [SAME]: {char_diff_count}")
-    diff_lines.append(f"总段落数: {max(len(m_paras), len(u_paras))}")
+    diff_lines.append(f"        [DIFF/ONLY-*]: {real_diff_count}")
+    diff_lines.append(f"        [SAME]: {char_diff_count}")
+    diff_lines.append(f"  : {max(len(m_paras), len(u_paras))}")
 
     out_path.write_text("\n".join(diff_lines), encoding="utf-8")
     return real_diff_count, max(len(m_paras), len(u_paras))
 
 
 def _extract_char_diffs(s1: str, s2: str, context: int = 20) -> list[dict]:
-    """提取两个相似字符串的字符级差异片段。
-
-    返回 [{"m": marker 片段, "u": mineru 片段}, ...]，
-    每个片段包含差异点前后 context 个字符的上下文。
-    """
     sm = difflib.SequenceMatcher(None, s1, s2)
     diffs: list[dict] = []
     for tag, i1, i2, j1, j2 in sm.get_opcodes():
@@ -568,37 +966,13 @@ def _extract_char_diffs(s1: str, s2: str, context: int = 20) -> list[dict]:
     return diffs
 
 
-# --------------------------------------------------------------------------- #
-# 合并：MinerU 公式 + Marker 文字 + LLM 友好后处理
-# --------------------------------------------------------------------------- #
-_MARKER_ONLY_RE = _re.compile(r"^(Email addresses|Corresponding author|<sup>|Received|Accepted)", _re.IGNORECASE)
-
-_OCR_FIXES = {
-    "ofspring": "offspring", "diferent": "different", "eficiency": "efficiency",
-    "efective": "effective", "efectively": "effectively", "efectiveness": "effectiveness",
-    "ofers": "offers", "ofered": "offered", "ofset": "offset", "ofen": "often",
-    "afect": "affect", "afected": "affected", "aford": "afford",
-    "eiciency": "efficiency", "fective": "ffective",
-}
-
-_LATEX_SPACED_LETTERS_RE = _re.compile(
-    r"\\mathrm\s*\{\s*((?:[A-Za-z]\s+){2,}[A-Za-z]?)\s*\}"
-)
-_LATEX_SPACED_REGEX = _re.compile(r"\\mathrm\s*\{\s*([^}]+?)\s*\}")
-
-
 def _fix_ocr_errors(text: str) -> str:
     for wrong, right in _OCR_FIXES.items():
-        text = _re.sub(r"\b" + _re.escape(wrong) + r"\b", right, text)
+        text = re.sub(r"\b" + re.escape(wrong) + r"\b", right, text)
     return text
 
 
 def _fix_latex_spacing(latex: str) -> str:
-    """修复 MinerU LaTeX 中的字母间距问题。
-
-    MinerU 常把 \\mathrm{Minimize} 输出为 \\mathrm{ M i n i m i z e }，
-    以及 \\mathcal{G} 输出为 \\mathcal { G }。
-    """
     def fix_mathrm(m):
         inner = m.group(1)
         if " " in inner and len(inner.replace(" ", "")) >= 2:
@@ -608,24 +982,23 @@ def _fix_latex_spacing(latex: str) -> str:
         return m.group(0)
 
     latex = _LATEX_SPACED_LETTERS_RE.sub(fix_mathrm, latex)
-    latex = _re.sub(r"\\mathcal\s*\{\s*([^}]+?)\s*\}", r"\\mathcal{\1}", latex)
-    latex = _re.sub(r"\\mathbf\s*\{\s*([^}]+?)\s*\}", r"\\mathbf{\1}", latex)
-    latex = _re.sub(r"\\operatorname\*?\s*\{\s*([^}]+?)\s*\}", r"\\operatorname{\1}", latex)
-    latex = _re.sub(r"\s*\\\\\s*", r" \\\\ ", latex)
+    latex = re.sub(r"\\mathcal\s*\{\s*([^}]+?)\s*\}", r"\\mathcal{\1}", latex)
+    latex = re.sub(r"\\mathbf\s*\{\s*([^}]+?)\s*\}", r"\\mathbf{\1}", latex)
+    latex = re.sub(r"\\operatorname\*?\s*\{\s*([^}]+?)\s*\}", r"\\operatorname{\1}", latex)
+    latex = re.sub(r"\s*\\\\\s*", r" \\\\ ", latex)
     return latex
 
 
 def _fix_html_tables(md: str) -> str:
-    """把 MinerU 的 HTML 表格转成 Markdown 表格（LLM 更易理解）。"""
     def html_to_md_table(match):
         html = match.group(0)
-        rows = _re.findall(r"<tr>(.*?)</tr>", html, _re.DOTALL)
+        rows = re.findall(r"<tr>(.*?)</tr>", html, re.DOTALL)
         if not rows:
             return html
         md_rows = []
         for i, row in enumerate(rows):
-            cells = _re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", row, _re.DOTALL)
-            cells = [_re.sub(r"\s+", " ", c).strip() for c in cells]
+            cells = re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", row, re.DOTALL)
+            cells = [re.sub(r"\s+", " ", c).strip() for c in cells]
             if not cells:
                 continue
             md_rows.append("| " + " | ".join(cells) + " |")
@@ -633,11 +1006,10 @@ def _fix_html_tables(md: str) -> str:
                 md_rows.append("|" + "---|" * len(cells))
         return "\n".join(md_rows) if md_rows else html
 
-    return _re.sub(r"<table>.*?</table>", html_to_md_table, md, flags=_re.DOTALL)
+    return re.sub(r"<table>.*?</table>", html_to_md_table, md, flags=re.DOTALL)
 
 
 def _extract_metadata(md_text: str, stem: str) -> dict:
-    """从 Markdown 提取标题、作者、摘要等元数据，供 LLM 快速定位。"""
     lines = md_text.splitlines()
     title = ""
     authors = ""
@@ -650,14 +1022,14 @@ def _extract_metadata(md_text: str, stem: str) -> dict:
         if not stripped or stripped.startswith("<!--") or stripped == "---":
             continue
         if not title:
-            m = _re.match(r"^#{1,3}\s+(.+)$", stripped)
-            if m and not _re.match(r"^(Abstract|Keywords|Introduction)", m.group(1), _re.IGNORECASE):
+            m = re.match(r"^#{1,3}\s+(.+)$", stripped)
+            if m and not re.match(r"^(Abstract|Keywords|Introduction)", m.group(1), re.IGNORECASE):
                 content = m.group(1)
                 if len(content) > 10 and not content.startswith("$"):
                     title = content
                     continue
             elif not title and i < 3 and not stripped.startswith("#") and len(stripped) > 15:
-                if not _re.match(r"^(Abstract|Keywords|\\\[)", stripped, _re.IGNORECASE):
+                if not re.match(r"^(Abstract|Keywords|\\\[)", stripped, re.IGNORECASE):
                     title = stripped
                     continue
         if not authors and title and stripped != title and not stripped.startswith("#"):
@@ -666,17 +1038,23 @@ def _extract_metadata(md_text: str, stem: str) -> dict:
                     if not stripped.startswith("Abstract") and not stripped.startswith("Keywords"):
                         authors = stripped
                         continue
-        if _re.match(r"^#{1,6}\s*Abstract", stripped, _re.IGNORECASE) or (stripped.lower() == "abstract" and not abstract):
+        if re.match(r"^#{1,6}\s*Abstract", stripped, re.IGNORECASE) or (
+            stripped.lower() == "abstract" and not abstract
+        ):
             in_abstract = True
             continue
         if in_abstract:
-            if _re.match(r"^#{1,6}\s", stripped) or _re.match(r"^(Keywords|1\s+Introduction)", stripped, _re.IGNORECASE):
+            if re.match(r"^#{1,6}\s", stripped) or re.match(
+                r"^(Keywords|1\s+Introduction)", stripped, re.IGNORECASE
+            ):
                 in_abstract = False
             elif stripped and not stripped.startswith("<!--") and not stripped.startswith("---"):
                 abstract = (abstract + " " + stripped).strip()
-        m = _re.match(r"^(#{1,6})\s+(\d+(?:\.\d+)*)\s+(.+)$", stripped)
+        m = re.match(r"^(#{1,6})\s+(\d+(?:\.\d+)*)\s+(.+)$", stripped)
         if m:
-            sections.append({"level": len(m.group(1)), "num": m.group(2), "title": m.group(3)})
+            sections.append({
+                "level": len(m.group(1)), "num": m.group(2), "title": m.group(3),
+            })
 
     return {
         "title": title[:300],
@@ -690,22 +1068,11 @@ def _extract_metadata(md_text: str, stem: str) -> dict:
 
 def merge_md(marker_md: Path | None, mineru_md: Path | None,
              out_path: Path) -> tuple[int, int]:
-    """合并两份 Markdown 为单个最适合 LLM 读取的版本。
-
-    策略：
-      1. 用归一化段落做对齐，但输出原始文本（保留图片引用、公式格式）
-      2. 相似度 >= 0.85 的段落取 Marker 原文（英文 OCR 更准）
-      3. 相似度 < 0.85 的段落取 MinerU 原文（公式更准）
-      4. 后处理：修复 OCR 错误、LaTeX 间距、HTML 表格
-      5. 添加 LLM 友好元数据头
-
-    返回 (merged_para_count, supplement_count)。
-    """
     if not mineru_md or not mineru_md.exists():
         if marker_md and marker_md.exists():
             shutil.copy(marker_md, out_path)
             return 0, 0
-        out_path.write_text("# Merge Skipped\n\n两份输出均缺失。\n", encoding="utf-8")
+        out_path.write_text("# Merge Skipped\n\nBoth outputs missing.\n", encoding="utf-8")
         return 0, 0
     if not marker_md or not marker_md.exists():
         shutil.copy(mineru_md, out_path)
@@ -788,8 +1155,9 @@ def merge_md(marker_md: Path | None, mineru_md: Path | None,
 
     merged_text = "\n\n".join(merged_paragraphs)
 
-    marker_tables = _re.findall(r"((?:\|[^\n]+\|\s*\n){2,})", m_raw)
+    marker_tables = re.findall(r"((?:\|[^\n]+\|\s*\n){2,})", m_raw)
     table_idx = 0
+
     def replace_table(m):
         nonlocal table_idx
         if table_idx < len(marker_tables):
@@ -797,13 +1165,13 @@ def merge_md(marker_md: Path | None, mineru_md: Path | None,
             table_idx += 1
             return t
         return m.group(0)
-    merged_text = _re.sub(r"\[TABLE\]", replace_table, merged_text)
 
+    merged_text = re.sub(r"\[TABLE\]", replace_table, merged_text)
     merged_text = _fix_ocr_errors(merged_text)
     merged_text = _fix_latex_spacing(merged_text)
     merged_text = _fix_html_tables(merged_text)
 
-    stem = mineru_md.stem
+    stem = (mineru_md or marker_md).stem
     meta = _extract_metadata(merged_text, stem)
 
     title = meta["title"] or stem
@@ -818,7 +1186,7 @@ def merge_md(marker_md: Path | None, mineru_md: Path | None,
         f"  {authors}",
         f'source_pdf: "{stem}"',
         f'merged_at: {time.strftime("%Y-%m-%d %H:%M:%S")}',
-        "engines: MinerU(公式主) + Marker(文字主)",
+        "engines: MinerU(  ) + Marker(  )",
         f'sections: {meta["section_count"]}',
         f'total_lines: {meta["total_lines"]}',
         "---",
@@ -848,9 +1216,11 @@ def merge_md(marker_md: Path | None, mineru_md: Path | None,
 
     image_list: list[str] = []
     for img_pattern, source in [(m_raw, "Marker"), (u_raw, "MinerU")]:
-        for match in _re.finditer(r"!\[([^\]]*)\]\(([^)]+)\)", img_pattern):
+        for match in re.finditer(r"!\[([^\]]*)\]\(([^)]+)\)", img_pattern):
             alt, path = match.group(1), match.group(2)
-            image_list.append(f"- {source}: `{path}`" + (f" (alt: {alt})" if alt else ""))
+            image_list.append(
+                f"- {source}: `{path}`" + (f" (alt: {alt})" if alt else "")
+            )
 
     if image_list:
         seen = set()
@@ -861,7 +1231,10 @@ def merge_md(marker_md: Path | None, mineru_md: Path | None,
                 seen.add(path_part)
                 unique_images.append(img)
         final_text += "\n\n---\n\n## Images Index\n\n"
-        final_text += f"共 {len(unique_images)} 张图片（Marker {len(m_raw_lines)} 行, MinerU {len(u_raw_lines)} 行）。\n\n"
+        final_text += (
+            f"  {len(unique_images)}  "
+            f"（Marker {len(m_raw_lines)} , MinerU {len(u_raw_lines)} ）\n\n"
+        )
         for img in unique_images:
             final_text += img + "\n"
 
@@ -869,60 +1242,301 @@ def merge_md(marker_md: Path | None, mineru_md: Path | None,
     return len(u_paras), supplement_count
 
 
-# --------------------------------------------------------------------------- #
-# 单篇处理
-# --------------------------------------------------------------------------- #
-def process_one(pdf: Path, output_root: Path, engines: str, pages: str | None,
-                method: str, backend: str, lang: str | None,
-                max_workers: int = 2) -> PaperResult:
+# ═══════════════════════════════════════════════════════════════════════════════
+#      Figure
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _get_mineru_content_list(mineru_md_path: Path) -> list[dict]:
+    """ MinerU  content_list.json ."""
+    cl_path = mineru_md_path.parent / f"{mineru_md_path.stem}_content_list.json"
+    if not cl_path.exists():
+        return []
+    try:
+        return json.loads(cl_path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+
+
+def _get_mineru_figure_images(mineru_md_path: Path) -> set[str]:
+    """ MinerU  Figure (type='image')  ."""
+    content_list = _get_mineru_content_list(mineru_md_path)
+    figures = set()
+    for item in content_list:
+        if item.get("type") == "image" and "img_path" in item:
+            img_path = item["img_path"]
+            #   images/xxx.jpg
+            if not img_path.startswith("images/"):
+                figures.add(f"images/{Path(img_path).name}")
+            else:
+                figures.add(img_path)
+    return figures
+
+
+def _get_marker_images(marker_md_path: Path) -> set[str]:
+    """ Marker   ."""
+    # Marker        md
+    md_dir = marker_md_path.parent
+    images = set()
+    for ext in ("*.jpeg", "*.jpg", "*.png"):
+        for img in md_dir.glob(ext):
+            images.add(img.name)
+    return images
+
+
+def copy_figure_images(
+    stem: str,
+    marker_md: Path | None,
+    mineru_md: Path | None,
+    merged_dir: Path,
+) -> int:
+    """     Figure     merged/<stem>/images/.
+
+    MinerU:  content_list.json  type=='image'
+    Marker:      ( , ~14 )
+    """
+    if not marker_md and not mineru_md:
+        return 0
+
+    images_dir = merged_dir / "images"
+    images_dir.mkdir(parents=True, exist_ok=True)
+    copied = 0
+
+    # MinerU  Figure
+    if mineru_md and mineru_md.exists():
+        figure_names = _get_mineru_figure_images(mineru_md)
+        mineru_img_dir = mineru_md.parent / "images"
+        if mineru_img_dir.exists():
+            for fname in figure_names:
+                src = mineru_img_dir / Path(fname).name
+                if src.exists():
+                    dst = images_dir / src.name
+                    if not dst.exists():
+                        shutil.copy2(src, dst)
+                        copied += 1
+
+    # Marker
+    if marker_md and marker_md.exists():
+        marker_img_dir = marker_md.parent
+        marker_names = _get_marker_images(marker_md)
+        for fname in marker_names:
+            src = marker_img_dir / fname
+            if src.exists():
+                dst = images_dir / src.name
+                if not dst.exists():
+                    shutil.copy2(src, dst)
+                    copied += 1
+
+    return copied
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#      — v2   (  /  /  )
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _derive_output_dirs(papers_dir: Path) -> dict[str, Path]:
+    """      ."""
+    return {
+        "conversion": papers_dir / "paper-conversion",
+        "merged": papers_dir / "paper-merged",
+        "summaries": papers_dir / "paper-summaries",
+    }
+
+
+def process_one(
+    pdf: Path,
+    papers_dir: Path,
+    engines: str,
+    pages: str | None,
+    method: str,
+    backend: str,
+    lang: str | None,
+    max_workers: int = 2,
+    state: PipelineState | None = None,
+    force: bool = False,
+) -> PaperResult:
+    """   PDF  ."""
     stem = pdf.stem
-    paper_dir = output_root / stem
-    paper_dir.mkdir(parents=True, exist_ok=True)
+    dirs = _derive_output_dirs(papers_dir)
+    conversion_dir = dirs["conversion"] / stem
+    merged_dir = dirs["merged"] / stem
+    summaries_dir = dirs["summaries"]
+
+    conversion_dir.mkdir(parents=True, exist_ok=True)
+    merged_dir.mkdir(parents=True, exist_ok=True)
+    summaries_dir.mkdir(parents=True, exist_ok=True)
+
     result = PaperResult(pdf_path=str(pdf), stem=stem)
 
-    # 双引擎并行（max_workers 由 CLI 参数控制：默认 2，可降到 1 串行省显存）
+    # ── Phase 0:   ────────────────────────────────────────────────
+    skip_precheck = state and not force and state.has(stem) and not state.needs_precheck(stem)
+    if not skip_precheck:
+        max_pages = _DEFAULT_MAX_PAGES
+        if state:
+            #  TODO:    _pipeline_state.json
+            pass
+        precheck = run_precheck(pdf)
+        result.precheck = precheck
+        if state:
+            state.set_precheck(stem, precheck)
+
+        if not precheck.ok:
+            error_type = ErrorType(precheck.reason) if precheck.reason else ErrorType.PRECHECK_CRASHED
+            if state:
+                for phase in ("phase1_converted", "phase2_merged", "phase3_summarized"):
+                    state.set_phase(stem, phase, {"status": "skipped"})
+                state.save()
+            return result
+    elif state:
+        result.precheck = PrecheckResult(
+            ok=True, status="passed",
+            pdf_hash=state.get(stem).get("pdf_hash", ""),
+        )
+
+    # ── Phase 1:   ────────────────────────────────────────────────
     if engines == "both":
-        workers = max(1, min(max_workers, 2))  # both 模式最多就 2 个引擎
+        workers = max(1, min(max_workers, 2))
         with ProcessPoolExecutor(max_workers=workers) as ex:
-            futs = {}
-            futs["marker"] = ex.submit(_marker_worker, str(pdf), str(paper_dir), pages)
-            futs["mineru"] = ex.submit(_mineru_worker, str(pdf), str(paper_dir), pages,
-                                       method, backend, lang)
+            futs = {
+                "marker": ex.submit(
+                    _marker_worker, str(pdf), str(conversion_dir), pages,
+                ),
+                "mineru": ex.submit(
+                    _mineru_worker, str(pdf), str(conversion_dir), pages,
+                    method, backend, lang,
+                ),
+            }
             for key, fut in futs.items():
-                er = fut.result()
+                try:
+                    er = fut.result()
+                except Exception as e:
+                    er = EngineResult(key, False, 0,
+                                     error=str(e),
+                                     error_type=ErrorType.ENGINE_CRASH.value)
                 setattr(result, key, er)
     elif engines == "marker":
-        result.marker = run_marker(pdf, paper_dir, pages)
+        result.marker = run_marker(pdf, conversion_dir, pages)
     elif engines == "mineru":
-        result.mineru = run_mineru(pdf, paper_dir, pages, method, backend, lang)
+        result.mineru = run_mineru(pdf, conversion_dir, pages, method, backend, lang)
     else:
         raise ValueError(f"unknown engines: {engines}")
 
-    # 生成 diff 和 merge（需要两路都成功）
-    merged_path = paper_dir / "_MERGED.md"
-    if result.marker and result.mineru and result.marker.ok and result.mineru.ok:
-        # 守卫已保证 ok=True；ok=True 的语义契约是 md_path 非空（见 run_marker/run_mineru）
-        assert result.marker.md_path is not None
-        assert result.mineru.md_path is not None
-        diff_path = paper_dir / "_DIFF.md"
-        diff_count, total = make_diff(
-            Path(result.marker.md_path),
-            Path(result.mineru.md_path),
-            diff_path,
-        )
-        result.diff_path = str(diff_path)
-        result.diff_line_count = diff_count
+    #   Phase 1
+    marker_ok = result.marker and result.marker.ok
+    mineru_ok = result.mineru and result.mineru.ok
 
-        merged_total, merged_supp = merge_md(
-            Path(result.marker.md_path),
-            Path(result.mineru.md_path),
-            merged_path,
-        )
-        result.merged_path = str(merged_path)
-        result.merged_supplement_count = merged_supp
+    #        : --engines marker  marker  mineru  None
+    if engines == "both":
+        both_failed = not marker_ok and not mineru_ok
+    elif engines == "marker":
+        both_failed = not marker_ok
+    elif engines == "mineru":
+        both_failed = not mineru_ok
+    else:
+        both_failed = not marker_ok and not mineru_ok
 
-    # 写 meta
-    meta_path = paper_dir / "_META.json"
+    if both_failed:
+        #    → SKIP
+        phase1_record = {
+            "status": "failed",
+            "marker_ok": marker_ok if (engines in ("both", "marker")) else None,
+            "mineru_ok": mineru_ok if (engines in ("both", "mineru")) else None,
+            "marker_error": (result.marker.error if result.marker and not result.marker.ok else "") if engines in ("both", "marker") else None,
+            "mineru_error": (result.mineru.error if result.mineru and not result.mineru.ok else "") if engines in ("both", "mineru") else None,
+        }
+        phase1_record["error_type"] = (
+            ErrorType.BOTH_ENGINES_FAILED.value if engines == "both"
+            else (result.marker.error_type if engines == "marker" else result.mineru.error_type)
+        )
+        if state:
+            state.set_phase(stem, "phase1_converted", phase1_record)
+            state.set_phase(stem, "phase2_merged", {"status": "skipped"})
+            state.set_phase(stem, "phase3_summarized", {"status": "skipped"})
+            state.save()
+        return result
+
+    phase1_status = "degraded" if not (marker_ok and mineru_ok) else "done"
+    phase1_record = {
+        "status": phase1_status,
+        "marker_ok": marker_ok,
+        "mineru_ok": mineru_ok,
+        "marker_error": result.marker.error if not marker_ok else None,
+        "mineru_error": result.mineru.error if not mineru_ok else None,
+        "marker_error_type": result.marker.error_type if not marker_ok else None,
+        "mineru_error_type": result.mineru.error_type if not mineru_ok else None,
+        "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+    }
+    if state:
+        state.set_phase(stem, "phase1_converted", phase1_record)
+    result.phases_done.append("phase1")
+
+    # ── Phase 2:   ────────────────────────────────────────────────
+    diff_path = merged_dir / "_DIFF.md"
+    merged_path = merged_dir / "_MERGED.md"
+    meta_path = merged_dir / "_META.json"
+
+    try:
+        marker_md_p = (Path(result.marker.md_path)
+                       if result.marker and result.marker.md_path else None)
+        mineru_md_p = (Path(result.mineru.md_path)
+                       if result.mineru and result.mineru.md_path else None)
+
+        #   (diff + merge)
+        if marker_md_p and mineru_md_p:
+            diff_count, total = make_diff(marker_md_p, mineru_md_p, diff_path)
+            result.diff_path = str(diff_path)
+            result.diff_line_count = diff_count
+
+            merged_total, merged_supp = merge_md(
+                marker_md_p, mineru_md_p, merged_path,
+            )
+            result.merged_path = str(merged_path)
+            result.merged_supplement_count = merged_supp
+
+        elif marker_md_p:
+            #   Marker →
+            shutil.copy(marker_md_p, merged_path)
+            result.merged_path = str(merged_path)
+            diff_path.write_text("# Diff Skipped\n\nMinerU output missing.\n", encoding="utf-8")
+
+        elif mineru_md_p:
+            #   MinerU
+            shutil.copy(mineru_md_p, merged_path)
+            result.merged_path = str(merged_path)
+            diff_path.write_text("# Diff Skipped\n\nMarker output missing.\n", encoding="utf-8")
+
+        #   Figure
+        try:
+            images_copied = copy_figure_images(
+                stem, marker_md_p, mineru_md_p, merged_dir,
+            )
+        except Exception as e:
+            #   → DEGRADE, merged
+            print(f"  [{stem}] ⚠️    : {e}", file=sys.stderr)
+            images_copied = -1
+
+        phase2_status = "degraded" if not (marker_ok and mineru_ok) else "done"
+        phase2_record = {
+            "status": phase2_status,
+            "diff_paragraphs": result.diff_line_count,
+            "images_copied": images_copied,
+            "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        }
+        if images_copied < 0:
+            phase2_record["img_copy_error"] = str(e) if 'e' in dir() else "unknown"
+
+        if state:
+            state.set_phase(stem, "phase2_merged", phase2_record)
+
+        result.phases_done.append("phase2")
+
+    except Exception as e:
+        #   → SKIP
+        print(f"  [{stem}] ❌   : {e}", file=sys.stderr)
+        if state:
+            state.set_phase_from_error(stem, "phase2_merged", ErrorType.NORMALIZE_CRASH, str(e))
+        return result
+
+    # ──    _META.json ────────────────────────────────────────────
     meta = {
         "pdf_path": result.pdf_path,
         "stem": result.stem,
@@ -932,17 +1546,33 @@ def process_one(pdf: Path, output_root: Path, engines: str, pages: str | None,
         "mineru": asdict(result.mineru) if result.mineru else None,
         "diff_path": result.diff_path,
         "diff_line_count": result.diff_line_count,
-        "merged_path": getattr(result, "merged_path", None),
-        "merged_supplement_count": getattr(result, "merged_supplement_count", 0),
+        "merged_path": result.merged_path,
+        "merged_supplement_count": result.merged_supplement_count,
+        "images_copied": images_copied if 'images_copied' in dir() else 0,
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
-    meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    if precheck := result.precheck:
+        meta["precheck"] = precheck.to_record()
+    try:
+        meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError as e:
+        #   → FATAL?
+        print(f"  [{stem}] 💥    _META.json: {e}", file=sys.stderr)
+
+    #   Phase 3
+    if state:
+        state.set_phase(stem, "phase3_summarized", {"status": "pending"})
+
+    if state:
+        state.save()
+
     return result
 
 
-# --------------------------------------------------------------------------- #
-# 批量处理
-# --------------------------------------------------------------------------- #
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+
 def find_pdfs(target: Path) -> list[Path]:
     if target.is_file() and target.suffix.lower() == ".pdf":
         return [target]
@@ -956,160 +1586,381 @@ def print_summary(results: list[PaperResult]) -> None:
     print(f"{'stem':<40} {'marker':>8} {'mineru':>8} {'diff':>6}")
     print("-" * 70)
     for r in results:
-        m_t = f"{r.marker.elapsed_sec:.0f}s" if r.marker and r.marker.ok else \
-              ("FAIL" if r.marker else "-")
-        u_t = f"{r.mineru.elapsed_sec:.0f}s" if r.mineru and r.mineru.ok else \
-              ("FAIL" if r.mineru else "-")
+        m_t = (f"{r.marker.elapsed_sec:.0f}s"
+               if r.marker and r.marker.ok else
+               ("FAIL" if r.marker else "-"))
+        u_t = (f"{r.mineru.elapsed_sec:.0f}s"
+               if r.mineru and r.mineru.ok else
+               ("FAIL" if r.mineru else "-"))
         d = str(r.diff_line_count) if r.diff_path else "-"
         print(f"{r.stem:<40} {m_t:>8} {u_t:>8} {d:>6}")
     print("=" * 70)
 
 
-# --------------------------------------------------------------------------- #
-# CLI
-# --------------------------------------------------------------------------- #
+def print_status(state: PipelineState) -> None:
+    """   ."""
+    papers = state.papers_summary()
+    if not papers:
+        print("  _pipeline_state.json    .", file=sys.stderr)
+        print("  paper_reader.py <papers_dir/> --init ", file=sys.stderr)
+        return
+
+    #
+    COLUMNS = [
+        ("STEM", 28),
+        ("SOURCE", 8),
+        ("PRECHECK", 10),
+        ("CONVERTED", 18),
+        ("MERGED", 8),
+        ("SUMMARIZED", 10),
+        ("TIER", 8),
+    ]
+
+    header = "".join(name.ljust(w + 1) for name, w in COLUMNS)
+    print(header)
+    print("-" * len(header))
+
+    stats = {"total": 0, "ok": 0, "degraded": 0, "skipped": 0, "pending": 0}
+    skip_reasons: dict[str, int] = {}
+
+    for p in papers:
+        stem = p["stem"]
+        stats["total"] += 1
+
+        source_db = (p.get("source") or {}).get("source_db", "-")
+        tier = (p.get("source") or {}).get("venue", "") or "-"
+
+        precheck = p.get("precheck", {})
+        pc_status = precheck.get("status", "pending")
+        pc_emoji = _precheck_emoji(pc_status)
+        pc_reason = precheck.get("reason", "")
+        if pc_status not in ("passed", "pending"):
+            pc_emoji += f"{pc_reason[:8]}" if pc_reason else "❌"
+            skip_reasons[pc_reason or "unknown"] = skip_reasons.get(pc_reason or "unknown", 0) + 1
+
+        phase1 = p.get("phase1_converted", {})
+        phase2 = p.get("phase2_merged", {})
+        phase3 = p.get("phase3_summarized", {})
+
+        p1_emoji = _engine_pair_emoji(phase1)
+        p2_emoji = _phase_emoji(phase2, "phase2_merged")
+        p3_emoji = _phase_emoji(phase3, "phase3_summarized")
+
+        #    precheck passed + phase1 done  = ok
+        if pc_status == "passed" and phase1.get("status") in ("done", "degraded"):
+            stats["ok" if phase1.get("status") == "done" else "degraded"] += 1
+        elif pc_status != "passed" and pc_status != "pending":
+            stats["skipped"] += 1
+        elif phase1.get("status") == "failed":
+            stats["skipped"] += 1
+        elif pc_status == "pending":
+            stats["pending"] += 1
+        else:
+            stats["pending"] += 1
+
+        print(
+            f"{stem:<{COLUMNS[0][1]+1}}"
+            f"{source_db:<{COLUMNS[1][1]+1}}"
+            f"{pc_emoji:<{COLUMNS[2][1]+1}}"
+            f"{p1_emoji:<{COLUMNS[3][1]+1}}"
+            f"{p2_emoji:<{COLUMNS[4][1]+1}}"
+            f"{p3_emoji:<{COLUMNS[5][1]+1}}"
+            f"{tier[:8]:<{COLUMNS[6][1]+1}}"
+        )
+
+    print("-" * len(header))
+    summary_parts = [f"  : {stats['total']}"]
+    if stats["ok"]:
+        summary_parts.append(f"  : {stats['ok']}")
+    if stats["degraded"]:
+        summary_parts.append(f"  : {stats['degraded']}")
+    if stats["skipped"]:
+        summary_parts.append(f"  : {stats['skipped']}")
+    if stats["pending"]:
+        summary_parts.append(f"  : {stats['pending']}")
+    print("  ".join(summary_parts))
+    if skip_reasons:
+        reason_summary = ", ".join(f"{r}={c}" for r, c in skip_reasons.items())
+        print(f"  : {reason_summary}")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#   CLI
+# ═══════════════════════════════════════════════════════════════════════════════
+
 def main() -> int:
     ap = argparse.ArgumentParser(
-        description="Paper Reader: Marker + MinerU 双引擎 PDF 对照阅读器",
+        description="Paper Reader v2 —        +   ",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=__doc__,
     )
     ap.add_argument("pdf", type=Path,
-                    help="PDF 文件或目录（含 PDF 的目录会批量处理）")
+                    help="PDF         （  PDF       ）")
     ap.add_argument("-o", "--output", type=Path, default=None,
-                    help="输出根目录（默认: 输入 PDF/目录的同级 paper-analysis 目录）")
+                    help="[  ]    （ v2       ）")
     ap.add_argument("-e", "--engines", choices=["both", "marker", "mineru"],
-                    default="both", help="使用哪些引擎（默认 both）")
-    ap.add_argument("-p", "--pages",
-                    help="页范围，如 '0-9' 或 '5'（0-based）")
+                    default="both", help="    （  both）")
+    ap.add_argument("-p", "--pages", help="   '0-9'  '5'（0-based）")
     ap.add_argument("-b", "--batch", action="store_true",
-                    help="批量模式（目录下所有 PDF 串行处理）")
+                    help="        PDF    ")
+
+    # v2
+    ap.add_argument("--init", action="store_true",
+                    help="   _pipeline_state.json（ PDF  ）")
+    ap.add_argument("--status", action="store_true",
+                    help="     ")
+    ap.add_argument("--resume", action="store_true",
+                    help="       （  --batch  ）")
+    ap.add_argument("--force", action="store_true",
+                    help="    ，     ")
+    ap.add_argument("--from-manifest", type=Path, default=None, metavar="PATH",
+                    help="  _download_manifest.json  source ")
+    ap.add_argument("--import-urls", type=Path, default=None, metavar="PATH",
+                    help=" --from-manifest  （    URL  ）")
+    ap.add_argument("--max-pages", type=int, default=_DEFAULT_MAX_PAGES,
+                    help=f"PDF     SKIP（  {_DEFAULT_MAX_PAGES}）")
+
+    # MinerU
     ap.add_argument("--mineru-method", choices=["auto", "ocr", "txt"],
-                    default="auto", help="MinerU 解析方法")
+                    default="auto", help="MinerU    ")
     ap.add_argument("--mineru-backend", choices=["pipeline", "hybrid-engine"],
-                    default="pipeline", help="MinerU 后端（hybrid 精度高但慢）")
-    ap.add_argument("-l", "--lang",
-                    help="PDF 语言（mineru pipeline 模式），如 ch、korean、arabic")
+                    default="pipeline", help="MinerU  （hybrid     ）")
+    ap.add_argument("-l", "--lang", help="PDF  （mineru pipeline  ）")
+
+    # GPU
     ap.add_argument("--max-workers", type=int, default=2,
-                    help="单 PDF 的引擎并发数（默认 2 = marker+mineru 同时跑）。"
-                         "减小到 1 可让两引擎串行，省显存但变慢；增大需确保 GPU 显存够用")
+                    help="  PDF       （  2 = marker+mineru   ）")
     ap.add_argument("--gpu-fraction", type=float, default=0.4,
-                    help="每个 Windows GPU 子进程最多可用显存比例（0-1，默认 0.4）。"
-                         "0 表示不限制（仅用于纯 CPU 模式）。16GB GPU × 0.4 = 6.4GB/进程")
+                    help="  Windows GPU       （0-1   0.4）")
     ap.add_argument("--cpu-threads", type=int, default=6,
-                    help="每个 GPU 子进程的 CPU 线程上限（默认 6）。"
-                         "防两个 PyTorch 进程各起 24 线程互相抢核")
+                    help="  GPU       CPU    （  6）")
     ap.add_argument("--max-concurrent-pdfs", type=int, default=1,
-                    help="批量模式下最多同时处理的 PDF 数（默认 1 = 串行）。"
-                         "增大可大幅提速但 N×max_workers 个 GPU 进程会同时跑")
+                    help="        PDF （  1 =  ）")
     ap.add_argument("--gpu-cap-fraction", type=float, default=0.9,
-                    help="设备级 GPU 总显存上限（0-1，默认 0.9=90 百分比）。"
-                         "当本进程 + 其他进程（如 CV 训练）的总显存超过此值时，"
-                         "paper-reader 会排队等待（最多 --gpu-wait-timeout 秒）。"
-                         "设为 0 禁用协调，回到无序抢占模式（不推荐）")
+                    help="   GPU      （0-1   0.9=90%%）")
     ap.add_argument("--gpu-wait-timeout", type=float, default=600.0,
-                    help="设备级 GPU 预算不足时，等待其他进程释放的最长时间（秒，默认 600=10分钟）。"
-                         "超时则放弃该 PDF 并打印警告。设为 0 表示不等待、立即放弃")
+                    help="   GPU         （   600=10 ）")
+
     args = ap.parse_args()
 
-    # 应用 GPU 资源栅栏配置到模块级全局
+    # ── GPU    ──────────────────────────────────────────────────────
     global _GPU_FRACTION, _CPU_THREADS, _GPU_GOVERNOR, _GPU_WAIT_TIMEOUT
     _GPU_FRACTION = args.gpu_fraction
-    _CPU_THREADS = args.cpu_threads
+    _GPU_THREADS = args.cpu_threads
     _GPU_WAIT_TIMEOUT = args.gpu_wait_timeout
-    if 0.0 < args.gpu_fraction <= 1.0:
-        print(f"GPU 限制: 每进程 {args.gpu_fraction*100:.0f}% 显存，"
-              f"{args.cpu_threads} CPU 线程", file=sys.stderr)
-    elif args.gpu_fraction != 0:
-        ap.error(f"--gpu-fraction 必须在 (0, 1] 范围内或为 0（不限制），当前 {args.gpu_fraction}")
-    else:
-        print("GPU 限制: 已禁用（纯 CPU 模式或手动管控）", file=sys.stderr)
 
-    # 初始化设备级 GPU 协调器（防 paper-reader + CV 训练同时跑时过载）
+    if 0.0 < args.gpu_fraction <= 1.0:
+        print(f"GPU  :   {args.gpu_fraction*100:.0f}%  ，"
+              f"{args.cpu_threads} CPU  ", file=sys.stderr)
+    elif args.gpu_fraction != 0:
+        ap.error(
+            f"--gpu-fraction     (0, 1]     0（   ），  "
+            f"{args.gpu_fraction}"
+        )
+    else:
+        print("GPU  :    （  CPU    ）", file=sys.stderr)
+
     if 0.0 < args.gpu_cap_fraction <= 1.0:
         _GPU_GOVERNOR = GpuGovernor(cap_fraction=args.gpu_cap_fraction)
-        print(f"GPU 协调器: 设备上限 {args.gpu_cap_fraction*100:.0f}%，"
-              f"等待超时 {args.gpu_wait_timeout:.0f}s", file=sys.stderr)
+        print(f"GPU   :     {args.gpu_cap_fraction*100:.0f}%，"
+              f"    {args.gpu_wait_timeout:.0f}s", file=sys.stderr)
     elif args.gpu_cap_fraction != 0:
-        ap.error(f"--gpu-cap-fraction 必须在 (0, 1] 范围内或为 0（禁用），当前 {args.gpu_cap_fraction}")
+        ap.error(
+            f"--gpu-cap-fraction     (0, 1]     0（  ），  "
+            f"{args.gpu_cap_fraction}"
+        )
     else:
-        print("GPU 协调器: 已禁用（抢占模式，多任务可能过载）", file=sys.stderr)
+        print("GPU   :    （    ，      ）", file=sys.stderr)
 
-    # 默认输出目录: 输入 PDF/目录的同级 paper-analysis/
-    if args.output is None:
-        args.output = args.pdf.resolve().parent / "paper-analysis"
+    # ──    ──────────────────────────────────────────────────
+    #   v2:    papers_dir   PDF  /
+    papers_dir = args.pdf.resolve()
+    if papers_dir.is_file():
+        papers_dir = papers_dir.parent
 
-    # 校验 venvs
+    state_path = papers_dir / "_pipeline_state.json"
+
+    # ── --status ─────────────────────────────────────────────────────
+    if args.status:
+        if not state_path.exists():
+            print(f"  _pipeline_state.json    : {state_path}", file=sys.stderr)
+            print("  paper_reader.py papers/ --init ", file=sys.stderr)
+            return 1
+        state = PipelineState(state_path)
+        print_status(state)
+        return 0
+
+    # ── --init ───────────────────────────────────────────────────────
+    if args.init:
+        state = PipelineState(state_path)
+        pdfs = find_pdfs(args.pdf)
+        if not pdfs:
+            print(f"ERROR:    PDF: {args.pdf}", file=sys.stderr)
+            return 1
+        print(f"  {len(pdfs)}  PDF,     ...", file=sys.stderr)
+        new_stems = state.init_from_pdfs(pdfs, args.max_pages)
+        print(f"   : {len(new_stems)}   PDF  _pipeline_state.json", file=sys.stderr)
+        state.save()
+
+        #   --from-manifest
+        manifest_path = args.from_manifest or args.import_urls
+        if manifest_path and manifest_path.exists():
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                state.import_manifest(manifest)
+            except (json.JSONDecodeError, OSError) as e:
+                print(f"ERROR:    manifest: {e}", file=sys.stderr)
+
+        print_status(state)
+        return 0
+
+    # ── --import-urls (no --init) ───────────────────────────────────
+    manifest_path = args.from_manifest or args.import_urls
+    if manifest_path and not args.init:
+        if not state_path.exists():
+            print(f"ERROR: _pipeline_state.json    : {state_path}", file=sys.stderr)
+            print("  paper_reader.py papers/ --init ", file=sys.stderr)
+            return 1
+        if not manifest_path.exists():
+            print(f"ERROR: manifest    : {manifest_path}", file=sys.stderr)
+            return 1
+        state = PipelineState(state_path)
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            state.import_manifest(manifest)
+            return 0
+        except (json.JSONDecodeError, OSError) as e:
+            print(f"ERROR:    manifest: {e}", file=sys.stderr)
+            return 1
+
+    # ──     ────────────────────────────────────────────────────
+
+    #  v1 --output   (  )
+    if args.output is not None:
+        print("  : --output   v2    ,   .", file=sys.stderr)
+        print(f"     : {papers_dir}/paper-conversion/", file=sys.stderr)
+        print(f"     : {papers_dir}/paper-merged/", file=sys.stderr)
+
+    #
     if args.engines in ("both", "marker") and not MARKER_BIN.exists():
-        print(f"ERROR: marker venv 缺失: {MARKER_BIN}", file=sys.stderr)
-        print("请先运行: bash ~/.claude/skills/paper-reader/scripts/bootstrap.sh",
+        print(f"ERROR: marker venv  : {MARKER_BIN}", file=sys.stderr)
+        print("  : bash ~/.claude/skills/paper-reader/scripts/bootstrap.sh",
               file=sys.stderr)
         return 2
     if args.engines in ("both", "mineru") and not MINERU_BIN.exists():
-        print(f"ERROR: mineru venv 缺失: {MINERU_BIN}", file=sys.stderr)
-        print("请先运行: bash ~/.claude/skills/paper-reader/scripts/bootstrap.sh",
+        print(f"ERROR: mineru venv  : {MINERU_BIN}", file=sys.stderr)
+        print("  : bash ~/.claude/skills/paper-reader/scripts/bootstrap.sh",
               file=sys.stderr)
         return 2
 
+    #   /  _pipeline_state.json
+    state = PipelineState(state_path) if state_path.exists() else None
+
     pdfs = find_pdfs(args.pdf)
     if not pdfs:
-        print(f"ERROR: 未找到 PDF: {args.pdf}", file=sys.stderr)
+        print(f"ERROR:    PDF: {args.pdf}", file=sys.stderr)
         return 1
 
-    args.output.mkdir(parents=True, exist_ok=True)
-    print(f"将处理 {len(pdfs)} 个 PDF，输出到: {args.output}")
-    print(f"引擎: {args.engines}  页范围: {args.pages or '全部'}")
-    print(f"单 PDF 并发: {args.max_workers} 引擎 | 批量并发: {args.max_concurrent_pdfs} PDF")
+    #   PDF   /init
+    if state and state.has(pdfs[0].stem):
+        pass  #   state     process_one  resume
+    elif len(pdfs) > 1 and not state:
+        print("  :  _pipeline_state.json    .", file=sys.stderr)
+        print("  paper_reader.py papers/ --init ", file=sys.stderr)
 
+    dirs = _derive_output_dirs(papers_dir)
+    for d in dirs.values():
+        d.mkdir(parents=True, exist_ok=True)
+    print(f"   {len(pdfs)}  PDF", file=sys.stderr)
+    print(f"  : {args.engines}     : {args.pages or ' '}", file=sys.stderr)
+    print(f"  PDF  : {args.max_workers}   |    : {args.max_concurrent_pdfs} PDF", file=sys.stderr)
+
+    # ──     ──────────────────────────────────────────────
     results: list[PaperResult] = []
+
+    def _should_skip(stem: str) -> bool:
+        """ resume   force ."""
+        if not args.resume or not state:
+            return False
+        if args.force:
+            return False
+        if not state.has(stem):
+            return False
+        return state.is_fully_done(stem)
+
     if args.max_concurrent_pdfs <= 1 or len(pdfs) == 1:
-        # 串行模式（默认）：一次一个 PDF，最稳
+        #
         for i, pdf in enumerate(pdfs, 1):
-            print(f"\n[{i}/{len(pdfs)}] {pdf.name}")
+            stem = pdf.stem
+            if _should_skip(stem):
+                print(f"[{i}/{len(pdfs)}] {pdf.name} ⏭️   ", file=sys.stderr)
+                #        state
+                entry = state.get(stem) if state else {}
+                results.append(PaperResult(pdf_path=str(pdf), stem=stem))
+                continue
+
+            print(f"\n[{i}/{len(pdfs)}] {pdf.name}", file=sys.stderr)
             try:
                 r = process_one(
-                    pdf, args.output, args.engines, args.pages,
+                    pdf, papers_dir, args.engines, args.pages,
                     args.mineru_method, args.mineru_backend, args.lang,
                     max_workers=args.max_workers,
+                    state=state,
+                    force=args.force,
                 )
                 results.append(r)
             except KeyboardInterrupt:
-                print("\n中断。", file=sys.stderr)
+                print("\n  。", file=sys.stderr)
+                if state:
+                    state.set_phase(stem, "phase1_converted",
+                                    {"status": "interrupted"})
+                    state.save()
                 break
             except Exception as e:
                 print(f"  ERROR: {e}", file=sys.stderr)
-                results.append(PaperResult(pdf_path=str(pdf), stem=pdf.stem))
+                if state:
+                    state.set_phase(stem, "phase1_converted",
+                                    {"status": "failed", "error": str(e)[:500]})
+                    state.save()
+                results.append(PaperResult(pdf_path=str(pdf), stem=stem))
     else:
-        # 批量并发模式：N 个 PDF 同时处理。
-        # 注意：总 GPU 进程数 = max_concurrent_pdfs × max_workers，
-        # 必须确保 GPU 显存够（fraction × 进程数 ≤ 1）。
-        from concurrent.futures import ThreadPoolExecutor
+        #
         total_procs = args.max_concurrent_pdfs * args.max_workers
         if 0.0 < args.gpu_fraction and total_procs * args.gpu_fraction > 1.0 + 1e-6:
-            print(f"⚠ 警告: {total_procs} 进程 × {args.gpu_fraction*100:.0f}% 显存 = "
-                  f"{total_procs*args.gpu_fraction*100:.0f}% > 100%，必将 OOM！",
+            print(
+                f"⚠  : {total_procs}   × {args.gpu_fraction*100:.0f}%   = "
+                f"{total_procs*args.gpu_fraction*100:.0f}% > 100%，   OOM！",
+                file=sys.stderr,
+            )
+            print(f"    ：   --max-concurrent-pdfs   --gpu-fraction",
                   file=sys.stderr)
-            print(f"  建议：减小 --max-concurrent-pdfs 或 --gpu-fraction",
-                  file=sys.stderr)
+
         with ThreadPoolExecutor(max_workers=args.max_concurrent_pdfs) as tex:
             indexed = list(enumerate(pdfs, 1))
+
             def _run_one(idx_pdf):
                 i, pdf = idx_pdf
-                print(f"\n[{i}/{len(pdfs)}] {pdf.name}")
+                stem = pdf.stem
+                if _should_skip(stem):
+                    print(f"[{i}/{len(pdfs)}] {pdf.name} ⏭️   ", file=sys.stderr)
+                    return PaperResult(pdf_path=str(pdf), stem=stem)
+                print(f"\n[{i}/{len(pdfs)}] {pdf.name}", file=sys.stderr)
                 try:
                     return process_one(
-                        pdf, args.output, args.engines, args.pages,
+                        pdf, papers_dir, args.engines, args.pages,
                         args.mineru_method, args.mineru_backend, args.lang,
                         max_workers=args.max_workers,
+                        state=state,
+                        force=args.force,
                     )
                 except Exception as e:
                     print(f"  ERROR: {e}", file=sys.stderr)
-                    return PaperResult(pdf_path=str(pdf), stem=pdf.stem)
+                    return PaperResult(pdf_path=str(pdf), stem=stem)
+
             try:
                 for r in tex.map(_run_one, indexed):
                     results.append(r)
             except KeyboardInterrupt:
-                print("\n中断（已完成的 PDF 保留）。", file=sys.stderr)
+                print("\n  （   PDF  ）。", file=sys.stderr)
 
     print_summary(results)
     return 0
