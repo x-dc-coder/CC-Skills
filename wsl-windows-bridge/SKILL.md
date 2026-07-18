@@ -1,11 +1,13 @@
 ---
 name: wsl-windows-bridge
 description: >
-  WSL → Windows 跨边界框架：三层调用通道（cmd.exe GPU/Python/EXE ~55ms、
-  Direct EXE 注册表/服务/进程 ~10ms、PowerShell COM/WMI/P/Invoke ~600ms）
-  + GPU 资源治理（GpuLimits 单进程配额 + GpuGovernor 设备级跨进程协调，
-  防多任务 OOM 卡死）。覆盖 GPU 训练/推理、Windows Python 环境、注册表、
-  WMI、COM 自动化、Event Log。GPU 规范统一在 /home/dc/CLAUDE.md。
+  WSL → Windows 跨边界框架：三层调用通道（pythonw.exe 直调 ~50ms 无弹窗⭐首选、
+  cmd.exe /c ~55ms 会弹窗 fallback、Direct EXE 注册表/服务/进程 ~10ms、
+  PowerShell COM/WMI/P/Invoke ~600ms）+ GPU 资源治理（GpuLimits 单进程配额 +
+  GpuGovernor 设备级跨进程协调，防多任务 OOM 卡死）。覆盖 GPU 训练/推理、
+  Windows Python 环境、注册表、WMI、COM 自动化、Event Log。GPU 规范统一在
+  /home/dc/CLAUDE.md。UTF-8 三层防护：PYTHONUTF8=1 + PYTHONIOENCODING=utf-8
+  + -X utf8 + WSLENV 白名单转发。
 ---
 
 # WSL → Windows 桥接 Skill
@@ -18,50 +20,101 @@ This skill documents **three channels** ranked by speed and simplicity:
 
 | Channel | Launcher | Overhead | When |
 |---------|----------|----------|------|
-| **C: cmd.exe** | `cmd.exe /c` | ~55ms | **GPU / Python scripts / 任意可执行文件** |
+| **C: pythonw.exe** | `pythonw.exe` 直调 | ~50ms | **GPU / Python scripts / 无弹窗要求**（⭐ 首选） |
+| **C': cmd.exe** | `cmd.exe /c` | ~55ms | 需要 shell 重定向 (`>` `2>` `&`)，会弹窗 |
 | **B: Direct EXE** | `reg.exe`, `sc.exe`... | ~10ms | 简单系统工具（注册表/服务/进程） |
 | **A: PowerShell** | `powershell.exe` | ~600ms | COM / WMI / P/Invoke / Event Log |
 
-**核心原则：能 cmd 不用 ps，能直调不套壳。**
+**核心原则：pythonw 优先于 cmd，能 cmd 不用 ps，能直调不套壳。**
 
-## Channel C: cmd.exe — GPU & Python（⭐ 首选）
+## Channel C: pythonw.exe / cmd.exe — GPU & Python（⭐ 首选）
 
-### Python 标准调用（`subprocess` 封装）
+### ⭐ 首选：pythonw.exe 直调（无弹窗）
+
+`pythonw.exe` 是 Windows 原生无控制台 Python 解释器，被外部进程启动时**根本不会弹 cmd 窗口**。`python.exe` 自带控制台会弹窗。WSL 调 GPU/Python 实验一律优先 pythonw。
+
+```python
+import subprocess, os
+
+def _run_windows_headless(pyw_exe, script_or_code, args=None, timeout=1800, cwd="/mnt/e/temp"):
+    """pythonw.exe 直调，永不弹窗。"""
+    env = os.environ.copy()
+    env["PYTHONUTF8"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["WSLENV"] = "PYTHONUTF8/w:PYTHONIOENCODING/w"
+    cmd = [pyw_exe, "-u", "-X", "utf8"]
+    # 区分 -c code 模式 vs 脚本路径模式
+    if script_or_code.lstrip().startswith("import ") or "\n" in script_or_code:
+        cmd += ["-c", script_or_code]
+    else:
+        cmd += [script_or_code]
+    cmd += (args or [])
+    return subprocess.run(
+        cmd, capture_output=True, text=True, timeout=timeout,
+        encoding="utf-8", errors="replace",
+        cwd=cwd, env=env,
+    )
+
+# 使用示例
+r = _run_windows_headless(
+    r"E:\venvs\marker\Scripts\pythonw.exe",
+    "import torch; print('CUDA:', torch.cuda.is_available())",
+)
+```
+
+### fallback：cmd.exe /c（仅当需要 shell 内置重定向时）
 
 ```python
 import subprocess, os
 
 def _run_windows(python_exe, code, args=None, timeout=1800):
+    """cmd.exe /c fallback — 会弹 cmd 窗口，仅当需要 shell 重定向语法时用。"""
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
     cmd = ["cmd.exe", "/c", python_exe, "-c", code] + (args or [])
     return subprocess.run(
         cmd, capture_output=True, text=True, timeout=timeout,
         encoding="utf-8", errors="replace",
         cwd="/mnt/e/temp",   # 必须：避免 UNC 路径报错
+        env=env,
     )
 ```
 
 **注意事项：**
-- `cwd` 必须设为 `/mnt/` 下共享盘路径，否则 `cmd.exe` 报 UNC 不支持
+- `cwd` 必须设为 `/mnt/` 下共享盘路径，否则 `cmd.exe` 报 UNC 不支持（pythonw 直调没此限制但同样建议走 `/mnt` 路径）
 - 中文输出需写文件（pipe 输出走系统 GBK 编码）：
   ```python
-  cmd = [py, "-c", code, ">", win_out_file, "2>", win_err_file]
-  subprocess.run(["cmd.exe", "/c"] + cmd, cwd="/mnt/e/temp")
-  # 然后从 WSL 读取文件
+  log_f = open(win_log_path, "wb")  # WSL 端打开文件对象
+  p = subprocess.Popen([pyw_exe, "-u", "-X", "utf8", script, *args],
+                       stdout=log_f, stderr=log_f, env=env)
+  # 完成后从 WSL 侧读 UTF-8 日志
   ```
 - 退出码、参数传递、stderr 均正确（已验证）
 
+### UTF-8 三层防护（必读，否则中文乱码）
+
+| 层 | 设置 | 作用 |
+|---|---|---|
+| ① 进程级 | `PYTHONUTF8=1` | 启用 Python UTF-8 Mode (PEP 540) |
+| ② stdout 级 | `PYTHONIOENCODING=utf-8` | 显式指 stdin/stdout/stderr 编码 |
+| ③ 命令行级 | `pythonw.exe -X utf8 script.py` | 强制覆盖，优先级最高 |
+
+> ⚠️ **WSLENV 白名单**：上述 env var 必须加入 `WSLENV` 白名单才能传到 Windows 侧 Python，否则静默失效。
+> `env["WSLENV"] = "PYTHONUTF8/w:PYTHONIOENCODING/w"`
+> 文档：<https://learn.microsoft.com/en-us/windows/wsl/filesystems#share-environment-variables-between-windows-and-wsl-with-wslenv>
+
 ### 后台长时间任务（会话关闭不中断）
 
-`cmd.exe /c` 启动的 Windows 进程在 WSL 父进程被杀后不受影响（实测 SIGHUP/SIGKILL 存活）。用 `Popen` 非阻塞启动，输出重定向到文件：
+`pythonw.exe` 或 `cmd.exe /c` 启动的 Windows 进程在 WSL 父进程被杀后不受影响（实测 SIGHUP/SIGKILL 存活）。用 `Popen` 非阻塞启动，输出重定向到文件：
 
 ```python
 import subprocess
 
-# 启动（不等待）
+# 启动（不等待）— pythonw.exe 版（无弹窗）
 p = subprocess.Popen(
-    ["cmd.exe", "/c", py_exe, "-c", code] + args,
-    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    cwd="/mnt/e/temp",
+    [pyw_exe, "-u", "-X", "utf8", script] + args,
+    stdout=log_f, stderr=log_f,
+    cwd="/mnt/e/temp", env=env,
 )
 # p.pid 是 WSL bash 进程 — 退出时不影响 Windows 子进程
 
@@ -75,20 +128,151 @@ nvidia-smi                                        # 查看 GPU
 taskkill.exe /F /PID $(cat /mnt/e/temp/pid.txt)  # 终止
 tail -f /mnt/e/temp/train.log                     # 日志
 ```
+### 实时输出与进度条（⭐ 长任务必读）
+
+WSL interop 使用匿名管道（非 PTY）通信，训练脚本输出经常"卡住"：tqdm 检测到 stdout 非 TTY 后自动静默，`\r` 进度条在 pipe 中被缓冲。本节提供四种模式解决实时输出问题。
+
+#### 四模式决策树
+
+| 模式 | 调用方式 | 输出流向 | 孤儿进程防护 | 适用场景 |
+|------|---------|---------|------------|---------|
+| **stream** | `stream_gpu_windows(...)` | WSL 端 `select.select` 逐行读取 | 无（SIGHUP 后 Windows 进程继续） | 交互调试、需要实时看 tqdm |
+| **detached** | `launch_detached(...)` → `tail -f /tmp/gpu-logs/<job>.log` | Linux FS 日志文件（inotify 实时） | 无 | 长时间训练、关闭 WSL 会话后继续 |
+| **stream+wrapper** | `stream_gpu_windows(..., use_wrapper=True)` | 同 stream | ⭐ Job Object + KILL_ON_JOB_CLOSE | stream 模式 + 需自动清理 |
+| **detached+wrapper** | `launch_detached(..., use_wrapper=True)` | 同 detached | ⭐ Job Object + KILL_ON_JOB_CLOSE | detached 模式 + 需自动清理 |
+
+#### 进度条环境变量
+
+`build_gpu_env()` 自动注入以下 5 个环境变量，在 `_run_windows_headless()` 内部自动调用。手动覆盖场景见右列。
+
+| 环境变量 | 目的 | 默认值 | 覆盖时机 |
+|---------|------|-------|---------|
+| `PYTHONUNBUFFERED` | 禁用 Python stdout 缓冲 | `1`（自动设置） | 不需要覆盖 |
+| `TQDM_DISABLE` | 启用 tqdm 进度条 | 不设（tqdm 默认 disable=False→启用） | 用户想关进度条时设 `TQDM_DISABLE=1` |
+| `TTY_COMPATIBLE` | tqdm 启用 `\r` 进度条 refresh | `1` | 不需要覆盖 |
+| `TTY_INTERACTIVE` | tqdm 启用交互模式（disable=None） | `1` | 不需要覆盖 |
+| `HF_HUB_DISABLE_PROGRESS_BARS` | 禁用 HuggingFace hub 进度条（与 tqdm 冲突时） | `1`（禁用 HF 进度条） | 单独下载模型时改 `0` |
+
+> **原理**：WSL interop 的 `CreatePipe` 返回匿名管道，`isatty()` 为 False。tqdm 源码 `tqdm/std.py#L118-120` 检测到非 TTY 时自动 `disable=None` 导致无输出。`TTY_COMPATIBLE=1` 强制 tqdm 认为 stdout 可交互，恢复 `\r` 进度条刷新。
+
+#### stream 模式（直读实时输出）
+
+```python
+from gpu_safe_subprocess import GpuLimits, stream_gpu_windows
+
+limits = GpuLimits(gpu_memory_fraction=0.4, cpu_threads=6)
+
+# 逐行实时输出 — select.select 轮询 + deadline 检查
+for line in stream_gpu_windows(
+    py_exe=r"E:\venvs\train\Scripts\pythonw.exe",
+    code="import train; train.main()",
+    limits=limits,
+    timeout=3600,
+):
+    # line 已经过 \r 清洗：多个 \r 覆盖的行合并为最终状态
+    # 例如 tqdm 的 " 30%|███       | 30/100 [00:15<00:35, 2.00it/s]"
+    print(line, end="", flush=True)
+```
+
+**`\r` 清洗说明**：管道传输保留了原始 `\r` 字符。`stream_gpu_windows` 内部以 `\r` 和 `\n` 为分隔符拆行，同一 `\r` 段内只保留最后一段文本（即该行当前状态），避免日志文件中出现同一进度条的多份残留副本。调用方收到的每条 `line` 已经是最终可读文本。
+
+#### detached 模式（后台静默 + tail -f）
+
+```bash
+# 一键：启动后台训练 + 监控日志 + 终止
+python3 -c "
+from gpu_safe_subprocess import GpuLimits, launch_detached
+launch_detached(
+    py_exe=r'E:\venvs\train\Scripts\pythonw.exe',
+    code='import train; train.main()',
+    limits=GpuLimits(gpu_memory_fraction=0.4, cpu_threads=6),
+    log_path='train_bert',   # → /tmp/gpu-logs/train_bert.log
+    timeout=86400,
+)
+" && tail -f /tmp/gpu-logs/train_bert.log
+# Ctrl+C 后 Windows 进程继续运行。终止：
+taskkill.exe /F /PID $(grep -oP 'PID:\K\d+' /tmp/gpu-logs/train_bert.log | head -1)
+```
+
+> ⚠️ **WSL#4739**：`/mnt/` 路径下的 `tail -f` 使用 polling 模式（~1s 延迟），因为 WSL 的 `/mnt/` 是 DrvFs 挂载，不支持 inotify。**必须**将日志写到 Linux 原生文件系统（`/tmp/gpu-logs/`）才能获得 inotify 实时推送。`launch_detached` 默认写到 `/tmp/gpu-logs/`，自动满足此要求。
+
+#### wrapper + Job Object（⭐ 孤儿进程防护）
+
+默认情况下，WSL 端父进程退出后 Windows 侧子进程继续运行（成为孤儿），需手动 `taskkill.exe` 清理。对于频繁启停的调参场景或多进程训练，这会导致 GPU 显存泄漏。
+
+**解决方案**：Windows 侧 `win-launcher.py` 创建 Job Object（通过 ctypes 调 `CreateJobObjectW` + `SetInformationJobObject`），设置 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 标志。WSL 端通过管道监控 wrapper 进程，wrapper 退出时 OS 级强制终止整个 Job Object 内的所有子进程。
+
+```python
+# stream + wrapper：调试时 Ctrl+C 自动清理 Windows 进程
+for line in stream_gpu_windows(
+    py_exe=r"E:\venvs\train\Scripts\pythonw.exe",
+    code="import train; train.main()",
+    limits=limits,
+    use_wrapper=True,  # ← 启用 Job Object 防护
+):
+    print(line, end="", flush=True)
+# WSL 端 Ctrl+C → wrapper 退出 → Job Object 内所有进程被 OS 终止
+
+# detached + wrapper：后台运行 + 会话关闭自动清理
+launch_detached(
+    py_exe=r"E:\venvs\train\Scripts\pythonw.exe",
+    code="import train; train.main()",
+    limits=limits,
+    use_wrapper=True,  # ← 启用 Job Object 防护
+    log_path="train_bert",
+)
+# WSL 会话关闭 → wrapper 管道断开 → Job Object 子进程被 OS 回收
+```
+
+**四模式扩展决策（含 wrapper）**：
+
+| 模式 | 适用场景 | 孤儿防护 |
+|------|---------|---------|
+| stream（无 wrapper） | 短时一次性任务、手动管理生命周期 | 无 |
+| detached（无 wrapper） | 有监控脚本定时清理、单次训练 | 无 |
+| stream + wrapper | 频繁 Ctrl+C 的调试/调参 | ⭐ Job Object |
+| detached + wrapper | 长时间无人值守训练、会话可能异常断开 | ⭐ Job Object |
+
+**何时使用 wrapper**：
+- ✅ 频繁启停（调参、debug）→ 避免 `nvidia-smi` 里残留僵尸进程
+- ✅ 长时间训练（>1h）→ 会话意外断开时自动释放 GPU
+- ✅ 多进程编排 → 一个 Job Object 管一组进程，统一生命周期
+
+**何时不使用 wrapper**：
+- ❌ 短时一次性任务（<5min）→ 手动 `taskkill.exe` 更快
+- ❌ 需要进程在 WSL 退出后继续 → detached 模式无 wrapper 即是此用途
+
+**Windows 侧手动验证清单**（确认 wrapper 生效）：
+
+1. 启动 wrapper 后，打开 Windows 任务管理器 → 详细信息 → 查找 `pythonw.exe`（应出现在 Job Object 内）
+2. WSL 端 Ctrl+C 或关闭终端 → 等待 3 秒 → 任务管理器中对应 `pythonw.exe` 进程消失
+3. 在 WSL 中运行 `nvidia-smi` → 确认 `No running processes found`（显存释放）
+4. 异常断开测试：`kill -9` WSL 父 bash 进程 → 10 秒内 Windows 侧进程自动终止（wrapper 管道断开触发）
 
 ### GPU 环境检查 & 规则
 
 > **GPU 相关全部统一在 `/home/dc/CLAUDE.md` → "GPU 桥接" 章节**，此处不再重复。
 > 特别注意 **"GPU 多路并发铁律"**（≥2 个 GPU 子进程时必读，防 OOM 卡死系统）。
 
-快速验证：
+快速验证（pythonw.exe 版，无弹窗 + UTF-8）：
 ```bash
-cmd.exe /c "E:\venvs\marker\Scripts\python.exe -c \"import torch; print('CUDA:', torch.cuda.is_available(), '| GPU:', torch.cuda.get_device_name(0))\""
+python3 -c "
+import subprocess, os
+env = os.environ.copy()
+env['PYTHONUTF8']='1'; env['PYTHONIOENCODING']='utf-8'
+env['WSLENV']='PYTHONUTF8/w:PYTHONIOENCODING/w'
+r = subprocess.run(
+    [r'E:\venvs\marker\Scripts\pythonw.exe', '-u', '-X', 'utf8', '-c',
+     'import torch; print(\"CUDA:\", torch.cuda.is_available(), \"| GPU:\", torch.cuda.get_device_name(0))'],
+    capture_output=True, text=True, encoding='utf-8', errors='replace',
+    cwd='/mnt/e/temp', env=env, timeout=30)
+print(r.stdout)
+"
 ```
 
 ### 资源限制（多路 GPU 子进程必备）
 
-当一次启动 ≥2 个 Windows GPU 子进程时，**必须**给每个子进程注入显存配额 + CPU 线程约束。规则全文在 `/home/dc/CLAUDE.md` → "GPU 多路并发铁律"，此 skill 提供现成封装：
+当一次启动 ≥2 个 Windows GPU 子进程时，**必须**给每个子进程注入显存配额 + CPU 线程约束。规则全文在 `/home/dc/CLAUDE.md` → "GPU 多路并发铁律"，此 skill 提供现成封装。
 
 **通用模块**：`~/.claude/skills/wsl-windows-bridge/scripts/gpu_safe_subprocess.py`
 
@@ -100,7 +284,7 @@ limits = GpuLimits(gpu_memory_fraction=0.4, cpu_threads=6)
 
 # 串行：直接调用
 r = run_gpu_windows(
-    py_exe=r"E:\venvs\marker\Scripts\python.exe",
+    py_exe=r"E:\venvs\marker\Scripts\pythonw.exe",  # 优先 pythonw，无弹窗
     code="from marker.scripts.convert_single import convert_single_cli; import sys; sys.exit(convert_single_cli())",
     args=[win_pdf, "--output_dir", win_out],
     limits=limits,
@@ -112,7 +296,9 @@ with acquire_gpu_slot(max_concurrent=2):
     run_gpu_windows(...)
 ```
 
-模块原理：注入 `PYTORCH_CUDA_ALLOC_CONF=per_process_memory_fraction:0.4,throw_on_cudamalloc_oom:True,...`（PyTorch 官方 OOM 防护机制），让超额进程抛异常而非杀驱动。
+模块原理：env var 层注入 `PYTORCH_CUDA_ALLOC_CONF=garbage_collection_threshold:0.7`（PyTorch 实测接受的选项），Python API 层通过 bootstrap 调 `torch.cuda.set_per_process_memory_fraction(0.4)`。
+
+> ⚠️ **不要写** `PYTORCH_CUDA_ALLOC_CONF=per_process_memory_fraction:0.4` —— 这是 Python API 不是 env var，PyTorch 会报 `Unrecognized CachingAllocator option`。详见 CLAUDE.md "GPU 显存配额" 段。
 
 ### Windows 侧 Python venv 管理
 
@@ -129,8 +315,8 @@ powershell.exe -Command "& 'C:\Users\32841\.local\bin\uv.exe' pip install torch=
 
 | 场景 | 用哪个通道 | 命令 | 原因 |
 |------|-----------|------|------|
-| **GPU / Python 脚本** | cmd.exe (C) | `cmd.exe /c "py -c '...'"` | ~55ms, 参数不拆分, stderr 干净 |
-| **中文输出** | cmd.exe + 文件 | `cmd.exe /c "py ... > out.txt"` | pipe 编码 GBK→UTF-8 可行 |
+| **GPU / Python 脚本** | pythonw.exe (首选) | `pythonw.exe -u -X utf8 script.py` | ~50ms, **无弹窗**, 参数不拆分, stderr 干净 |
+| **GPU / Python (需 shell 重定向)** | cmd.exe (fallback) | `cmd.exe /c "py ... > out.txt"` | ~55ms, 有弹窗, 仅当需 `>` `2>` `&` 语法时用 |
 | **任意 EXE 调用** | cmd.exe (C) | `cmd.exe /c program.exe args` | 薄转发层, 无额外处理 |
 | 简单注册表 | reg.exe (B) | `reg query HKLM\...` | ~10ms, 原生工具 |
 | 服务启停 | sc.exe (B) | `sc start MyService` | 原生, 输出简洁 |
@@ -1205,7 +1391,7 @@ powershell.exe -Command "
 
 1. **No Interactive Input**: Cannot use `Read-Host`, interactive prompts, or GUI dialogs (except via `[User32]::MessageBox` w/ P/Invoke).
 2. **No State Persistence**: Each call is a fresh process. Variables don't persist between calls.
-3. **Encoding Gap**: cmd.exe (C) 和 Direct EXE (B) 的 pipe 输出走系统 GBK 编码，中文会乱码。**解决：写文件**（`cmd.exe /c "py ... > out.txt"`）。
+3. **Encoding Gap**: cmd.exe (C) 和 Direct EXE (B) 的 pipe 输出走系统 GBK 编码，中文会乱码。**解决**：① 用 pythonw.exe + UTF-8 三层防护（`PYTHONUTF8=1` + `PYTHONIOENCODING=utf-8` + `-X utf8` + WSLENV 白名单）；② 写文件（`pythonw ... > out.txt` 然后从 WSL 读取）。
 4. **cmd.exe UNC 路径**: 从 WSL `~/` 目录调用 `cmd.exe` 报 UNC 不支持。**`cwd="/mnt/e/temp"`** 解决。
 5. **ps -Command 参数拆分**: `powershell.exe -Command '...' "hello world"` 会把 hello world 拆成两个参数。复杂参数用 `-File`。
 6. **ps -EncodedCommand CLIXML**: 非 TTY 输出会包 CLIXML。不推荐用于数据交换。
@@ -1215,8 +1401,9 @@ powershell.exe -Command "
 
 ## Best Practices
 
-- **Channel 优先级**: cmd.exe (C) > Direct EXE (B) > PowerShell (A)。能 cmd 不用 ps。
-- **GPU / Python 脚本**: 始终用 `cmd.exe /c`，`cwd="/mnt/e/temp"`。
+- **Channel 优先级**: pythonw.exe > cmd.exe (C) > Direct EXE (B) > PowerShell (A)。GPU/Python 实验一律优先 pythonw.exe（无弹窗）。
+- **GPU / Python 脚本**: 优先 `pythonw.exe`；仅当需要 shell 重定向 (`>` `2>`) 时降级到 `cmd.exe /c`，`cwd="/mnt/e/temp"`。
+- **UTF-8 三层防护**: PYTHONUTF8=1 + PYTHONIOENCODING=utf-8 + pythonw.exe `-X utf8`。三者必须配 WSLENV 白名单才生效。
 - **PowerShell 仅用于**: COM / WMI / Event Log / P/Invoke — 这些是 cmd.exe 做不到的。
 - **中文输出**: 写文件（`> win_file` 然后从 WSL 读取），不要依赖 pipe 编码。
 - **复杂 PS 脚本**: 写入 `/mnt/e/temp/*.ps1`，用 `-File` 调用，参数不会被拆分。
@@ -1224,6 +1411,7 @@ powershell.exe -Command "
 - **用 `wslpath`** 做路径转换。
 - **用 JSON** 输出数据（`ConvertTo-Json`）便于 WSL 侧 `jq` 解析。
 - **GPU 规则**: 统一在 `/home/dc/CLAUDE.md` → "GPU 桥接" 章节。
+- **PyTorch env var**: `PYTORCH_CUDA_ALLOC_CONF` 只接受 `garbage_collection_threshold:0.7`、`max_split_size_mb:N` 等少数选项。`per_process_memory_fraction` 是 **Python API**（`torch.cuda.set_per_process_memory_fraction()`），不是 env var。
 
 ---
 

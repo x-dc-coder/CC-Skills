@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""gpu_safe_subprocess — WSL → Windows GPU 子进程的资源栅栏封装.
+"""gpu_safe_subprocess — WSL → Windows GPU 子进程的资源栅栏封装 + 流式输出支持.
 
 为什么需要这个模块
 -------------------
@@ -9,7 +9,7 @@ WSL 通过 `cmd.exe /c` 启动的 Windows GPU 进程 **不受 `.wslconfig` 限�
 它们会直接吃 Windows 侧的 RAM + 整块 GPU 显存，没有任何上层约束 →
 显存吃满 → CUDA 驱动 hang → 全系统冻住。
 
-本模块用三层防护堵住这个漏洞：
+本模块用四层防护堵住这个漏洞：
 
 1. **GPU 显存配额**（最关键，PyTorch 官方推荐）
    通过 `PYTORCH_CUDA_ALLOC_CONF=per_process_memory_fraction:X` 限制每个
@@ -20,7 +20,12 @@ WSL 通过 `cmd.exe /c` 启动的 Windows GPU 进程 **不受 `.wslconfig` 限�
    通过 `OMP_NUM_THREADS` / `MKL_NUM_THREADS` 防止 N 个 PyTorch 子进程
    各自起满线程池互相抢核（典型：两个进程各 24 线程抢 24 逻辑核）。
 
-3. **进程数硬上限**（multiprocessing.Semaphore）
+3. **流式输出 & 进度条兼容**
+   注入 `PYTHONUNBUFFERED` / `TQDM_DISABLE` / `TTY_*` /
+   `HF_HUB_DISABLE_PROGRESS_BARS`，确保管道模式下子进程的 stdout 不缓冲，
+   进度条正常渲染，HF 进度条不产生 \r 干扰。
+
+4. **进程数硬上限**（multiprocessing.Semaphore）
    由调用方自己 `acquire/release`，避免外部多开 paper-reader 时 N×2 个
    Windows 进程同时冲向同一块 GPU。
 
@@ -61,21 +66,44 @@ with acquire_gpu_slot(max_concurrent=2):
 
 from __future__ import annotations
 
+import base64
 import contextlib
+import datetime
 import fcntl
 import json
 import os
+import select
 import subprocess
 import threading
 import time
 import uuid
+from collections.abc import Generator
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 __all__ = [
     "GpuLimits", "run_gpu_windows", "acquire_gpu_slot", "build_gpu_env",
     "GpuGovernor", "GpuLease", "InsufficientGpuBudget",
+    "StreamingLine", "stream_gpu_windows", "launch_detached", "DetachedHandle",
 ]
+
+# ── win-launcher.py 路径（用于 use_wrapper=True 代码路径） ──
+_WIN_LAUNCHER = str(Path(__file__).resolve().parent / "win-launcher.py")
+
+
+def _resolve_wsl_py_exe(py_exe: str) -> str:
+    """Convert Windows drive-letter path to WSL drvfs path for subprocess.
+
+    ``subprocess.Popen`` on WSL cannot resolve bare Windows paths like
+    ``E:\\venvs\\python.exe``, but it *can* run executables via the drvfs
+    mount (``/mnt/e/venvs/python.exe``).  This helper performs that
+    conversion while leaving already-Linux paths untouched.
+    """
+    # Windows drive letter: "E:\\foo\\bar" → "/mnt/e/foo/bar"
+    if len(py_exe) >= 3 and py_exe[1:3] == ":\\":
+        drive = py_exe[0].lower()
+        return "/mnt/" + drive + py_exe[2:].replace("\\", "/")
+    return py_exe
 
 
 # --------------------------------------------------------------------------- #
@@ -123,11 +151,40 @@ class GpuLimits:
         return build_gpu_env(self)
 
 
+@dataclass(frozen=True)
+class StreamingLine:
+    """A single line of streaming output from a subprocess.
+
+    Attributes
+    ----------
+    text : str
+        The text content of the line. When ``clean_carriage_return=True``
+        is used in ``stream_gpu_windows()``, this is a clean ``\\n``-delimited
+        line with no ``\\r`` artifacts.
+    stream : str
+        Which stream the line came from. Always ``"stdout"`` in this module
+        since stderr is merged via ``stderr=subprocess.STDOUT``.
+    timestamp : float
+        Unix timestamp (``time.time()``) when the line was read from the
+        child's pipe.
+    """
+
+    text: str
+    stream: str = "stdout"
+    timestamp: float = field(default_factory=time.time)
+
+
 # --------------------------------------------------------------------------- #
 # 核心函数
 # --------------------------------------------------------------------------- #
 def build_gpu_env(limits: GpuLimits, base: dict[str, str] | None = None) -> dict[str, str]:
-    """构建带 GPU 资源限制的环境变量字典.
+    """构建带 GPU 资源限制和流式输出配置的环境变量字典.
+
+    注入三组环境变量：
+    1. **GPU 显存 & CPU 线程约束**（防 OOM 和线程抢核）
+    2. **流式输出 & 进度条兼容**（PYTHONUNBUFFERED, TQDM_DISABLE, TTY_*,
+       HF_HUB_DISABLE_PROGRESS_BARS）
+    3. **WSLENV 白名单**（WSL→Windows 环境转发）
 
     Parameters
     ----------
@@ -170,12 +227,32 @@ def build_gpu_env(limits: GpuLimits, base: dict[str, str] | None = None) -> dict
     # HuggingFace tokenizer 多进程死锁防护（官方推荐关闭）
     env["TOKENIZERS_PARALLELISM"] = "false"
 
+    # ── Layer 3: 流式输出 / 进度条环境（防管道读卡死 + 进度条兼容） ───
+    # PYTHONUNBUFFERED=1: 强制 stdout/stderr 无缓冲，避免管道读端死等
+    env["PYTHONUNBUFFERED"] = "1"
+    # 不设 TQDM_DISABLE —— tqdm 默认 disable=False（启用）。
+    # 之前设 "False" 是 bug：tqdm 的 envwrap 用 bool("False")==True 解析，
+    # 反而禁用了进度条。用户想关进度条时自己设 TQDM_DISABLE=1。
+    # （参考：https://github.com/tqdm/tqdm/blob/master/tqdm/std.py envwrap 逻辑）
+    # TTY_COMPATIBLE=1: 告诉 tqdm 所在环境与 tty 兼容，允许 unicode/色彩输出
+    env["TTY_COMPATIBLE"] = "1"
+    # TTY_INTERACTIVE=0: 标记为非交互式 tty，tqdm 改用 \r 行内刷新而非整页控制
+    env["TTY_INTERACTIVE"] = "0"
+    # HF_HUB_DISABLE_PROGRESS_BARS=1: 关掉 HuggingFace hub 的自带进度条
+    # （它们产生大量 \r 行，在 pipe 模式下干扰 tqdm 的统一管理）
+    env["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+
     # ── WSL→Windows 环境转发白名单（关键！否则上面所有变量静默失效） ──
     _GPU_ENV_VARS = (
         "PYTORCH_CUDA_ALLOC_CONF",
         "OMP_NUM_THREADS",
         "MKL_NUM_THREADS",
         "TOKENIZERS_PARALLELISM",
+        "PYTHONUNBUFFERED",
+        "TQDM_DISABLE",
+        "TTY_COMPATIBLE",
+        "TTY_INTERACTIVE",
+        "HF_HUB_DISABLE_PROGRESS_BARS",
     )
     if _is_wsl():
         # 合并已有 WSLENV（保留用户/系统已设的其他条目）+ 用 /w 标志白名单化
@@ -237,6 +314,281 @@ def run_gpu_windows(
         errors="replace",
         cwd=cwd,
         env=env,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# 流式子进程（select 驱动，无 threading.Timer）
+# --------------------------------------------------------------------------- #
+def stream_gpu_windows(
+    py_exe: str,
+    code: str,
+    args: list[str] | None = None,
+    limits: GpuLimits | None = None,
+    timeout: int = 3600,
+    cwd: str | None = None,
+    clean_carriage_return: bool = True,
+    use_wrapper: bool = False,
+) -> Generator[StreamingLine, None, int]:
+    """Stream output from a Windows-side GPU Python subprocess line by line.
+
+    Unlike ``run_gpu_windows`` which buffers all output, this function uses
+    ``subprocess.Popen`` with ``stdout=PIPE`` and a ``select.select`` read
+    loop to yield lines as they arrive — ideal for long-running GPU jobs
+    where you want progress lines, tqdm bars, or incremental logs in
+    real time.
+
+    Parameters
+    ----------
+    py_exe : str
+        Absolute path to a Windows ``python.exe`` binary. Must be a real
+        executable (e.g. ``E:\\venvs\\marker\\Scripts\\python.exe``), NOT a
+        ``.bat`` / ``.cmd`` wrapper. This function invokes ``py_exe`` directly
+        so it can drive ``select.select`` on the child's pipe — ``cmd.exe /c``
+        would add an extra process layer that breaks the pipe-as-deadline
+        pattern.
+    code : str
+        Python code string passed to ``python -c``.
+    args : list[str], optional
+        Additional CLI arguments appended after the ``-c code``.
+    limits : GpuLimits, optional
+        Resource quotas (GPU memory, CPU threads). Defaults to ``GpuLimits()``
+        (0.4 GPU fraction, 6 threads).
+    timeout : int
+        Maximum wall-clock seconds for the entire subprocess (default 3600).
+        Enforced via the ``select.select`` deadline, NOT ``threading.Timer``.
+    cwd : str, optional
+        Working directory for the child process. **WSL caveat**: if ``None``,
+        the child inherits the WSL UNC path (e.g. ``\\wsl$\\Ubuntu\\...``)
+        which many Windows binaries cannot resolve. Prefer an explicit path
+        under ``/mnt/`` when the child needs the filesystem.
+    clean_carriage_return : bool
+        If True (default), replace ``\\r\\n`` → ``\\n`` and ``\\r`` → ``\\n``
+        in every line, and skip lines that are empty after stripping the
+        trailing newline.
+    use_wrapper : bool
+        If True, route the subprocess through ``win-launcher.py`` which adds
+        GPU process governance (Job Object, explicit exit, cleanup).
+
+    Yields
+    ------
+    StreamingLine
+        One dataclass per line of stdout output.
+
+    Returns
+    -------
+    int
+        The subprocess exit code. Accessible via ``StopIteration.value``
+        on the generator (PEP 479 / generator return)::
+
+            gen = stream_gpu_windows(py_exe, code)
+            for line in gen:
+                print(line.text)
+            print(f"exit code: {gen.value}")
+    """
+    limits = limits or GpuLimits()
+    env = build_gpu_env(limits)
+
+    if use_wrapper:
+        win_launcher = subprocess.check_output(
+            ["wslpath", "-w", _WIN_LAUNCHER]
+        ).decode().strip()
+        encoded = base64.b64encode(code.encode("utf-8")).decode("ascii")
+        wsl_py_exe = _resolve_wsl_py_exe(py_exe)
+        cmd = [
+            wsl_py_exe, "-u", "-X", "utf8", win_launcher,
+            "--py-exe", py_exe,
+            "--code", encoded,
+            "--args", json.dumps(args or []),
+            "--gpu-fraction", str(limits.gpu_memory_fraction),
+            "--cpu-threads", str(limits.cpu_threads),
+        ]
+    else:
+        cmd = [py_exe, "-u", "-X", "utf8", "-c", code] + (args or [])
+    deadline = time.monotonic() + timeout
+
+    p = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        bufsize=1,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        cwd=cwd,
+        env=env,
+    )
+
+    try:
+        assert p.stdout is not None  # guaranteed by stdout=subprocess.PIPE
+        while True:
+            remaining = max(0.0, deadline - time.monotonic())
+            ready, _, _ = select.select([p.stdout], [], [], min(remaining, 1.0))
+            if not ready and remaining <= 0:
+                p.kill()
+                p.wait()
+                raise subprocess.TimeoutExpired(cmd, timeout)
+            if ready:
+                line = p.stdout.readline()
+                if not line:
+                    break
+                if clean_carriage_return:
+                    line = line.replace("\r\n", "\n").replace("\r", "\n")
+                    if not line.rstrip("\n"):
+                        continue
+                yield StreamingLine(
+                    text=line,
+                    stream="stdout",
+                    timestamp=time.time(),
+                )
+        p.wait()
+        return p.returncode
+    except BaseException:
+        p.kill()
+        p.wait()
+        raise
+
+
+# --------------------------------------------------------------------------- #
+# 后台启动（launch_detached）
+# --------------------------------------------------------------------------- #
+@dataclass(frozen=True)
+class DetachedHandle:
+    """Handle for a detached GPU subprocess launched in the background.
+
+    Attributes
+    ----------
+    win_pid : int
+        Windows PID of the child process.
+    wsl_log_path : Path
+        WSL-side path to the log file (Linux FS, inotify-compatible).
+    wsl_pid_path : Path
+        WSL-side path to the PID file that contains the child's Windows PID.
+    """
+
+    win_pid: int
+    wsl_log_path: Path
+    wsl_pid_path: Path
+
+
+def launch_detached(
+    py_exe: str,
+    code: str,
+    args: list[str] | None = None,
+    limits: GpuLimits | None = None,
+    job_name: str = "gpu-job",
+    log_dir: Path | None = None,
+    use_wrapper: bool = False,
+) -> DetachedHandle:
+    """Launch a Windows GPU process without waiting for it to finish.
+
+    Unlike ``run_gpu_windows`` which blocks and ``stream_gpu_windows`` which
+    yields lines, this function starts the child and returns immediately
+    with a handle. The caller is responsible for monitoring the log file
+    and eventually killing the process.
+
+    Parameters
+    ----------
+    py_exe : str
+        Absolute path to a Windows ``python.exe`` binary.
+    code : str
+        Python code string passed to ``python -c``.
+    args : list[str], optional
+        Additional CLI arguments appended after ``-c code``.
+    limits : GpuLimits, optional
+        Resource quotas. Defaults to ``GpuLimits()``.
+    job_name : str
+        Human-readable prefix for log and PID filenames.
+    log_dir : Path, optional
+        Output directory for log and PID files. Defaults to
+        ``/tmp/gpu-logs/`` (Linux FS, inotify works — WSL#4739).
+        For project use, pass ``Path("log")`` or an absolute project path.
+    use_wrapper : bool
+        If True, route the subprocess through ``win-launcher.py`` which adds
+        GPU process governance (Job Object, explicit exit, cleanup).
+
+    Returns
+    -------
+    DetachedHandle
+        Handle with ``win_pid``, ``wsl_log_path``, and ``wsl_pid_path``.
+
+    Raises
+    ------
+    RuntimeError
+        If the PID file is not created within 3 seconds.
+    ValueError
+        If the PID file contains a non-numeric value.
+    """
+    log_dir = log_dir or Path("/tmp") / "gpu-logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    wsl_log_path = log_dir / f"{job_name}_{ts}.log"
+    wsl_pid_path = log_dir / f"{job_name}_{ts}.pid"
+
+    win_log_path = subprocess.check_output(
+        ["wslpath", "-w", str(wsl_log_path)]
+    ).decode().strip()
+    win_pid_path = subprocess.check_output(
+        ["wslpath", "-w", str(wsl_pid_path)]
+    ).decode().strip()
+
+    wrapped_code = (
+        "import sys, os\n"
+        f"sys.stdout = sys.stderr = open(r'{win_log_path}', 'a', encoding='utf-8', buffering=1)\n"
+        f"open(r'{win_pid_path}', 'w').write(str(os.getpid()))\n"
+        + code
+    )
+
+    limits = limits or GpuLimits()
+
+    if use_wrapper:
+        win_launcher = subprocess.check_output(
+            ["wslpath", "-w", _WIN_LAUNCHER]
+        ).decode().strip()
+        wsl_py_exe = _resolve_wsl_py_exe(py_exe)
+        wrapper_cmd = [
+            wsl_py_exe, "-u", "-X", "utf8", win_launcher,
+            "--py-exe", py_exe,
+            "--code", base64.b64encode(wrapped_code.encode("utf-8")).decode("ascii"),
+            "--args", json.dumps(args or []),
+            "--log-file", win_log_path,
+            "--gpu-fraction", str(limits.gpu_memory_fraction),
+            "--cpu-threads", str(limits.cpu_threads),
+        ]
+        proc = subprocess.Popen(
+            wrapper_cmd,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True, env=build_gpu_env(limits),
+        )
+    else:
+        cmd = [py_exe, "-u", "-X", "utf8", "-c", wrapped_code] + (args or [])
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True, env=build_gpu_env(limits),
+        )
+
+    for _ in range(6):
+        time.sleep(0.5)
+        try:
+            content = wsl_pid_path.read_text(encoding="utf-8").strip()
+        except FileNotFoundError:
+            continue
+        if content:
+            if not content.isdigit():
+                raise ValueError(
+                    f"PID file {wsl_pid_path} contains non-numeric value: {content!r}"
+                )
+            return DetachedHandle(
+                win_pid=int(content),
+                wsl_log_path=wsl_log_path,
+                wsl_pid_path=wsl_pid_path,
+            )
+
+    raise RuntimeError(
+        f"PID file {wsl_pid_path} was not created within 3s "
+        f"(child process may have crashed or WSL ↔ Windows filesystem lag)"
     )
 
 
