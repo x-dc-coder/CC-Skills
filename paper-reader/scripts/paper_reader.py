@@ -3,7 +3,7 @@
 
 v2    -
 
-: paper_reader.py <pdf_path_or_dir> [--output OUT] [--engines both|marker|mineru]
+: paper_reader.py <pdf_path_or_dir> [--engines both|marker|mineru]
                   [--pages 0-9] [--batch] [--init] [--status] [--resume] [--force]
                   [--from-manifest PATH] [--import-urls PATH] [--max-pages N]
 """
@@ -1695,8 +1695,6 @@ def main() -> int:
     )
     ap.add_argument("pdf", type=Path,
                     help="PDF         （  PDF       ）")
-    ap.add_argument("-o", "--output", type=Path, default=None,
-                    help="[  ]    （ v2       ）")
     ap.add_argument("-e", "--engines", choices=["both", "marker", "mineru"],
                     default="both", help="    （  both）")
     ap.add_argument("-p", "--pages", help="   '0-9'  '5'（0-based）")
@@ -1833,12 +1831,6 @@ def main() -> int:
             return 1
 
     # ──     ────────────────────────────────────────────────────
-
-    #  v1 --output   (  )
-    if args.output is not None:
-        print("  : --output   v2    ,   .", file=sys.stderr)
-        print(f"     : {papers_dir}/paper-conversion/", file=sys.stderr)
-        print(f"     : {papers_dir}/paper-merged/", file=sys.stderr)
 
     #
     if args.engines in ("both", "marker") and not MARKER_BIN.exists():

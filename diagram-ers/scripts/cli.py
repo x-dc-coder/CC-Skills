@@ -6,10 +6,7 @@ import argparse
 import json
 from pathlib import Path
 
-try:
-    from scripts.renderer import render_er_diagram
-except ImportError:
-    from renderer import render_er_diagram
+from scripts.renderer import render_er_diagram
 
 
 SKILLS_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -45,7 +42,7 @@ Examples:
     )
     parser.add_argument("--no-auto-crop", action="store_true", help="Disable automatic content-based crop")
     parser.add_argument("--scale", type=int, default=None, help="Render scale factor (higher = more pixels)")
-    parser.add_argument("--no-downsample", action="store_true", help="Output high-resolution image without downsampling")
+    parser.add_argument("--downsample", action="store_true", help="Downsample output to 1x (default: output high-res)")
     args = parser.parse_args()
 
     json_data = json.loads(Path(args.json_file).read_text(encoding="utf-8"))
@@ -53,7 +50,7 @@ Examples:
     kwargs = dict(
         auto_crop=not args.no_auto_crop,
         safe_margin=max(0, args.safe_margin),
-        downsample_output=not args.no_downsample,
+        downsample_output=args.downsample,
     )
     if args.scale is not None:
         kwargs["scale"] = args.scale

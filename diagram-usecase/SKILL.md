@@ -10,6 +10,8 @@ description: |
   使用本项目的 CLI 工具 `uv run python -m scripts.cli` 生成用例图。
 ---
 
+> **ℹ️ 统一行为 (2026-07-19):** `--downsample` 参数语义已跨 4 个 diagram-* skill 统一（er, ers, module, usecase）。所有 skill 默认输出**高分辨率**，`--downsample` 为 opt-in 降至 1x。diagram-usecase 无变更（原本即正确实现）。
+
 # 用例图生成 Skill
 
 ## 工作流程

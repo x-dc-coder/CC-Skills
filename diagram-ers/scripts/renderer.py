@@ -26,11 +26,11 @@ FONT_SIZE = 12
 LABEL_FONT_SIZE = 10
 
 
-def render_er_diagram(data: dict, auto_crop: bool = True, safe_margin: int = 24, scale: int = None, downsample_output: bool = True) -> bytes:
+def render_er_diagram(data: dict, auto_crop: bool = True, safe_margin: int = 24, scale: int = None, downsample_output: bool = False) -> bytes:
     """渲染 ER 图为 PNG
 
     Args:
-        downsample_output: 是否下采样到 1x（默认 True）；设为 False 可输出更高像素。
+        downsample_output: 是否下采样到 1x（默认 False，输出高分辨率）；设为 True 可输出标准分辨率。
     """
     entities = data.get("entities", [])
     relations = data.get("relations", [])

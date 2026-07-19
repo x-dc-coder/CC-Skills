@@ -143,7 +143,7 @@ def render_module_diagram(
     auto_crop: bool = True,
     safe_margin: int = 24,
     scale: int = None,
-    downsample_output: bool = True,
+    downsample_output: bool = False,
 ) -> bytes:
     """渲染功能模块图
 
@@ -152,7 +152,7 @@ def render_module_diagram(
         auto_crop: 是否自动裁剪空白边距
         safe_margin: 安全边距（像素）
         scale: 渲染缩放比例（默认使用全局 SCALE）
-        downsample_output: 是否下采样到 1x（默认 True）；设为 False 可输出更高像素。
+        downsample_output: 是否下采样到 1x（默认 False，输出高分辨率）；设为 True 可输出标准分辨率。
 
     Returns:
         PNG图片字节数据

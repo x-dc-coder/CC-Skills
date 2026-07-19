@@ -225,6 +225,87 @@ def extract_images(doc, docx_path):
     return images
 
 
+def _handle_merged_cells(table):
+    """
+    Parse Word Open XML cell properties (w:gridSpan, w:vMerge) and return
+    a properly aligned 2D grid of cell texts.
+
+    - w:gridSpan=N → content in first column, empty strings in N-1 spanned columns
+    - w:vMerge restart → content carried forward to subsequent rows
+    - w:vMerge continue → filled from the restart cell above
+
+    Returns a list of lists, where each inner list has the same length (ncols).
+    Non-merged tables return the same structure as the naive extraction.
+    """
+    ncols = 0
+    for row in table.rows:
+        pos = 0
+        for cell in row.cells:
+            tc_pr = cell._tc.find(qn("w:tcPr"))
+            gs = 1
+            if tc_pr is not None:
+                gs_elem = tc_pr.find(qn("w:gridSpan"))
+                if gs_elem is not None:
+                    gs = int(gs_elem.get(qn("w:val"), "1"))
+            pos += gs
+        ncols = max(ncols, pos)
+
+    grid = []
+    vmerge_active = {}
+
+    for row in table.rows:
+        row_cells = [""] * ncols
+
+        for col, entry in list(vmerge_active.items()):
+            row_cells[col] = entry["content"]
+
+        pos = 0
+        for cell in row.cells:
+            while pos < ncols and row_cells[pos]:
+                pos += 1
+            if pos >= ncols:
+                break
+
+            tc_pr = cell._tc.find(qn("w:tcPr"))
+            text = cell.text.strip()
+            gs = 1
+            vmerge = None
+
+            if tc_pr is not None:
+                gs_elem = tc_pr.find(qn("w:gridSpan"))
+                if gs_elem is not None:
+                    gs = int(gs_elem.get(qn("w:val"), "1"))
+
+                vm_elem = tc_pr.find(qn("w:vMerge"))
+                if vm_elem is not None:
+                    vm_val = vm_elem.get(qn("w:val"))
+                    vmerge = "restart" if vm_val == "restart" else "continue"
+
+            if vmerge == "restart":
+                for i in range(gs):
+                    vmerge_active[pos + i] = {"content": text, "gridSpan": gs}
+                row_cells[pos] = text
+            elif vmerge == "continue":
+                if not row_cells[pos] and text:
+                    row_cells[pos] = text
+                    for i in range(gs):
+                        vmerge_active[pos + i] = {"content": text, "gridSpan": gs}
+            else:
+                for i in range(gs):
+                    vmerge_active.pop(pos + i, None)
+                row_cells[pos] = text
+
+            for i in range(1, gs):
+                if pos + i < ncols:
+                    row_cells[pos + i] = ""
+
+            pos += gs
+
+        grid.append(row_cells)
+
+    return grid
+
+
 def extract_tables(doc):
     """
     Extract tables with their positions, structure, and captions.
@@ -256,13 +337,10 @@ def extract_tables(doc):
                     "caption": None,
                 }
 
-                # Extract cell data
-                for row_idx, row in enumerate(table.rows):
-                    row_data = []
-                    for cell in row.cells:
-                        cell_text = cell.text.strip()
-                        row_data.append(cell_text)
-                    table_data["cells"].append(row_data)
+                cells_grid = _handle_merged_cells(table)
+                table_data["cells"] = cells_grid
+                if cells_grid:
+                    table_data["columns"] = len(cells_grid[0])
 
                 # Find caption: look at paragraphs before the table
                 # para_idx is the count of paragraphs BEFORE this table

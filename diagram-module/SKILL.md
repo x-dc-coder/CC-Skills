@@ -10,6 +10,8 @@ description: |
   使用本项目的 CLI 工具 `uv run python -m scripts.cli` 生成功能模块图。
 ---
 
+> **⚠️ BREAKING CHANGE (2026-07-19):** `--downsample` 参数语义已统一。默认输出**高分辨率**（4x 渲染，不下采样），与 diagram-usecase 行为一致。原默认 1x 低分辨率输出已被移除。如需低分辨率，请显式添加 `--downsample`。回滚方案：如用户抱怨输出过大，可在 CLI 中追加 `--downsample` 恢复旧行为。
+
 # 功能模块图生成 Skill
 
 ## 工作流程

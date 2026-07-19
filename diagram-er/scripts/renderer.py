@@ -12,11 +12,11 @@ ATTR_W = 90
 ATTR_H = 44
 
 
-def render_diagram_png(model: dict, auto_crop: bool = True, safe_margin: int = 24, scale: int = 4, downsample_output: bool = True) -> bytes:
+def render_diagram_png(model: dict, auto_crop: bool = True, safe_margin: int = 24, scale: int = 4, downsample_output: bool = False) -> bytes:
     """渲染单表 ER 图为 PNG
 
     Args:
-        downsample_output: 是否下采样到 1x（默认 True）；设为 False 可输出更高像素。
+        downsample_output: 是否下采样到 1x（默认 False，输出高分辨率）；设为 True 可输出标准分辨率。
     """
     tables = model.get("tables", [])
 
