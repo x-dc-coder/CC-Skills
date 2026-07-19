@@ -23,14 +23,14 @@ def main() -> None:
         epilog="""
 Examples:
   # Generate from JSON file (single actor format)
-  python -m scripts.cli --json-file usecase.json --out diagram.png
+  python -m scripts.cli --json-file usecase.json --output diagram.png
 
   # Use default output path
   python -m scripts.cli --json-file usecase.json
         """,
     )
     parser.add_argument("--json-file", required=True, help="Path to JSON data file")
-    parser.add_argument("--out", default=None, help="Output PNG path (default: auto-detect from input file)")
+    parser.add_argument("--output", "--out", default=None, help="Output PNG path (default: auto-detect from input file)")
     parser.add_argument(
         "--safe-margin", type=int, default=24, help="Safe white margin in pixels after auto-crop"
     )
@@ -54,7 +54,7 @@ Examples:
     png = render_usecase_diagram(json_data, **kwargs)
 
     # 确定输出路径
-    output_path = args.out
+    output_path = args.output
     if output_path is None:
         output_path = resolve_output_path(Path(args.json_file), "diagram-usecase", "usecase-diagram.png")
     else:

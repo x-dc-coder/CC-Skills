@@ -118,10 +118,10 @@ def main() -> None:
         epilog="""
 Examples:
   # Generate from JSON file
-  python -m scripts.cli --json-file sequence.json --out diagram.png
+  python -m scripts.cli --json-file sequence.json --output diagram.png
 
   # Render existing Mermaid file
-  python -m scripts.cli --mmd-file sequence.mmd --out diagram.png
+  python -m scripts.cli --mmd-file sequence.mmd --output diagram.png
 
   # Use default output path
   python -m scripts.cli --json-file sequence.json
@@ -130,7 +130,7 @@ Examples:
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--json-file", help="Path to JSON data file")
     group.add_argument("--mmd-file", help="Path to existing Mermaid file")
-    parser.add_argument("--out", default=None, help="Output path (default: auto-detect from input file)")
+    parser.add_argument("--output", "--out", default=None, help="Output path (default: auto-detect from input file)")
     parser.add_argument("--bg", default="white", help="Background color for PNG (default: white)")
     parser.add_argument("--scale", type=int, default=2, help="Scale factor for PNG (default: 2)")
     parser.add_argument("--format", default="png", choices=["png", "svg"], help="Output format: png or svg (default: png)")
@@ -144,7 +144,7 @@ Examples:
         input_file = Path(args.mmd_file)
 
     # 确定输出路径
-    output_path = args.out
+    output_path = args.output
     if output_path is None:
         output_path = resolve_output_path(input_file, "diagram-sequence", "sequence-diagram.png")
     else:

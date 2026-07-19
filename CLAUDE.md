@@ -82,7 +82,7 @@ uv run --directory ~/.claude/skills python scripts/gitcode_issues.py ...
 | d2-paper | `<name>.<svg\|png\|pdf>` |
 | thesis-writing | `第X章-章节名.md` / `full-thesis.md` |
 | md-to-thesis-latex | `main.tex`（在 `thesis-output/latex/` 下） |
-| word-extractor | `extracted.md` + `images/` |
+| word-extractor | `<basename>.md` + `images/` |
 | paper-reader | `paper-analysis/<pdf_stem>/` |
 
 ### paper-reader 例外

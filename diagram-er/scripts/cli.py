@@ -18,7 +18,7 @@ except ImportError:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate ER diagram PNG from SQL DDL")
     parser.add_argument("--sql-file", required=True, help="Path to SQL DDL file")
-    parser.add_argument("--out", default=None, help="Output PNG path (default: auto-detect from input file)")
+    parser.add_argument("--output", "--out", default=None, help="Output PNG path (default: auto-detect from input file)")
     parser.add_argument("--dialect", default="mysql", help="SQL dialect for sqlglot")
     parser.add_argument("--scale", type=int, default=4, help="Render scale factor (default: 4, higher = more pixels)")
     parser.add_argument("--downsample", action="store_true", help="Downsample output to 1x (default: output high-res)")
@@ -29,7 +29,7 @@ def main() -> None:
 
     png = render_diagram_png(model, scale=args.scale, downsample_output=args.downsample)
 
-    output_path = args.out
+    output_path = args.output
     if output_path is None:
         output_path = resolve_output_path(Path(args.sql_file), "diagram-er", "er-diagram.png")
     else:

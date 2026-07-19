@@ -685,7 +685,7 @@ def main() -> None:
         description="Profile a paper-analysis/ corpus for the thesis-writing journal mode.",
     )
     parser.add_argument("--corpus", required=True, help="paper-analysis/ directory")
-    parser.add_argument("--out", required=True, help="output directory for _domain_profile.{json,md}")
+    parser.add_argument("--out", "--output", dest="out", required=True, help="output directory for _domain_profile.{json,md}")
     parser.add_argument("--min-papers", type=int, default=3,
                         help="warn if fewer papers are found (default: 3)")
     args = parser.parse_args()

@@ -819,6 +819,8 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--time-range", default=None, help="tavily time_range (day/week/month/year)")
     p.add_argument("--export-manifest", type=Path, default=None, metavar="DIR",
                    help="export paper links as _download_manifest.json to DIR (academic mode)")
+    p.add_argument("--output", "-o", default=None, metavar="DIR",
+                   help="output directory for JSON result file (default: stdout)")
     return p
 
 
@@ -874,7 +876,18 @@ def main() -> int:
             print("⚠️    (  general   academic   )",
                   file=sys.stderr)
 
-    print(json.dumps(result, indent=2, ensure_ascii=False))
+    # ── output ──
+    output_json = json.dumps(result, indent=2, ensure_ascii=False)
+    if args.output:
+        out_dir = Path(args.output).resolve()
+        out_dir.mkdir(parents=True, exist_ok=True)
+        safe_name = re.sub(r"[^\w\-]", "_", args.query[:60])
+        out_path = out_dir / f"search_{safe_name}.json"
+        out_path.write_text(output_json, encoding="utf-8")
+        print(json.dumps({"mode": result.get("mode"), "output_file": str(out_path),
+                          "total_results": result.get("total_results", 0)}, indent=2, ensure_ascii=False))
+    else:
+        print(output_json)
     return 0
 
 

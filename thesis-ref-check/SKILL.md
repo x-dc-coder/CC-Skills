@@ -5,7 +5,8 @@ description: >
   生成统一建议与修正报告。
   引用编号检查由 thesis-writing checker 自动覆盖（check_markdown_spec.py 支持
   REF_NUMBER_CONTINUITY / DUPLICATE / NOT_START_AT_ONE）。
-  触发关键词：术语统一、术语一致、术语检查、前后表述不一致、概念名称统一。
+   触发关键词：术语统一、术语一致、术语检查、前后表述不一致、概念名称统一。
+   英语触发词：reference check, citation order, term consistency, reference renumbering.
   适用于 Markdown 格式的学术论文，支持完整单文件或分章节多文件。
   当论文字数超过 5 万字或文件大小超过 100KB 时，必须优先使用此 skill 而非直接处理。
 compatibility: >

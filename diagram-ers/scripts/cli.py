@@ -19,12 +19,12 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python -m scripts.cli --json-file er.json --out diagram.png
+  python -m scripts.cli --json-file er.json --output diagram.png
   python -m scripts.cli --json-file er.json
         """,
     )
     parser.add_argument("--json-file", required=True, help="Path to JSON data file")
-    parser.add_argument("--out", default=None, help="Output PNG path (default: auto-detect from input file)")
+    parser.add_argument("--output", "--out", default=None, help="Output PNG path (default: auto-detect from input file)")
     parser.add_argument(
         "--safe-margin", type=int, default=24, help="Safe white margin in pixels after auto-crop"
     )
@@ -45,7 +45,7 @@ Examples:
 
     png = render_er_diagram(json_data, **kwargs)
 
-    output_path = args.out
+    output_path = args.output
     if output_path is None:
         output_path = resolve_output_path(Path(args.json_file), "diagram-ers", "ers-diagram.png")
     else:
