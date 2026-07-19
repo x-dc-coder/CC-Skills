@@ -56,7 +56,7 @@
 ├── md-to-thesis-latex/    # 纯 xelatex，无 Python
 ├── thesis-writing/        # 双模式论文写作（本科毕设 + 期刊论文），含 profiler + checker
 ├── thesis-ref-check/      # 纯 Bash/grep，无 Python
-└── wsl-windows-bridge/      # WSL→Windows 三层桥接 + GPU 资源治理，无 Python venv
+└── wsl-windows-bridge/      # WSL→Windows 三层桥接 + GPU 资源治理，含 Python 脚本但使用系统 Python，不纳入统一 .venv
 ```
 
 ## 三类环境策略
@@ -65,7 +65,7 @@
 |------|------|-------------|------|
 | **A. 统一共享** | `.venv/` 符号链接 | diagram-er/ers/module/sequence/usecase, db-skill, word-extractor, unified-search, gitcode-workflow, thesis-writing | 依赖轻量（Pillow/sqlglot/psycopg2/pytest 等），共享一份 venv |
 | **B. 独立重型** | skill 内 `venvs/` | paper-reader | 含 GPU 模型权重（5GB+），不可合并，`.gitignore` 已忽略 |
-| **C. 无 Python** | 无 venv | diagram-flow, diagram-architecture, d2-paper, doubao-vision, keenable-cli, kimi-webbridge, md-to-thesis-latex, thesis-ref-check, wsl-windows-bridge | 纯代码生成 / 调外部二进制 |
+| **C. 无统一 venv** | 系统/Windows Python | diagram-flow, diagram-architecture, d2-paper, doubao-vision, keenable-cli, kimi-webbridge, md-to-thesis-latex, thesis-ref-check, wsl-windows-bridge | 无统一 venv（使用系统/Windows Python） |
 
 ## 统一执行约定（所有 Python skill 必须遵守）
 

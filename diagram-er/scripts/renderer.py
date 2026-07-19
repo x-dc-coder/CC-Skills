@@ -218,23 +218,7 @@ def _load_font(size: int) -> ImageFont.ImageFont:
         except OSError:
             pass
 
-    # 2. 从 scripts/fonts/ 目录加载内置字体（优先）
-    fonts_dir = Path(__file__).parent / "fonts"
-    if fonts_dir.exists():
-        # 优先尝试常见的中文字体文件名
-        builtin_fonts = [
-            "*.ttc",  # TTC 字体集合（如 NotoSansCJK）
-            "*.ttf",  # TrueType 字体
-            "*.otf",  # OpenType 字体
-        ]
-        for pattern in builtin_fonts:
-            for font_file in fonts_dir.glob(pattern):
-                try:
-                    return ImageFont.truetype(str(font_file), size=size)
-                except OSError:
-                    continue
-
-    # 3. 系统字体路径（宋体优先，统一论文字体规范）
+    # 2. 系统字体路径（宋体优先，统一论文字体规范）
     system_candidates = [
         "/mnt/c/Windows/Fonts/simsun.ttc",  # WSL 宋体（优先）
         "C:/Windows/Fonts/simsun.ttc",   # Windows 宋体

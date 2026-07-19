@@ -4,28 +4,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "scripts"))
+from common import resolve_output_path
 
 try:
     from scripts.module import render_module_diagram
 except ImportError:
     from module import render_module_diagram
-
-
-SKILLS_ROOT = Path(__file__).resolve().parent.parent.parent
-
-
-def _resolve_output_path(input_file: Path | None, skill_name: str, default_name: str = "module-diagram.png") -> Path:
-    """推断输出路径：<项目目录>/thesis-output/<skill-name>/ 或 ~/.claude/skills-output/<skill-name>/"""
-    if input_file and input_file.is_absolute():
-        for parent in input_file.resolve().parents:
-            if (parent / "thesis-output").exists() or (parent / "docs").exists():
-                output_dir = parent / "thesis-output" / skill_name
-                output_dir.mkdir(parents=True, exist_ok=True)
-                return output_dir / default_name
-    out = Path.home() / ".claude" / "skills-output" / skill_name
-    out.mkdir(parents=True, exist_ok=True)
-    return out / default_name
 
 
 def main() -> None:
@@ -68,7 +56,7 @@ Examples:
     # 确定输出路径
     output_path = args.out
     if output_path is None:
-        output_path = _resolve_output_path(Path(args.json_file), "diagram-module")
+        output_path = resolve_output_path(Path(args.json_file), "diagram-module", "module-diagram.png")
     else:
         output_path = Path(output_path)
 

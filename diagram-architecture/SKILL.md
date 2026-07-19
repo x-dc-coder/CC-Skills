@@ -15,10 +15,10 @@ description: |
 ## 环境依赖
 
 - `dot` (Graphviz) — 布局引擎
-- `Noto Sans CJK SC` / `Noto Serif CJK SC` — 中文字体（系统已安装）
-- `pdftoppm` — PDF 转 PNG 预览
+- 中文字体（字体回退链: Noto Sans CJK SC → Noto Sans CJK → SimSun → 系统默认）
+- `pdftoppm` — PDF 转 PNG 预览（`apt install poppler-utils` / `dnf install poppler-utils`）
 
-验证：`dot -V && fc-list :lang=zh | grep "Noto Sans CJK SC"`
+验证：`dot -V && fc-list :lang=zh | head`
 
 ## 4 种结构布局选择
 
@@ -128,7 +128,7 @@ dot -Tsvg architecture.dot -o "$OUT_DIR/architecture.svg"
 - **边标签简洁**：1-3 个字说明数据流类型
 - **集群分组**：用 `subgraph cluster_xxx` 做功能分组，标题用 `label`
 - **反馈线用虚线**：`style=dashed` + `constraint=false` 避免干扰主布局
-- **中文字体**：`fontname="Noto Sans CJK SC"`（无衬线）或 `"Noto Serif CJK SC"`（衬线，学术论文推荐）
+- **中文字体**：`fontname="Noto Sans CJK SC"`（无衬线）或 `"Noto Serif CJK SC"`（衬线，学术论文推荐）。字体回退链：Noto Sans CJK SC → Noto Sans CJK → SimSun → 系统默认，无需在所有环境安装特定字体
 
 ## 参考文件
 

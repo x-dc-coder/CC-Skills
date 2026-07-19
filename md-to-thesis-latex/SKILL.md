@@ -21,7 +21,13 @@ description: >
 
 开始转换前，按顺序确认：
 
-1. **模板文件是否存在**：检查当前目录或 `style/zscthesis.cls` 是否存在。如果不存在，从 `https://gitee.com/yeyunxiaopan/zsc-cs-latex-thesis` 克隆或复制 `style/`、`logo/`、`bib/` 目录到当前项目。
+1. **模板文件是否存在**：按以下优先级发现模板（`zscthesis.cls`）：
+
+   a. **`--template-dir` 参数**：如用户指定 `--template-dir /path/to/template`，直接使用该目录下的 `style/`、`logo/`、`bib/`
+
+   b. **`$PROJECT_ROOT/style/`**：检查项目根目录下的 `style/zscthesis.cls` 是否存在
+
+   c. **Gitee 克隆**：从 `https://gitee.com/yeyunxiaopan/zsc-cs-latex-thesis` 克隆 `style/`、`logo/`、`bib/` 到 `$PROJECT_ROOT/template/`。若 Gitee 不可达（离线/网络超时），给出提示：**"模板仓库不可达，请手动放置 `style/zscthesis.cls` 到项目目录"**，继续转换而非中断流程。
 2. **图片文件是否存在**：检查 Markdown 中引用的所有 `img/xxx.png`（或 jpg/pdf）是否真实存在。
    - **缺失的图片不中断转换**，使用占位符代替。
    - 占位符方案：生成一个带文字提示的灰色占位框（如 `\fbox{\parbox{0.7\textwidth}{\centering \vspace{2em} [占位符: xxx.png] \\ 请替换为实际图片 \vspace{2em}}}`），并在日志中列出所有缺失图片清单，方便用户后续统一生成和替换。

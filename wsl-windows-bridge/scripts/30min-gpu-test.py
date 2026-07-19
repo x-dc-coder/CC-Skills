@@ -23,7 +23,7 @@ import time
 from pathlib import Path
 
 # Ensure we can import from skills
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "wsl-windows-bridge" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gpu_safe_subprocess import GpuLimits, launch_detached
 
 # ─────────────────────────────────────────────────────────────

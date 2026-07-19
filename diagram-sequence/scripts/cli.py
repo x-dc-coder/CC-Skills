@@ -15,21 +15,8 @@ import sys
 import tempfile
 from pathlib import Path
 
-
-SKILLS_ROOT = Path(__file__).resolve().parent.parent.parent
-
-
-def _resolve_output_path(input_file: Path | None, skill_name: str, default_name: str = "sequence-diagram.png") -> Path:
-    """推断输出路径：<项目目录>/thesis-output/<skill-name>/ 或 ~/.claude/skills-output/<skill-name>/"""
-    if input_file and input_file.is_absolute():
-        for parent in input_file.resolve().parents:
-            if (parent / "thesis-output").exists() or (parent / "docs").exists():
-                output_dir = parent / "thesis-output" / skill_name
-                output_dir.mkdir(parents=True, exist_ok=True)
-                return output_dir / default_name
-    out = Path.home() / ".claude" / "skills-output" / skill_name
-    out.mkdir(parents=True, exist_ok=True)
-    return out / default_name
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "scripts"))
+from common import resolve_output_path
 
 
 def _json_to_mermaid(data: dict) -> str:
@@ -40,15 +27,17 @@ def _json_to_mermaid(data: dict) -> str:
     ]
 
     # 参与者声明
-    # sequenceDiagram 只支持 actor 和 participant 两种显式声明类型
-    # database 等类型在 sequenceDiagram 中不支持，降级为 participant
+    # sequenceDiagram 支持 actor 和 participant 两种显式声明类型
+    # database 等类型通过 as 别名实现渲染效果（如 participant X as database → cylinder icon）
     for p in data.get("participants", []):
         ptype = p.get("type", "participant")
         name = p["name"]
         if ptype == "actor":
             lines.append(f"    actor {name}")
+        elif ptype == "database":
+            lines.append(f"    participant {name} as database")
         else:
-            # participant / database / 其他都统一为 participant
+            # 默认 participant
             lines.append(f"    participant {name}")
 
     # 消息
@@ -72,7 +61,7 @@ def _json_to_mermaid(data: dict) -> str:
             lines.append(f"    {src}{arrow}{dst}: {text}")
 
         # 生命周期
-        if activate and not dashed:
+        if activate:
             lines.append(f"    activate {dst}")
             active_stack[dst] = active_stack.get(dst, 0) + 1
 
@@ -157,7 +146,7 @@ Examples:
     # 确定输出路径
     output_path = args.out
     if output_path is None:
-        output_path = _resolve_output_path(input_file, "diagram-sequence")
+        output_path = resolve_output_path(input_file, "diagram-sequence", "sequence-diagram.png")
     else:
         output_path = Path(output_path)
 

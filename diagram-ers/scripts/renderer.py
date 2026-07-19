@@ -232,21 +232,6 @@ def _load_font(size: int) -> ImageFont.ImageFont:
         except OSError:
             pass
 
-    # 从其他 skill 的 fonts 目录加载
-    fonts_dirs = [
-        Path(__file__).parent / "fonts",
-        Path(__file__).parent.parent / "diagram-er" / "scripts" / "fonts",
-        Path(__file__).parent.parent / "diagram-usecase" / "scripts" / "fonts",
-    ]
-    for fonts_dir in fonts_dirs:
-        if fonts_dir.exists():
-            for pattern in ["*.ttc", "*.ttf", "*.otf"]:
-                for font_file in fonts_dir.glob(pattern):
-                    try:
-                        return ImageFont.truetype(str(font_file), size=size)
-                    except OSError:
-                        continue
-
     # 系统字体（宋体优先，统一论文字体规范）
     system_candidates = [
         "/mnt/c/Windows/Fonts/simsun.ttc",  # WSL 宋体（优先）

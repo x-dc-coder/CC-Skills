@@ -50,18 +50,7 @@ def load_font(size: int) -> ImageFont.ImageFont:
         except OSError:
             pass
 
-    # 2. 脚本所在目录的 fonts 文件夹
-    script_dir = Path(__file__).parent
-    fonts_dir = script_dir / "fonts"
-    if fonts_dir.exists():
-        for pattern in ["*.ttc", "*.ttf", "*.otf"]:
-            for font_file in fonts_dir.glob(pattern):
-                try:
-                    return ImageFont.truetype(str(font_file), size=size)
-                except OSError:
-                    continue
-
-    # 3. 系统字体路径（宋体优先，统一论文字体规范）
+    # 2. 系统字体路径（宋体优先，统一论文字体规范）
     system_candidates = [
         "/mnt/c/Windows/Fonts/simsun.ttc",  # WSL 宋体（优先）
         "C:/Windows/Fonts/simsun.ttc",   # Windows 宋体
