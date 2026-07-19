@@ -24,7 +24,7 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["thesis-writing/scripts"]
+testpaths = ["word-extractor/scripts", "paper-reader/scripts", "thesis-writing/scripts"]
 python_files = ["test_*.py"]
 addopts = "-q"
 
