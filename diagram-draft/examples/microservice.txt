@@ -1,0 +1,12 @@
+graph { flow: south; }
+
+[ Client ] --> [ API Gateway ]
+[ API Gateway ] --> [ Auth Service ], [ Order Service ], [ Pay Service ]
+[ Auth Service ] --> [ User DB ]
+[ Order Service ] --> [ Order DB ]
+[ Pay Service ] --> [ Pay DB ]
+[ Auth Service ] --> [ Redis ]
+[ Order Service ] --> [ Redis ]
+
+[ API Gateway ] { color: orange; }
+[ Redis ] { color: red; }

@@ -1,0 +1,8 @@
+graph { flow: east; }
+
+[ Git Push ] --> [ Lint ] --> [ Unit Test ] --> [ Build ]
+[ Build ] --> [ Push Registry ] --> [ Deploy Staging ]
+[ Deploy Staging ] --> [ E2E Test ] --> [ Deploy Prod ]
+
+[ Build ] { color: blue; }
+[ Deploy Prod ] { color: green; }

@@ -1,0 +1,15 @@
+graph { flow: east; }
+
+[ Internet ] --> [ WAF ] --> [ CDN ] --> [ SLB ]
+
+[ SLB ] --> [ Web 1 ], [ Web 2 ], [ Web 3 ]
+
+[ Web 1 ] --> [ Redis ], [ MySQL Master ]
+[ Web 2 ] --> [ Redis ], [ MySQL Master ]
+[ Web 3 ] --> [ Redis ], [ MySQL Master ]
+
+[ MySQL Master ] --> [ MySQL Slave ]
+
+[ SLB ] { color: orange; }
+[ Redis ] { color: red; }
+[ MySQL Master ] { color: blue; }

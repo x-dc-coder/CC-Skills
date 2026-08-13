@@ -1,0 +1,31 @@
+graph { flow: south; }
+
+(展示层:
+  [ Web App ] --> [ Nginx ]
+)
+
+(网关层:
+  [ Nginx ] --> [ Gateway ]
+)
+
+(服务层:
+  [ Gateway ] --> [ Service A ]
+  [ Gateway ] --> [ Service B ]
+  [ Gateway ] --> [ Service C ]
+)
+
+(中间件:
+  [ Service A ] --> [ MQ ]
+  [ Service B ] --> [ MQ ]
+  [ Service C ] --> [ Redis ]
+)
+
+(数据层:
+  [ Service A ] --> [ DB ]
+  [ Service B ] --> [ DB ]
+  [ MQ ] --> [ Worker ] --> [ Search ]
+)
+
+[ Gateway ] { color: orange; }
+[ Redis ] { color: red; }
+[ DB ] { color: blue; }

@@ -1,0 +1,12 @@
+graph { flow: east; }
+
+[ User ] --> [ Cmd Service ] --> [ Kafka ]
+
+(Event Bus:
+  [ Kafka ] { color: orange; }
+)
+
+[ Kafka ] --> [ Order Consumer ] --> [ Order DB ]
+[ Kafka ] --> [ Notify Consumer ] --> [ Email ]
+[ Kafka ] --> [ Notify Consumer ] --> [ SMS ]
+[ Kafka ] --> [ Analytics Consumer ] --> [ Data Lake ] --> [ Dashboard ]
