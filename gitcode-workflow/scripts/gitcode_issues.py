@@ -246,7 +246,11 @@ def emit(result: Any, as_json: bool) -> None:
             print(f"#{num} [{state}] {title}")
     elif isinstance(result, dict):
         for key, value in result.items():
-            print(f"{key}: {value}")
+            if isinstance(value, (list, dict)):
+                # 嵌套结构用严格 JSON 输出（避免 Python repr 的单引号/None 干扰解析）
+                print(f"{key}: {json.dumps(value, ensure_ascii=False)}")
+            else:
+                print(f"{key}: {value}")
     else:
         print(result)
 

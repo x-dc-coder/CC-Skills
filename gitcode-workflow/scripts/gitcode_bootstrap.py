@@ -38,7 +38,7 @@ from lib.manifest import (
     verify_review_manifest,
     write_review_manifest,
 )
-from lib.preview import build_commit_message_candidates, build_publish_preview
+from lib.preview import build_publish_preview
 from lib.profile import (
     format_emails,
     format_profile,
@@ -243,10 +243,6 @@ def emit(result: Dict[str, Any], as_json: bool) -> None:
     if result.get("review_manifest"):
         manifest = result["review_manifest"]
         print(f"review_manifest: {manifest.get('path')} [{manifest.get('snapshot_hash')}]")
-    if result.get("commit_message_candidates"):
-        print("commit_message_candidates:")
-        for index, item in enumerate(result["commit_message_candidates"], start=1):
-            print(f"{index}. {item}")
     if result.get("publish"):
         pub = result["publish"]
         print(f"publish: committed={pub.get('committed')} pushed={pub.get('pushed')}")
@@ -462,9 +458,6 @@ def main() -> int:
 
         if args.command == "preview":
             result["preview"] = build_publish_preview(project.resolve())
-            result["commit_message_candidates"] = build_commit_message_candidates(
-                result["preview"], result["commit_rules"], limit=3
-            )
             result["review_manifest"] = write_review_manifest(
                 project.resolve(), args.review_manifest, result["preview"]
             )
@@ -487,9 +480,6 @@ def main() -> int:
                 project.resolve(), args.review_manifest
             )
             result["preview"] = manifest_state["preview"]
-            result["commit_message_candidates"] = build_commit_message_candidates(
-                result["preview"], result["commit_rules"], limit=3
-            )
             result["review_manifest"] = {
                 "path": manifest_state["path"],
                 "snapshot_hash": manifest_state["stored"].get("snapshot_hash"),

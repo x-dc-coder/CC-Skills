@@ -13,25 +13,25 @@ description: Bootstrap git for local projects on WSL or Linux, apply repo-local 
 
 | 用户意图 | 指令 |
 |---------|------|
-| 初始化本地 Git | `cd ~/.claude/skills && uv run python gitcode-workflow/scripts/gitcode_bootstrap.py local-only --project <path> --json` |
-| 预览待提交文件 | `cd ~/.claude/skills && uv run python gitcode-workflow/scripts/gitcode_bootstrap.py preview --project <path> --json` |
-| 创建远端仓库 | `cd ~/.claude/skills && uv run python gitcode-workflow/scripts/gitcode_bootstrap.py create-remote --project <path> --json` |
-| 提交并推送 | `cd ~/.claude/skills && uv run python gitcode-workflow/scripts/gitcode_bootstrap.py publish --project <path> --commit-message "<msg>" --json` |
-| 分析已有项目 | `cd ~/.claude/skills && uv run python gitcode-workflow/scripts/gitcode_bootstrap.py adopt-existing-project --project <path> --json` |
-| 查看个人信息 | `cd ~/.claude/skills && uv run python gitcode-workflow/scripts/gitcode_bootstrap.py profile --action show --json` |
+| 初始化本地 Git | `uv run --project ~/.claude/skills python ~/.claude/skills/gitcode-workflow/scripts/gitcode_bootstrap.py local-only --project <path> --json` |
+| 预览待提交文件 | `uv run --project ~/.claude/skills python ~/.claude/skills/gitcode-workflow/scripts/gitcode_bootstrap.py preview --project <path> --json` |
+| 创建远端仓库 | `uv run --project ~/.claude/skills python ~/.claude/skills/gitcode-workflow/scripts/gitcode_bootstrap.py create-remote --project <path> --json` |
+| 提交并推送 | `uv run --project ~/.claude/skills python ~/.claude/skills/gitcode-workflow/scripts/gitcode_bootstrap.py publish --project <path> --commit-message "<msg>" --json` |
+| 分析已有项目 | `uv run --project ~/.claude/skills python ~/.claude/skills/gitcode-workflow/scripts/gitcode_bootstrap.py adopt-existing-project --project <path> --json` |
+| 查看个人信息 | `uv run --project ~/.claude/skills python ~/.claude/skills/gitcode-workflow/scripts/gitcode_bootstrap.py profile --action show --json` |
 
 ### Issue 操作
 
 | 用户意图 | 指令 |
 |---------|------|
-| 列出 Issues | `cd ~/.claude/skills && uv run python gitcode-workflow/scripts/gitcode_issues.py --owner <o> --repo <r> list [--state open\|closed\|all]` |
-| 创建 Issue | `cd ~/.claude/skills && uv run python gitcode-workflow/scripts/gitcode_issues.py --owner <o> --repo <r> create --title "..." [--body "..."] [--labels "..."]` |
-| 查看 Issue | `cd ~/.claude/skills && uv run python gitcode-workflow/scripts/gitcode_issues.py --owner <o> --repo <r> get <number>` |
-| 更新 Issue | `cd ~/.claude/skills && uv run python gitcode-workflow/scripts/gitcode_issues.py --owner <o> --repo <r> update <number> [--title "..."] [--state open\|closed]` |
-| 关闭 Issue | `cd ~/.claude/skills && uv run python gitcode-workflow/scripts/gitcode_issues.py --owner <o> --repo <r> close <number>` |
-| 重新打开 Issue | `cd ~/.claude/skills && uv run python gitcode-workflow/scripts/gitcode_issues.py --owner <o> --repo <r> reopen <number>` |
-| 查看 Issue 评论 | `cd ~/.claude/skills && uv run python gitcode-workflow/scripts/gitcode_issues.py --owner <o> --repo <r> comments <number>` |
-| 添加 Issue 评论 | `cd ~/.claude/skills && uv run python gitcode-workflow/scripts/gitcode_issues.py --owner <o> --repo <r> comment-create <number> --body "..."` |
+| 列出 Issues | `uv run --project ~/.claude/skills python ~/.claude/skills/gitcode-workflow/scripts/gitcode_issues.py --owner <o> --repo <r> list [--state open\|closed\|all]` |
+| 创建 Issue | `uv run --project ~/.claude/skills python ~/.claude/skills/gitcode-workflow/scripts/gitcode_issues.py --owner <o> --repo <r> create --title "..." [--body "..."] [--labels "..."]` |
+| 查看 Issue | `uv run --project ~/.claude/skills python ~/.claude/skills/gitcode-workflow/scripts/gitcode_issues.py --owner <o> --repo <r> get <number>` |
+| 更新 Issue | `uv run --project ~/.claude/skills python ~/.claude/skills/gitcode-workflow/scripts/gitcode_issues.py --owner <o> --repo <r> update <number> [--title "..."] [--state open\|closed]` |
+| 关闭 Issue | `uv run --project ~/.claude/skills python ~/.claude/skills/gitcode-workflow/scripts/gitcode_issues.py --owner <o> --repo <r> close <number>` |
+| 重新打开 Issue | `uv run --project ~/.claude/skills python ~/.claude/skills/gitcode-workflow/scripts/gitcode_issues.py --owner <o> --repo <r> reopen <number>` |
+| 查看 Issue 评论 | `uv run --project ~/.claude/skills python ~/.claude/skills/gitcode-workflow/scripts/gitcode_issues.py --owner <o> --repo <r> comments <number>` |
+| 添加 Issue 评论 | `uv run --project ~/.claude/skills python ~/.claude/skills/gitcode-workflow/scripts/gitcode_issues.py --owner <o> --repo <r> comment-create <number> --body "..."` |
 
 **原则：先执行，失败再排查。** `--owner` 和 `--repo` 在仓库目录下运行时自动从 git remote 推断，可不指定。
 
@@ -39,9 +39,9 @@ description: Bootstrap git for local projects on WSL or Linux, apply repo-local 
 
 ## 执行环境约束
 
-所有 Python 脚本必须在 `~/.claude/skills` 目录下执行：
+所有 Python 脚本用 `uv --project` 指定 skill 项目运行（**保持当前工作目录为项目仓库**，脚本自动从 git remote 推断 owner/repo）：
 ```bash
-cd ~/.claude/skills && uv run python gitcode-workflow/scripts/<script>.py ...
+uv run --project ~/.claude/skills python ~/.claude/skills/gitcode-workflow/scripts/<script>.py ...
 ```
 
 ## Decide the mode first
@@ -71,7 +71,7 @@ cd ~/.claude/skills && uv run python gitcode-workflow/scripts/<script>.py ...
 ## local-only workflow
 
 ```bash
-cd ~/.claude/skills && uv run python gitcode-workflow/scripts/gitcode_bootstrap.py local-only --project /path/to/project --json
+uv run --project ~/.claude/skills python ~/.claude/skills/gitcode-workflow/scripts/gitcode_bootstrap.py local-only --project /path/to/project --json
 ```
 
 此模式：初始化 Git、配置仓库级身份（默认 `x-dc-coder / x.dc0521@gmail.com`）、设置 `master` 为默认分支、检测技术栈、追加 `.gitignore` + `.git/info/exclude` 规则。
@@ -83,7 +83,7 @@ cd ~/.claude/skills && uv run python gitcode-workflow/scripts/gitcode_bootstrap.
 ## adopt-existing-project workflow
 
 ```bash
-cd ~/.claude/skills && uv run python gitcode-workflow/scripts/gitcode_bootstrap.py adopt-existing-project --project /path/to/project --max-layers 6 --json
+uv run --project ~/.claude/skills python ~/.claude/skills/gitcode-workflow/scripts/gitcode_bootstrap.py adopt-existing-project --project /path/to/project --max-layers 6 --json
 ```
 
 输出启发式分层提交建议（路径+文件名推断），标注为"需人工审查"。不初始化 Git、不修改文件。
@@ -93,7 +93,7 @@ cd ~/.claude/skills && uv run python gitcode-workflow/scripts/gitcode_bootstrap.
 ## create-remote workflow
 
 ```bash
-cd ~/.claude/skills && uv run python gitcode-workflow/scripts/gitcode_bootstrap.py create-remote --project /path/to/project --json
+uv run --project ~/.claude/skills python ~/.claude/skills/gitcode-workflow/scripts/gitcode_bootstrap.py create-remote --project /path/to/project --json
 ```
 
 先执行 local-only，再：获取 GitCode 用户信息、创建/复用 ED25519 SSH key、上传公钥、创建**私有**个人仓库、设置 `gitcode` 为默认 remote。
@@ -105,14 +105,14 @@ cd ~/.claude/skills && uv run python gitcode-workflow/scripts/gitcode_bootstrap.
 ## preview workflow
 
 ```bash
-cd ~/.claude/skills && uv run python gitcode-workflow/scripts/gitcode_bootstrap.py preview --project /path/to/project --json
+uv run --project ~/.claude/skills python ~/.claude/skills/gitcode-workflow/scripts/gitcode_bootstrap.py preview --project /path/to/project --json
 ```
 
 预览待提交文件（按 added/modified/deleted/renamed/untracked 分组）、安全扫描高风险文件、生成候选提交信息、写入 review manifest。
 
-### 提交信息生成（⭐ 两阶段：脚本 fallback + 子代理主力）
+### 提交信息生成（子代理主力）
 
-Python 脚本输出的 `commit_message_candidates` **仅作 fallback 参考**。最终给用户的候选信息**必须**通过子代理生成：
+候选提交信息**完全通过子代理生成**（无脚本 fallback）：
 
 1. 运行 `preview` 拿到 `diff_excerpt`、`files_by_kind`、`type_hints`、`scope_hints`
 2. 判断改动规模：
@@ -120,32 +120,23 @@ Python 脚本输出的 `commit_message_candidates` **仅作 fallback 参考**。
    - **多批次**（files > 6 或多种改动类型混合）：先按逻辑关系分组（如核心代码/工具链/文档），每组 spawn **1 个子代理**，每组生成 2-3 个候选
 3. 子代理模型：**deepseek-v4-flash**（快速、低成本）
 4. 子代理必须使用 Structured Output 返回 JSON
-5. 展示给用户时：优先展示子代理候选，Python fallback 候选仅作对比参考
+5. 候选展示后由开发者审查确认，再决定采用或调整
 
-**候选信息结构**（3 条，必须覆盖两种风格）：
-- **候选 1-2**：精简 Conventional Commits 格式 — 中文 subject ≤50 字符，动宾结构
-- **候选 3**：⭐ **详细叙述格式** — 中文 subject ≤50 字符，但**列出 diff 中每个文件的简要改动摘要作为 body**，让用户看到这次提交到底改了什么。禁止用一句泛泛的 subject 敷衍。
+**候选信息结构**（3 条精简候选，开发者选其一或自行修改）：
+- 全部为精简 Conventional Commits 格式 — 中文 subject ≤50 字符，动宾结构
+- 格式：`<type>(<scope>): <subject>`
+- 3 个候选从不同角度概括（如功能实现 / 问题修复 / 结构调整），便于快速挑选
+- ⭐ 不要求逐文件 body——如需补充细节，开发者确认后自行添加即可
 
 **子代理 prompt 模板**：
 ```
-你是代码审查专家。请仔细阅读以下 git diff，分析每个文件的具体改动内容（新增/修改的函数名、类名、逻辑变更、配置项、文件重命名等）。
-基于实际改动内容生成 3 个候选提交信息。
+你是代码审查专家。请仔细阅读以下 git diff，分析每个文件的具体改动内容。
+基于实际改动内容生成 3 个候选提交信息（均为精简 Conventional Commits 格式）。
 
-⭐ 重要：前 2 个是精简风格，第 3 个必须是详细叙述风格（必须带 body 逐文件说明改动）。
-
-候选 1-2（精简 Conventional Commits）：
 - 中文 subject，≤50 字符，动宾结构
 - 格式：<type>(<scope>): <subject>
 - type 从 {valid_types} 中选择
-
-候选 3（详细叙述，⭐ 必须带 body）：
-- 中文 subject，≤50 字符，概括本次改动的主题
-- body 逐文件列出改动摘要，每个文件一行，格式：
-  - <文件名>: <具体的改动内容>
-- 禁止在 body 中重复 subject 或用"本次提交改动了以下文件"等废话开头
-- 示例 body：
-  gitcode_issues.py: 修复 create/close/reopen/update 四个函数的 API URL 端点，repo 从 URL path 改为 formData 参数
-  manifest.py: commit_and_push 支持多行消息，逐行传递 -m 参数
+- 3 个候选从不同角度概括（如功能实现 / 问题修复 / 结构调整），供开发者挑选
 
 改动文件：
 {file_list}
@@ -153,7 +144,7 @@ Python 脚本输出的 `commit_message_candidates` **仅作 fallback 参考**。
 Diff 内容：
 {diff_excerpt}
 
-返回 JSON，candidates 数组固定 3 个元素，第 3 个必须包含 body 字段。
+返回 JSON，candidates 数组固定 3 个元素。
 ```
 
 **结构化输出 Schema**：
@@ -170,8 +161,7 @@ Diff 内容：
         "properties": {
           "type": {"type": "string", "enum": ["feat","fix","docs","style","refactor","perf","test","chore","revert"]},
           "scope": {"type": "string"},
-          "subject": {"type": "string", "maxLength": 50},
-          "body": {"type": "string", "description": "逐文件改动摘要，仅第 3 个候选需要"}
+          "subject": {"type": "string", "maxLength": 50}
         },
         "required": ["type", "scope", "subject"]
       }
@@ -184,7 +174,7 @@ Diff 内容：
 ### 预览后的流程
 
 1. 展示分组后的待提交文件列表 + 安全扫描结果
-2. 展示子代理生成的候选信息（附 Python fallback 对比）
+2. 展示子代理生成的候选信息，由开发者审查确认
 3. 多批次时：先展示分批方案和各批候选，等待用户逐批确认
 4. 用户确认最终消息后，记录 review manifest 路径和 snapshot hash
 5. **不要**在用户确认前执行 publish
@@ -196,7 +186,7 @@ Diff 内容：
 仅用户明确确认提交信息后执行：
 
 ```bash
-cd ~/.claude/skills && uv run python gitcode-workflow/scripts/gitcode_bootstrap.py publish --project /path/to/project --commit-message "<msg>" --json
+uv run --project ~/.claude/skills python ~/.claude/skills/gitcode-workflow/scripts/gitcode_bootstrap.py publish --project /path/to/project --commit-message "<msg>" --json
 ```
 
 **单批次**：加载 review manifest → 验证 worktree 未变 → 安全扫描 → stage 文件 → commit → push → 清除 manifest
@@ -304,7 +294,7 @@ git config core.quotepath false
 
 **可靠做法**：commit-push 后，手动调用 `close` 命令关闭 Issue：
 ```bash
-cd ~/.claude/skills && uv run python gitcode-workflow/scripts/gitcode_issues.py close <number>
+uv run --project ~/.claude/skills python ~/.claude/skills/gitcode-workflow/scripts/gitcode_issues.py close <number>
 ```
 
 ### Issue 使用场景
