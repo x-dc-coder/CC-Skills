@@ -130,6 +130,42 @@ def _is_table_separator(line: str) -> bool:
     return all(c in "-:| \t" for c in inner) and "-" in inner
 
 
+def _count_table_cols(line: str) -> int:
+    """统计 markdown 表格行的列数（按未转义竖线分割，去首尾空段）。
+
+    ``| a | b |`` → ['', ' a ', ' b ', ''] → 去首尾 → 2
+    ``a | b``    → [' a ', ' b ']          → 2
+    转义竖线（反斜杠 + 竖线）不被视为分隔符。
+    """
+    s = line.strip()
+    parts = re.split(r"(?<!\\)\|", s)
+    if parts and not parts[0].strip():
+        parts = parts[1:]
+    if parts and not parts[-1].strip():
+        parts = parts[:-1]
+    return len(parts)
+
+
+def _merge_parse_cell(raw: str) -> tuple[str, int, int]:
+    """解析单元格文本，提取 <<N / ^^N 合并标记。返回 (文本, colspan, rowspan)。
+
+    标记必须锚定在 cell 末尾，避免 ``数据<<2后续`` 这类内容被误判合并
+    并丢失"后续"（issue #66）。裸 ``^^`` 为续行占位。
+    """
+    t = raw.strip()
+    col = 1
+    m = re.search(r"<<(\d+)\s*$", t)
+    if m:
+        col = int(m.group(1)); t = t[:m.start()].strip()
+    row = 1
+    if t == "^^":
+        return ("", 1, 0)  # 裸 ^^ = 续行占位
+    m = re.search(r"\^\^(\d+)\s*$", t)
+    if m:
+        row = int(m.group(1)); t = t[:m.start()].strip()
+    return t, col, row
+
+
 def is_setext_candidate(prev_line: str) -> bool:
     prev = prev_line.strip()
     if not prev:
@@ -179,6 +215,8 @@ class MarkdownChecker:
         self._in_math_block = False
         self._in_references = False
         self._pending_formula: int | None = None
+        self._fence_start: int | None = None  # 代码块起始行（未闭合时用于报错定位）
+        self._math_start: int | None = None   # 公式块起始行（未闭合时用于报错定位）
 
         # ---- 标题跟踪 ----
         self._prev_level = 0
@@ -262,7 +300,12 @@ class MarkdownChecker:
             if stripped.startswith("```"):
                 if MERMAID_FENCE_RE.match(stripped):
                     self._add("WARN", idx, "MERMAID_DISABLED", "检测到 Mermaid 代码块：当前导出流程会移除该代码块")
-                self._in_fence = not self._in_fence
+                if self._in_fence:
+                    self._in_fence = False
+                    self._fence_start = None
+                else:
+                    self._in_fence = True
+                    self._fence_start = idx
                 continue
 
             if self._in_fence:
@@ -325,6 +368,14 @@ class MarkdownChecker:
         if self._h1_count == 0:
             self._add("ERROR", 1, "NO_H1", "文档必须使用一级标题（#）组织章节")
 
+        # 代码块 / 公式块未闭合（fence 或 $$ 配对）
+        if self._in_fence:
+            self._add("ERROR", self._fence_start or 1, "FENCE_UNCLOSED",
+                      "代码块未闭合：缺少 ``` 结束标记")
+        if self._in_math_block:
+            self._add("ERROR", self._math_start or 1, "MATH_BLOCK_UNCLOSED",
+                      "公式块未闭合：缺少 $$ 结束标记")
+
     # ---- 行内检查子方法 ----
 
     def _check_line(self, findings_ref, idx: int, line: str) -> None:
@@ -341,6 +392,7 @@ class MarkdownChecker:
             if not FORMULA_NUMBER_RE.search(stripped):
                 self._pending_formula = idx
             self._in_math_block = False
+            self._math_start = None
         else:
             if stripped.endswith("$$") and len(stripped) > 4:
                 self._validate_formula(idx, stripped)
@@ -348,6 +400,7 @@ class MarkdownChecker:
                     self._pending_formula = idx
             else:
                 self._in_math_block = True
+                self._math_start = idx
 
     # ---- 标题处理（多体系支持） ----
 
@@ -786,9 +839,95 @@ class MarkdownChecker:
         self._check_table_captions()
         self._check_figure_table_sequence()
         self._check_text_around_blocks()
+        self._check_merge_table_syntax()
+        self._check_table_column_consistency()
         self._check_reference_continuity()
         if self.mode == "journal":
             self._check_citation_density_journal()
+
+    def _check_merge_table_syntax(self) -> None:
+        """校验友好合并语法（<<N/^^N）合法性（issue #66）。
+
+        检查：跨列越界（单元格 colspan 之和超过表格列数）、跨行越界
+        （^^N 超过表格剩余行数）、续行 ^^ 出现在首行（无上方合并单元格）。
+        """
+        for start, _chapter in self._table_starts:
+            block_start = start
+            if start > 0 and _is_table_row(self._lines[start - 1].strip()):
+                block_start = start - 1  # 包含表头行
+            table_end = start
+            while table_end < len(self._lines) and _is_table_row(self._lines[table_end].strip()):
+                table_end += 1
+            rows: list[tuple[int, list[tuple[str, int, int]]]] = []
+            for ln_no in range(block_start, table_end):
+                s = self._lines[ln_no].strip()
+                if _is_table_separator(s):
+                    continue
+                inner = s[1:-1] if s.endswith("|") else s[1:]
+                cells = [_merge_parse_cell(c) for c in inner.split("|")]
+                rows.append((ln_no, cells))
+            if not rows:
+                continue
+            ncols = sum(c[1] for c in rows[0][1])  # 表头行 colspan 和 = 表格列数
+            for r_idx, (ln_no, cells) in enumerate(rows):
+                # 去掉末尾补列空 cell（用户 `| 内容 | 合并<<2 | |` 写法，翻译器会跳过）
+                effective = list(cells)
+                while effective and effective[-1][0] == "" and effective[-1][1] == 1 and effective[-1][2] == 1:
+                    effective.pop()
+                row_cols = sum(c[1] for c in effective)
+                if row_cols > ncols:
+                    self._add(
+                        "ERROR", ln_no, "MERGE_COLSPAN_EXCEED",
+                        f"合并单元格跨列 {row_cols} 列超过表格列数 {ncols}（标记 <<N/^^N 越界）",
+                    )
+                for (text, col, rowspan) in cells:
+                    if rowspan == 0 and col == 1:
+                        # 裸 ^^ 续行占位：首行无上方合并单元格则无效
+                        if r_idx == 0:
+                            self._add(
+                                "ERROR", ln_no, "MERGE_ROWSPAN_ORPHAN",
+                                "续行标记 ^^ 出现在表格首行（无上方合并单元格），无效",
+                            )
+                    elif rowspan > 1 and rowspan > len(rows) - r_idx:
+                        self._add(
+                            "ERROR", ln_no, "MERGE_ROWSPAN_EXCEED",
+                            f"合并跨行 {rowspan} 行超过表格剩余行数 {len(rows) - r_idx}（^^N 越界）",
+                        )
+
+    def _check_table_column_consistency(self) -> None:
+        """校验表格每行列数一致（header/数据行列数应相同）。
+
+        独立扫描连续表格块（不依赖 _table_starts 的起始语义），
+        跳过分隔行，比较各数据行与首行列数。列数不一致通常意味着
+        单元格漏填或多填（markdown 表格要求各行列数一致）。
+        含 ``<<N``/``^^N`` 合并语法的表格豁免（合并行列数天然不一致）。
+        """
+        lines = self._lines
+        i = 0
+        while i < len(lines):
+            if not _is_table_row(lines[i].strip()):
+                i += 1
+                continue
+            block: list[tuple[int, int]] = []
+            has_merge = False
+            while i < len(lines) and _is_table_row(lines[i].strip()):
+                s = lines[i].strip()
+                if "<<" in s or "^^" in s:
+                    has_merge = True
+                if not _is_table_separator(s):
+                    block.append((i + 1, _count_table_cols(s)))
+                i += 1
+            if has_merge:
+                continue  # 合并表格各行列数天然不一致（跨列<<N/续行^^），豁免
+            if len(block) >= 2:
+                ref = block[0][1]
+                for ln_no, cols in block[1:]:
+                    if cols != ref:
+                        self._add(
+                            "ERROR", ln_no, "TABLE_COLUMN_MISMATCH",
+                            f"表格列数不一致：首行 {ref} 列，本行 {cols} 列",
+                        )
+                        break
 
     def _check_figure_duplicates(self) -> None:
         for img_line, alt, _chapter in self._images:
