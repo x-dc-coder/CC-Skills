@@ -14,6 +14,7 @@ Run: `~/.kimi-webbridge/bin/kimi-webbridge status`
 |---|---|
 | `command not found` or binary missing | Not installed. Run: `curl -fsSL https://cdn.kimi.com/webbridge/install.sh \| bash` |
 | `{"running": false, ...}` | Daemon not running. Run: `~/.kimi-webbridge/bin/kimi-webbridge start` |
+| `start` reports a new pid but `status` still shows `"running": false` reading a stale old pid (port 10086 not listening) | Stale PID file. The new daemon hit `write pid: open ...daemon.pid: file exists` and exited immediately — the old `~/.kimi-webbridge/daemon.pid` was left behind by a crashed/killed daemon. Fix: `rm -f ~/.kimi-webbridge/daemon.pid && ~/.kimi-webbridge/bin/kimi-webbridge start`. |
 | `{"running": true, "extension_connected": false, ...}` | Extension not connected. Tell the user: "If you've already installed the Kimi WebBridge extension, please open your browser and try again. If not yet installed, see https://www.kimi.com/features/webbridge (Chinese: https://www.kimi.com/zh-cn/features/webbridge) for install instructions." |
 | `{"running": true, "extension_connected": true, ...}` | Healthy. Return to the main SKILL.md to make tool calls. |
 
@@ -50,6 +51,7 @@ When running `install.sh`:
 | Symptom | Action |
 |---|---|
 | `start` fails with "address already in use" | `~/.kimi-webbridge/bin/kimi-webbridge stop && ~/.kimi-webbridge/bin/kimi-webbridge start`; if that fails, `lsof -i :10086` to find the conflicting process. |
+| `start` prints a new pid but daemon never comes up — logs show `Error: write pid: open .../daemon.pid: file exists` | Stale PID file from a previously crashed/killed daemon. The new process refuses to overwrite the leftover `daemon.pid` and exits at once, so `status` keeps reading the dead pid and port 10086 stays closed. Fix: `rm -f ~/.kimi-webbridge/daemon.pid` then `start`. `stop` cannot clean this up because it tries to POST to a dead daemon (timeout). |
 | Tool calls time out | `~/.kimi-webbridge/bin/kimi-webbridge logs -n 100` — check for `[error]` / `panic` lines. |
 | `extension_connected` stays `false` after install | Browser extension not running. If the user has it installed, ask them to open the browser and retry; otherwise direct them to https://www.kimi.com/features/webbridge (Chinese: https://www.kimi.com/zh-cn/features/webbridge). |
 | `status` returns `extension_connected: true` but tool call fails | May be a multi-browser conflict. `~/.kimi-webbridge/bin/kimi-webbridge logs` will show recent upgrade rejections. |
