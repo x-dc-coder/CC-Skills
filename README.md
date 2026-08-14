@@ -2,6 +2,8 @@
 
 本文档说明本目录下 Python Skill 的统一环境管理方式。
 
+> **跨设备搭建手册**：新设备（Linux/WSL 或 Windows）从零配置环境，见 [CROSS-DEVICE-SETUP.md](CROSS-DEVICE-SETUP.md)。
+
 > **注意**：本文件为辅助说明文档，不影响 Claude Code/OpenCode 的 Skill 系统。各子目录中的 `SKILL.md`（需含 YAML frontmatter）才是 Skill 的规范定义文件。
 
 ## 目录结构
