@@ -3,14 +3,18 @@
   "api_keys": {
     "tavily": {
       "env_var": "TAVILY_API_KEY",
-      "value": "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"
+      "value": null
     },
     "firecrawl": {
       "env_var": "FIRECRAWL_API_KEY",
-      "value": "fc-95fc38276f2f428e8bdc516d8ec9ae39"
+      "value": null
     },
     "semantic_scholar": {
       "env_var": "S2_API_KEY",
+      "value": null
+    },
+    "bocha": {
+      "env_var": "BOCHA_API_KEY",
       "value": null
     }
   },
@@ -70,6 +74,20 @@
         }
       }
     },
+    "bocha": {
+      "enabled": true,
+      "type": "http",
+      "endpoint": "https://api.bochaai.com/v1/web-search",
+      "roles": ["general", "news", "technical"],
+      "weight": 1.2,
+      "cost": 1,
+      "timeout_sec": 30,
+      "default_params": {
+        "freshness": "oneYear",
+        "summary": true,
+        "count": 10
+      }
+    },
     "arxiv": {
       "enabled": true,
       "type": "http",
@@ -119,6 +137,11 @@
     "general": {
       "_comment": "通用搜索：2 源对比，有出入则启用第 3 源仲裁",
       "primary_pair": ["keenable", "tavily"],
+      "tier_sources": {
+        "_comment": "性价比 tier 用免费/便宜源，旗舰 tier 用高质量源",
+        "value": ["keenable", "bocha"],
+        "flagship": ["tavily", "bocha"]
+      },
       "arbitrator": "firecrawl",
       "max_results_per_source": 8,
       "agreement_threshold": 0.4,

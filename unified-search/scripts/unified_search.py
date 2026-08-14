@@ -37,6 +37,24 @@ import httpx
 import yaml
 from feedparser import parse as feedparse
 
+
+def _load_env_file(path: Path) -> None:
+    """轻量加载 .env（无依赖，不覆盖已存在环境变量）。"""
+    if not path.exists():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        k, v = k.strip(), v.strip()
+        if k and k not in os.environ:
+            os.environ[k] = v
+
+
+# 自读统一密钥文件（~/.config/vision-ai/.env）
+_load_env_file(Path.home() / ".config" / "vision-ai" / ".env")
+
 # ─── Paths ──────────────────────────────────────────────────────────────────
 SKILL_DIR = Path(__file__).resolve().parent.parent          # ~/.claude/skills/unified-search
 SCRIPT_DIR = Path(__file__).resolve().parent                # .../scripts
@@ -247,6 +265,37 @@ def search_firecrawl(query: str, cfg: dict, limit: int | None = None) -> list[di
         return [make_result("", "", f"[firecrawl error: {type(e).__name__}: {e}]", "firecrawl", 0.0, error=str(e))]
 
 
+def search_bocha(query: str, cfg: dict) -> list[dict]:
+    key = get_api_key(cfg, "bocha")
+    if not key:
+        return [make_result("", "", "[bocha: no API key]", "bocha", 0.0, error="no_key")]
+    src = cfg["sources"]["bocha"]
+    body = dict(src.get("default_params", {}))
+    body["query"] = query
+    try:
+        with httpx.Client(timeout=src["timeout_sec"]) as client:
+            resp = client.post(src["endpoint"], json=body,
+                               headers={"Authorization": f"Bearer {key}"})
+            resp.raise_for_status()
+        data = resp.json()
+        d = data.get("data") or {}
+        wp = d.get("webPages")
+        pages = wp if isinstance(wp, list) else (wp.get("value") or [] if isinstance(wp, dict) else [])
+        results = []
+        for r in pages:
+            results.append(make_result(
+                title=r.get("name") or r.get("title", ""),
+                url=r.get("url", ""),
+                snippet=r.get("summary") or r.get("snippet", ""),
+                source="bocha",
+                score=0.7,
+                published_date=r.get("datePublished") or r.get("dateLastCrawled"),
+            ))
+        return results
+    except Exception as e:
+        return [make_result("", "", f"[bocha error: {type(e).__name__}: {e}]", "bocha", 0.0, error=str(e))]
+
+
 def search_arxiv(query: str, cfg: dict, max_results: int = 15) -> list[dict]:
     src = cfg["sources"]["arxiv"]
     params = dict(src["default_params"])
@@ -433,9 +482,9 @@ def url_agreement(results_a: list[dict], results_b: list[dict]) -> float:
 
 
 # ─── Mode: general (2-source + arbitration) ──────────────────────────────────
-def mode_general(query: str, cfg: dict, top_k: int = 15) -> dict:
+def mode_general(query: str, cfg: dict, top_k: int = 15, tier: str = "value") -> dict:
     mcfg = cfg["modes"]["general"]
-    primary = mcfg["primary_pair"]
+    primary = mcfg.get("tier_sources", {}).get(tier) or mcfg["primary_pair"]
     arbitrator = mcfg["arbitrator"]
     threshold = mcfg["agreement_threshold"]
 
@@ -443,7 +492,9 @@ def mode_general(query: str, cfg: dict, top_k: int = 15) -> dict:
     if "keenable" in primary:
         fn_map["keenable"] = lambda q, c: search_with_retry(search_keenable, q, c)
     if "tavily" in primary:
-        fn_map["tavily"] = lambda q, c: search_with_retry(search_tavily, q, c, advanced=False)
+        fn_map["tavily"] = lambda q, c: search_with_retry(search_tavily, q, c, advanced=(tier == "flagship"))
+    if "bocha" in primary:
+        fn_map["bocha"] = lambda q, c: search_with_retry(search_bocha, q, c)
     per_source = run_sources_parallel(fn_map, query, cfg)
 
     # check agreement
@@ -539,11 +590,11 @@ def classify_intent(query: str) -> str:
     return "general"
 
 
-def mode_auto(query: str, cfg: dict, top_k: int = 20) -> dict:
+def mode_auto(query: str, cfg: dict, top_k: int = 20, tier: str = "value") -> dict:
     intent = classify_intent(query)
     if intent == "academic":
         return mode_academic(query, cfg, top_k=top_k)
-    return mode_general(query, cfg, top_k=top_k)
+    return mode_general(query, cfg, top_k=top_k, tier=tier)
 
 
 # ─── Fetch (content extraction) ─────────────────────────────────────────────
@@ -709,6 +760,35 @@ def query_history(query: str, cfg: dict, limit: int = 5) -> dict:
 
 
 # ─── Quota report ────────────────────────────────────────────────────────────
+def _real_tavily_usage(cfg: dict) -> dict | None:
+    key = get_api_key(cfg, "tavily")
+    if not key:
+        return None
+    try:
+        with httpx.Client(timeout=20) as client:
+            resp = client.get("https://api.tavily.com/usage", headers={"Authorization": f"Bearer {key}"})
+            resp.raise_for_status()
+        a = resp.json().get("account", {})
+        return {"plan": a.get("current_plan"), "used": a.get("plan_usage"), "limit": a.get("plan_limit")}
+    except Exception:
+        return None
+
+
+def _real_firecrawl_usage(cfg: dict) -> dict | None:
+    key = get_api_key(cfg, "firecrawl")
+    if not key:
+        return None
+    try:
+        with httpx.Client(timeout=20) as client:
+            resp = client.get("https://api.firecrawl.dev/v2/team/credit-usage", headers={"Authorization": f"Bearer {key}"})
+            resp.raise_for_status()
+        d = resp.json().get("data", {})
+        return {"remaining": d.get("remainingCredits"), "plan": d.get("planCredits"),
+                "period_end": (d.get("billingPeriodEnd") or "")[:10]}
+    except Exception:
+        return None
+
+
 def report_quota(cfg: dict) -> dict:
     out = {}
     for src_name in ["tavily", "firecrawl"]:
@@ -716,12 +796,16 @@ def report_quota(cfg: dict) -> dict:
         if qcfg:
             remaining = quota_remaining(cfg, src_name)
             used = qcfg["monthly_limit"] - (remaining or 0)
-            out[src_name] = {
+            entry = {
                 "monthly_limit": qcfg["monthly_limit"],
-                "used_this_month": used,
-                "remaining": remaining,
+                "used_this_month_local": used,
+                "remaining_local": remaining,
                 "month": current_month_key(),
             }
+            live = _real_tavily_usage(cfg) if src_name == "tavily" else _real_firecrawl_usage(cfg)
+            if live:
+                entry["live"] = live
+            out[src_name] = entry
     return {"mode": "quota", "quota": out}
 
 
@@ -816,6 +900,8 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--history", action="store_true", help="search history cache instead of web")
     p.add_argument("--quota", action="store_true", help="show monthly quota usage")
     p.add_argument("--topic", default=None, help="tavily topic hint (general/news/finance)")
+    p.add_argument("--tier", choices=["value", "flagship"], default="value",
+                   help="general 模式分层：value=性价比源(keenable+bocha)，flagship=旗舰源(tavily advanced+bocha)")
     p.add_argument("--time-range", default=None, help="tavily time_range (day/week/month/year)")
     p.add_argument("--export-manifest", type=Path, default=None, metavar="DIR",
                    help="export paper links as _download_manifest.json to DIR (academic mode)")
@@ -854,11 +940,11 @@ def main() -> int:
 
     top_k = args.top or (30 if args.mode == "academic" else 15)
     if args.mode == "general":
-        result = mode_general(args.query, cfg, top_k=top_k)
+        result = mode_general(args.query, cfg, top_k=top_k, tier=args.tier)
     elif args.mode == "academic":
         result = mode_academic(args.query, cfg, top_k=top_k)
     else:  # auto
-        result = mode_auto(args.query, cfg, top_k=top_k)
+        result = mode_auto(args.query, cfg, top_k=top_k, tier=args.tier)
 
     # always record general search history too (top-5)
     if result.get("mode") == "general":

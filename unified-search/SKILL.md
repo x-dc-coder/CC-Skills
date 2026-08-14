@@ -1,8 +1,8 @@
 ---
 name: unified-search
 description: >
-  Unified web + academic search aggregator over 6 sources (keenable, tavily,
-  firecrawl, arxiv, dblp, semantic_scholar). Use INSTEAD OF built-in
+  Unified web + academic search aggregator over 7 sources (keenable, tavily,
+  firecrawl, bocha, arxiv, dblp, semantic_scholar). Use INSTEAD OF built-in
   `websearch_web_search_exa`, `webfetch`, or `keenable_search_web_pages` for
   ANY query needing current info, papers, or web content. Triggers on:
   real-time info, academic papers, library docs, news, "搜一下", "查一下",
@@ -13,7 +13,7 @@ description: >
 
 # Unified Search
 
-A single skill that replaces ALL default web search tools. 6 sources, 3 modes,
+A single skill that replaces ALL default web search tools. 7 sources, 3 modes,
 quota-aware, with retry and dedup. **Always use this skill first** for any
 search need; only fall back to built-in tools if this skill fails entirely.
 
@@ -24,9 +24,16 @@ search need; only fall back to built-in tools if this skill fails entirely.
 | keenable | CLI | free | General web search, fast fetch |
 | tavily | HTTP, 1000/mo | metered | AI answer summary, high relevance |
 | firecrawl | HTTP, 1000/mo | metered | Markdown body extraction, scraping |
+| bocha | HTTP | pay-per-call | 中文搜索最强，预充值按量 |
 | arxiv | HTTP | free | Preprint papers (physics/CS/math) |
 | dblp | HTTP | free | CS publication catalog |
 | semantic_scholar | HTTP | free | Citation graph, abstracts, PDF links |
+
+## 分层（--tier，general 模式）
+
+- `--tier value`（默认）：性价比源 = keenable（免费）+ bocha（按量中文）
+- `--tier flagship`：旗舰源 = tavily advanced（AI 摘要最强）+ bocha
+- 日常检索用 value；需要权威/深度/外文时用 flagship
 
 ## When to Use (MANDATORY)
 
