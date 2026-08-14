@@ -65,7 +65,7 @@ uv run --directory ~/.claude/skills python scripts/gitcode_issues.py ...
 /tmp/skills-output/2026-07-15/diagram-er/diagram.png
 
 # ❌ skill 目录内的 -workspace 孤儿目录
-~/.claude/skills/diagram-architecture-workspace/
+~/.claude/skills/example-skill-workspace/
 ```
 
 ### 各 skill 输出文件名约定（避免覆盖）
@@ -77,9 +77,7 @@ uv run --directory ~/.claude/skills python scripts/gitcode_issues.py ...
 | diagram-module | `module-diagram.png` |
 | diagram-sequence | `sequence-diagram.png` |
 | diagram-usecase | `usecase-diagram.png` |
-| diagram-architecture | `architecture.<pdf\|png>` |
 | diagram-flow | `flow.mmd` / `flow.png` |
-| d2-paper | `<name>.<svg\|png\|pdf>` |
 | thesis-writing | `第X章-章节名.md` / `full-thesis.md` |
 | md-to-thesis-latex | `main.tex`（在 `thesis-output/latex/` 下） |
 | word-extractor | `<basename>.md` + `images/` |

@@ -66,6 +66,7 @@ flowchart TD
 - **默认使用** `flowchart TD`（自上而下流程图）
 - 其他可选：`sequenceDiagram`、`classDiagram`、`stateDiagram-v2`
 - 不要混用不同图类型的语法
+- 分层架构图（表现层→业务逻辑层→模型层→数据层）也用 flowchart TD + subgraph，三个技巧见「论文流程图常见场景 → 4. 分层系统架构图」
 
 ### 节点 ID 规则
 - **只能使用**：英文字母、数字、下划线
@@ -166,6 +167,92 @@ flowchart TD
     class op,confirm diamond
 ```
 
+### 4. 分层系统架构图（论文最常用）
+
+分层架构图（表现层→业务逻辑层→模型层→数据层）是论文「系统设计」章节最常见的图。Mermaid 画分层架构有**三个必用技巧，缺一不可**：
+
+1. **subgraph 间链式连接**：`P --> B --> M --> D` 强制四层自上而下垂直堆叠（否则 dagre 会把 subgraph 左右分栏）。
+2. **层内 `direction LR`**：让每层节点横向排列。
+3. **`~~~` 不可见连接**：强制无连接关系的同层节点也水平一排（否则会竖排成窄高框）。
+
+```mermaid
+%%{init: {'themeVariables': {'fontFamily': 'SimSun, Noto Serif CJK SC, serif', 'fontSize': '16px', 'edgeLabelBackground': '#ffffff'}, 'flowchart': {'curve': 'stepAfter', 'padding': 0, 'nodeSpacing': 20, 'rankSpacing': 25, 'useMaxWidth': true, 'htmlLabels': false}}}%%
+flowchart TD
+    classDef default fill:#ffffff,stroke:#000000,stroke-width:2px,color:#000000
+
+    subgraph P["表现层"]
+        direction LR
+        web["Web 前端"] ~~~ mobile["移动端"] ~~~ api["REST API"]
+    end
+
+    subgraph B["业务逻辑层"]
+        direction LR
+        user["用户服务"] ~~~ analysis["情感分析服务"] ~~~ result["结果管理"]
+    end
+
+    subgraph M["模型层"]
+        direction LR
+        preprocess["文本预处理"] --> bert["BERT 编码器"] --> bilstm["BiLSTM"] --> attention["注意力机制"] --> softmax["Softmax 分类"]
+    end
+
+    subgraph D["数据层"]
+        direction LR
+        mysql[("MySQL")] ~~~ vecdb[("词向量库")] ~~~ redis[("Redis 缓存")]
+    end
+
+    P --> B --> M --> D
+```
+
+**要点**：
+- 数据库/存储节点用 `[("名称")]`（圆柱形）
+- 层内有先后顺序（如模型层流水线）用 `-->`，同层并列节点用 `~~~`
+- subgraph ID 用单个大写字母（P/B/M/D），避免与节点 ID 冲突
+- 数据层必须放最底（`P --> B --> M --> D` 的链式方向决定层级顺序）
+- **架构图/模型图必须用 `curve: 'linear'`**（直线箭头）；`curve: 'stepAfter'`（阶梯折线）只适合流程图，用于架构图会导致箭头拐弯「未打直」
+
+### 5. 模型/网络结构图（深度学习论文必备）
+
+神经网络结构图（BiLSTM+Attention、CNN、Transformer）用 flowchart TD + 分层 subgraph，层间主线 + 层内细节，curve: linear。
+
+```mermaid
+%%{init: {'themeVariables': {'fontFamily': 'SimSun, Noto Serif CJK SC, serif', 'fontSize': '16px', 'edgeLabelBackground': '#ffffff'}, 'flowchart': {'curve': 'linear', 'padding': 0, 'nodeSpacing': 20, 'rankSpacing': 25, 'useMaxWidth': true, 'htmlLabels': false}}}%%
+flowchart TD
+    classDef default fill:#ffffff,stroke:#000000,stroke-width:2px,color:#000000
+
+    subgraph L1["输入层"]
+        text["评论文本 服务态度很好"]
+    end
+    subgraph L2["词嵌入层"]
+        direction LR
+        e1["e₁"] ~~~ e2["e₂"] ~~~ e3["e₃"]
+    end
+    subgraph L3["BiLSTM 双向编码层"]
+        direction LR
+        f1["h₁→"] --> f2["h₂→"] --> f3["h₃→"]
+        b3["←h₃"] --> b2["←h₂"] --> b1["←h₁"]
+    end
+    subgraph L4["隐状态拼接"]
+        direction LR
+        h1["h₁"] ~~~ h2["h₂"] ~~~ h3["h₃"]
+    end
+    subgraph L5["注意力机制"]
+        direction TB
+        a1["α₁"] & a2["α₂"] & a3["α₃"] --> s["s = Σαᵢhᵢ"]
+    end
+    subgraph L6["输出层"]
+        direction LR
+        dense["全连接"] --> softmax["Softmax"] --> out["正面/负面/中性"]
+    end
+
+    L1 --> L2 --> L3 --> L4 --> L5 --> L6
+```
+
+**要点**：
+- 双向结构用两条方向相反的链（前向 h₁→-->h₂→，后向 ←h₃-->←h₂）
+- 多对一汇聚（注意力加权求和）用 & --> 语法：a1 & a2 & a3 --> s
+- 层内并列节点用 ~~~，层内有先后顺序用 -->
+- 已知局限：Mermaid 的 dagre 路由会让「多对一汇聚」的斜线箭头带轻微折角（绕过中间节点），属正常现象；若要求三个箭头完全垂直直线，改用 Graphviz（rank=same 精确对齐）
+
 ## 渲染为图片
 
 使用 mermaid-cli 将生成的 Mermaid 代码渲染为 PNG 或 SVG：
@@ -203,6 +290,7 @@ mmdc -i input.mmd -o output.svg -e svg
 - [ ] 无未闭合结构
 - [ ] 无解释文字混入
 - [ ] 是否可用更保守写法
+- [ ] 分层架构图：subgraph 间有链式连接 P-->B-->M-->D；层内 direction LR；并列节点用 ~~~；数据库节点用 [(名称)] 圆柱形
 
 ## 示例对话
 

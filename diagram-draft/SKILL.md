@@ -14,7 +14,7 @@
 - 用户说"先画个草稿看看"或类似表述
 
 **注意**：本 skill 专注于**快速草稿**。如果用户需要正式论文级架构图，
-使用 `diagram-architecture` (Graphviz PDF/PNG)。
+使用 `diagram-flow`（Mermaid，纯黑白）。
 
 ## 依赖
 
@@ -123,4 +123,4 @@ graph-easy my-arch.txt --as=boxart
 - 复杂图（10+ 节点）建议直接出 PNG
 - 不支持 `cylinder`（数据库图标）、`cloud` 等特殊形状
 - 中文节点标签在 graph-easy 0.76 中宽度计算可能有偏差
-- 自动布局无法手动调整节点位置，如需精确控制用 `diagram-architecture`
+- 自动布局无法手动调整节点位置，如需精确控制用 `diagram-flow`（Mermaid）或拖拽工具（draw.io）

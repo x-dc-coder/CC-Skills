@@ -50,8 +50,6 @@
 │       └── mineru/       # ~613MB（MinerU + 模型）
 │
 ├── diagram-flow/          # 纯 Mermaid 代码生成，无 Python
-├── diagram-architecture/  # 纯 Graphviz DOT，无 Python
-├── d2-paper/              # 纯 D2 语言，无 Python
 ├── doubao-vision/         # curl 调 API，无 Python
 ├── keenable-cli/          # 二进制 CLI，无 Python
 ├── kimi-webbridge/        # curl 调 daemon，无 Python
@@ -67,7 +65,7 @@
 |------|------|-------------|------|
 | **A. 统一共享** | `.venv/` 符号链接 | diagram-er/ers/module/sequence/usecase, db-skill, word-extractor, unified-search, gitcode-workflow, thesis-writing | 依赖轻量（Pillow/sqlglot/psycopg2/pytest 等），共享一份 venv |
 | **B. 独立重型** | skill 内 `venvs/` | paper-reader | 含 GPU 模型权重（5GB+），不可合并，`.gitignore` 已忽略 |
-| **C. 无统一 venv** | 系统/Windows Python | diagram-flow, diagram-architecture, d2-paper, doubao-vision, keenable-cli, kimi-webbridge, md-to-thesis-latex, thesis-ref-check, wsl-windows-bridge | 无统一 venv（使用系统/Windows Python） |
+| **C. 无统一 venv** | 系统/Windows Python | diagram-flow, doubao-vision, keenable-cli, kimi-webbridge, md-to-thesis-latex, thesis-ref-check, wsl-windows-bridge | 无统一 venv（使用系统/Windows Python） |
 
 ## 统一执行约定（所有 Python skill 必须遵守）
 

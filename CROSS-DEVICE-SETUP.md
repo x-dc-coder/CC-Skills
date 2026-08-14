@@ -82,10 +82,6 @@ bash ~/.claude/skills/paper-reader/scripts/bootstrap.sh
 
 | 外部工具 | 服务 skill | Linux / WSL | Windows |
 |---------|-----------|-------------|---------|
-| **d2** CLI | d2-paper | `curl -fsSL https://d2lang.com/install.sh \| sh -s --` | `winget install --id Terrastruct.D2 -e` 或 `scoop install d2` |
-| **d2-render**（工具包） | d2-paper | 见 d2-paper/SKILL.md「工具与安装」（依赖本地 toolkit，非全局二进制） | 需在 Windows 侧准备对应渲染脚本 |
-| **graphviz**（dot） | diagram-architecture | `sudo apt install graphviz` | `winget install Graphviz.Graphviz` |
-| **poppler-utils**（pdftoppm） | diagram-architecture（PDF→PNG 预览） | `sudo apt install poppler-utils` | `winget install oschwartz10612.Poppler` |
 | **中文字体** | diagram-* | `sudo apt install fonts-noto-cjk` | SimSun 自带；如需可装思源字体 |
 | **mermaid-cli**（mmdc） | diagram-flow / diagram-sequence | `npm install -g @mermaid-js/mermaid-cli`（或按 SKILL.md 用 `npx -y`） | 同左（需 node） |
 | **xelatex** + texlive-lang-chinese | md-to-thesis-latex | `sudo apt install texlive-xetex texlive-lang-chinese` | MiKTeX：`winget install MiKTeX.MiKTeX` |
@@ -120,8 +116,6 @@ cd ~/.claude/skills
 uv run python -c "import PIL, sqlglot, psycopg2, pymysql; print('py deps OK')"
 
 # ② 外部工具（按需）
-d2 --version              # d2-paper
-dot -V                    # diagram-architecture
 mmdc --version            # diagram-flow/sequence（如全局安装）
 xelatex --version         # md-to-thesis-latex
 officecli --version       # officecli

@@ -182,9 +182,9 @@ profiler 是纯 Python 脚本（stdlib 实现），毫秒级处理数十篇论�
 
 | 期刊图片类型 | 对接 skill | 备注 |
 |-------------|-----------|------|
-| 方法/框架总览图 | `diagram-architecture` 或 `d2-paper` | Graphviz / D2，学术级 |
-| 神经网络结构图 | `d2-paper` | D2 擅长层堆叠 |
-| 算法流程图 | `diagram-flow` 或 `d2-paper` | Mermaid 或 D2 |
+| 方法/框架总览图 | `diagram-flow` | Mermaid 分层架构图 |
+| 神经网络结构图 | `diagram-flow` | Mermaid 分层 subgraph 模型图 |
+| 算法流程图 | `diagram-flow` | Mermaid 流程图 |
 | 实验结果图（折线/柱状/热力/散点） | 无 diagram skill | 占位符描述 matplotlib/seaborn 调用，用户后续渲染 |
 | 消融对比表 / 硬件对比表 | 直接 Markdown 表格 | 不需 diagram skill |
 
@@ -245,10 +245,10 @@ cd ~/.claude/skills && uv run python thesis-writing/scripts/check_markdown_spec.
 
 | 占位符中的图片类型 | 后续调用 Skill | 所需输入 |
 |-------------------|---------------|---------|
-| 方法总览图 / 系统架构图 | `diagram-architecture` 或 `d2-paper` | 文字描述（层名 + 数据流） |
-| 神经网络结构图 | `d2-paper` | 文字描述（层名 + 维度 + 连接） |
-| 算法流程图 / 业务流程 | `diagram-flow` 或 `d2-paper` | 直接生成 Mermaid 或 D2 代码 |
-| 概念示意图 / 分类法图 | `d2-paper` | 文字描述 |
+| 方法总览图 / 系统架构图 | `diagram-flow` | 文字描述（层名 + 数据流） |
+| 神经网络结构图 | `diagram-flow` | 文字描述（层名 + 维度 + 连接） |
+| 算法流程图 / 业务流程 | `diagram-flow` | 直接生成 Mermaid 代码 |
+| 概念示意图 / 分类法图 | `diagram-flow`（或手绘） | 文字描述 |
 | 实验结果图（折线/柱状/热力/散点） | 不适用（用户后续用 matplotlib 渲染） | 数据文件路径 + 轴/系列说明 |
 | 实验对比表 / 消融表 / 超参表 | 不适用（直接写 Markdown 表格） | - |
 

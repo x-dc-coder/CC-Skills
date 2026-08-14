@@ -14,7 +14,7 @@
 |------|------|----------|------|
 | **A 统一共享** | 含 Python 脚本，依赖轻量（Pillow/sqlglot/psycopg2 等已在 pyproject.toml） | `.venv -> ../.venv` 符号链接 | diagram-er, db-skill, word-extractor |
 | **B 独立重型** | 含 GPU 模型权重或大型独立依赖（>1GB） | skill 内 `venvs/` 目录，加入 `.gitignore` | paper-reader |
-| **C 无统一 venv** | 纯代码生成 / 调外部二进制 / 使用系统 Python | 无 `.venv` 符号链接 | diagram-flow, d2-paper, wsl-windows-bridge |
+| **C 无统一 venv** | 纯代码生成 / 调外部二进制 / 使用系统 Python | 无 `.venv` 符号链接 | diagram-flow, wsl-windows-bridge |
 
 **规则 A1**：声明为 A 类的 SKILL **必须**创建 `.venv -> ../.venv` 符号链接，否则 `uv run` 在 skill 子目录内会找不到依赖。
 ```bash
@@ -70,13 +70,13 @@ description: >
 grep -l "<你的触发词>" ~/.claude/skills/*/SKILL.md
 ```
 
-**规则 B5**：如果一个能力已被专用 SKILL 覆盖，通用 SKILL **不可**在其触发词中重复该关键词。本次审查发现 d2-paper 的 trigger list 含"流程图/架构图/ER图/时序图/模块图"等 40+ 关键词，与 5 个专用 diagram skill 冲突——已修正为"仅当其他 diagram-* 无法满足时使用"。
+**规则 B5**：如果一个能力已被专用 SKILL 覆盖，通用 SKILL **不可**在其触发词中重复该关键词。曾发现某兜底 SKILL 的 trigger list 含"流程图/架构图/ER图/时序图/模块图"等 40+ 关键词，与多个专用 diagram skill 冲突——已修正为"仅当其他 diagram-* 无法满足时使用"。
 
-**规则 B6**：通用/兜底 SKILL（如 d2-paper）**必须**在 description 中声明优先级规则："仅当其他专用 skill 无法满足时使用本 skill"。
+**规则 B6**：通用/兜底 SKILL **必须**在 description 中声明优先级规则："仅当其他专用 skill 无法满足时使用本 skill"。
 
 ### 2.3 SKILL.md 长度
 
-**规则 B7**：SKILL.md 主文档**应** ≤ 400 行。超过 400 行时**必须**将参考内容拆到 `references/` 子目录。本次审查发现 d2-paper SKILL.md 911 行——已拆分为 268 行主文档 + `references/d2-language.md` 771 行。
+**规则 B7**：SKILL.md 主文档**应** ≤ 400 行。超过 400 行时**必须**将参考内容拆到 `references/` 子目录。曾发现某兜底 SKILL 主文档 911 行——已拆分为短主文档 + `references/` 子文档。
 
 **规则 B8**：SKILL.md 顶部**应**包含：能力概述、触发场景、依赖说明、快速用法。详细语法/模板/示例放 `references/`。
 
@@ -175,7 +175,7 @@ fontname = "Noto Sans CJK SC"  # 在仅装 SimSun 的机器上方块
 
 **规则 E3**：硬编码的外部仓库 URL（如 gitee 模板）**必须**提供 fallback：本地已有 > 显式参数 > 网络下载。网络不可达时**必须**优雅报错。
 
-**规则 E4**：硬编码的绝对路径（如 `/home/dc/projects/...`）**绝对禁止**。本次审查发现 d2-paper 硬编码 `/home/dc/projects/D2/d2-paper-toolkit/`——不可移植。
+**规则 E4**：硬编码的绝对路径（如 `/home/dc/projects/...`）**绝对禁止**。曾发现某 SKILL 硬编码本地工具包绝对路径——不可移植。
 
 ### 5.3 依赖说明
 
@@ -267,12 +267,9 @@ grep -l "<你的触发词>" ~/.claude/skills/*/SKILL.md
 | 陷阱 | 教训 | 规则 |
 |------|------|------|
 | 误判依赖未使用 | cryptography 被认为全仓库无 import，实际被 ssh_key.py 使用 | A3: 删除前 grep 全仓库 |
-| 触发词过宽 | d2-paper 40+ 触发词与 5 个专用 skill 冲突 | B4-B6: 检查冲突 + 优先级规则 |
 | 文档与代码脱节 | 5 个 diagram SKILL.md 声明错误路径，代码正确 | F4: 改代码同步改文档 |
 | 死代码累积 | 5 个 skill 查找从未创建的 fonts/ 目录 | D4: 禁止保留死代码 |
 | 重复实现 | 5 个 skill 各有一份 80% 相同的函数 | D5: 提取共享模块 |
-| 硬编码字体 | diagram-architecture 硬编码 Noto Sans CJK SC | E1: 字体回退链 |
-| 硬编码路径 | d2-paper 硬编码 /home/dc/projects/... | E4: 禁止绝对路径 |
 | 参数语义不一致 | 4 个 diagram skill 的 --downsample 默认值/参数名各不同 | F1: BREAKING 评估 |
 | 测试缺失 | word-extractor 和 paper-reader 零测试 | D1: 必须有测试 |
 
