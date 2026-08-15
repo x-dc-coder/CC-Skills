@@ -37,6 +37,41 @@ PREVIEW_MAX_NEW_FILE_LINES = 80
 
 # ── diff / file preview ────────────────────────────────────────────────
 
+def _file_structure_summary(path: Path, relative_path: str) -> str:
+    """超大 untracked 文件的结构摘要：不读全文，只提取骨架（def/class/标题/统计）。
+
+    解决 diff_excerpt 对 >32KB 新文件整段省略、子代理无内容可分析的问题。
+    """
+    total = 0
+    defs: list[str] = []
+    heads: list[str] = []
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                total += 1
+                if total > 4000:
+                    break
+                s = line.strip()
+                if s.startswith(("def ", "async def ", "class ")):
+                    defs.append(s[:100])
+                elif s.startswith("#") and total <= 60:
+                    heads.append(s[:100])
+    except Exception:
+        pass
+    lines = [
+        f"### untracked file: {relative_path}",
+        f"preview omitted (file > {PREVIEW_MAX_NEW_FILE_BYTES} bytes); structural summary:",
+        f"size={path.stat().st_size} bytes, lines_scanned={total}",
+    ]
+    if defs:
+        lines.append("defs/classes (first 40):")
+        lines += [f"  {d}" for d in defs[:40]]
+    if heads:
+        lines.append("headings (first 20):")
+        lines += [f"  {h}" for h in heads[:20]]
+    return "\n".join(lines)
+
+
 def preview_new_file(project: Path, relative_path: str) -> str:
     path = project / relative_path
     lower_rel = relative_path.replace(chr(92), "/").lower()
@@ -45,7 +80,7 @@ def preview_new_file(project: Path, relative_path: str) -> str:
     if not path.exists():
         return f"### missing path: {relative_path}"
     if path.stat().st_size > PREVIEW_MAX_NEW_FILE_BYTES:
-        return f"### untracked file: {relative_path}\npreview omitted because the file is larger than {PREVIEW_MAX_NEW_FILE_BYTES} bytes"
+        return _file_structure_summary(path, relative_path)
     if not file_is_text(path):
         return f"### untracked file: {relative_path}\npreview omitted because the file looks binary"
     diff = run(

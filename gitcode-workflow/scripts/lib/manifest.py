@@ -199,3 +199,81 @@ def commit_and_push(
         "staged_targets": staged_targets,
         "review_manifest_cleared": True,
     }
+
+
+def commit_and_push_batches(
+    project: Path,
+    remote_name: str,
+    batches: List[Dict[str, Any]],
+    review_manifest: Dict[str, Any],
+    manifest_path: Path,
+) -> Dict[str, Any]:
+    """多批次提交并推送：逐批 `git add <files>` + `git commit`，全部完成后一次 push。
+
+    batches: [{"files": [...], "message": "..."}, ...]
+
+    校验：
+    - 每批 message 通过 validate_commit_message
+    - 各批 files 并集必须恰好等于 manifest 文件集（防漏提交/多提交）
+    - 任一批失败即中止（已提交批次保留，不自动回滚——由用户按错误信息处理）
+    """
+    from .preview import validate_commit_message
+
+    if not batches:
+        raise BootstrapError("--batches 文件为空或缺少 batches 数组")
+
+    manifest_files = {f["path"] for f in (review_manifest.get("files") or [])}
+    batch_files = set()
+    for b in batches:
+        files = b.get("files") or []
+        message = b.get("message") or ""
+        if not files or not message.strip():
+            raise BootstrapError("每批必须同时提供 files（非空）与 message（非空）")
+        validation = validate_commit_message(message)
+        if not validation["valid"]:
+            raise BootstrapError(
+                f"invalid commit message {message!r}: " + "; ".join(validation["issues"])
+            )
+        batch_files.update(files)
+    if batch_files != manifest_files:
+        missing = sorted(manifest_files - batch_files)
+        extra = sorted(batch_files - manifest_files)
+        raise BootstrapError(
+            "batches 文件集与 review manifest 不一致"
+            + (f"；漏提交: {missing}" if missing else "")
+            + (f"；多余: {extra}" if extra else "")
+        )
+
+    batch_results = []
+    for i, b in enumerate(batches, 1):
+        files = b["files"]
+        message = b["message"].strip()
+        run(["git", "add", "--", *files], cwd=project, check=True)
+        lines = message.splitlines()
+        cmd = ["git", "commit"]
+        for line in lines:
+            cmd.extend(["-m", line])
+        run(cmd, cwd=project, check=True)
+        commit_hash = run(
+            ["git", "rev-parse", "HEAD"], cwd=project, check=True
+        ).stdout.strip()
+        batch_results.append({
+            "batch": i,
+            "files": files,
+            "message": lines[0],
+            "commit_hash": commit_hash,
+        })
+        log_info(f"batch {i}/{len(batches)} committed: {lines[0]}")
+
+    branch = repo_current_branch(project)
+    run(["git", "push", "-u", remote_name, branch], cwd=project, check=True)
+    clear_review_manifest(manifest_path)
+    return {
+        "committed": True,
+        "pushed": True,
+        "branch": branch,
+        "batches": batch_results,
+        "review_manifest_path": str(manifest_path),
+        "review_snapshot_hash": review_manifest.get("snapshot_hash"),
+        "review_manifest_cleared": True,
+    }

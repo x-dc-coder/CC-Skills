@@ -44,6 +44,17 @@ description: Bootstrap git for local projects on WSL or Linux, apply repo-local 
 uv run --project ~/.claude/skills python ~/.claude/skills/gitcode-workflow/scripts/<script>.py ...
 ```
 
+## 输出规范（脚本 --json 模式）
+
+- **stdout 是纯 JSON**，日志/进度走 stderr —— 读取结果时**勿用 `2>&1` 混流**（会把
+  `[gitcode-workflow][...]` 日志混进 JSON）。
+- 长输出会截断：重定向到文件后分段读：
+  ```bash
+  uv run --project ~/.claude/skills python ~/.claude/skills/gitcode-workflow/scripts/gitcode_bootstrap.py preview --project . --json > /tmp/gw_preview.json 2>/tmp/gw_preview.err
+  ```
+  再按需读取 `/tmp/gw_preview.json`（安全扫描在 `safety_scan` 字段，候选输入在
+  `diff_excerpt` / `files_by_kind` / `type_hints` / `scope_hints`）。
+
 ## Decide the mode first
 
 1. 判断用户意图：
@@ -119,7 +130,9 @@ uv run --project ~/.claude/skills python ~/.claude/skills/gitcode-workflow/scrip
    - **单批次**（files ≤ 6）：spawn **1 个子代理**，生成 3 个候选
    - **多批次**（files > 6 或多种改动类型混合）：先按逻辑关系分组（如核心代码/工具链/文档），每组 spawn **1 个子代理**，每组生成 2-3 个候选
 3. 子代理模型：**deepseek-v4-flash**（快速、低成本）
-4. 子代理必须使用 Structured Output 返回 JSON
+4. **子代理必须先把候选 JSON 落盘、再在回复中重述**（防主代理中断/通知丢失）：
+   - 落盘路径：`.git/gitcode-workflow-candidates/<batch>.json`（纯 JSON，无代码块包裹）
+   - 主代理从文件读取候选，不以子代理回复文本为唯一来源
 5. 候选展示后由开发者审查确认，再决定采用或调整
 
 **候选信息结构**（3 条精简候选，开发者选其一或自行修改）：
@@ -143,6 +156,13 @@ uv run --project ~/.claude/skills python ~/.claude/skills/gitcode-workflow/scrip
 
 Diff 内容：
 {diff_excerpt}
+
+注意：
+- 若某个文件标注 "preview omitted because the file is larger than ..."，用
+  `git diff HEAD -- <file>`（已跟踪文件）或读取文件的结构摘要（untracked）补充分析，
+  不要猜测其内容。
+- 完成分析后，先把候选 JSON **原样写入** .git/gitcode-workflow-candidates/<batch>.json
+  （纯 JSON 文件，无 markdown 代码块、无前后缀文本），再在回复中重述同一 JSON。
 
 返回 JSON，candidates 数组固定 3 个元素。
 ```
@@ -171,6 +191,11 @@ Diff 内容：
 }
 ```
 
+**候选 JSON 容错解析**（子代理回复可能带前后缀文本）：
+1. 优先读落盘文件 `.git/gitcode-workflow-candidates/<batch>.json`（文件应为纯 JSON）
+2. 若读回复文本：剥离 markdown 代码块（```json ... ```），取首个 `{` 到末个 `}` 之间的子串再 `json.loads`
+3. 解析失败（`JSONDecodeError`）：把原文发给子代理要求"仅重述 JSON，无其他文本"
+
 ### 预览后的流程
 
 1. 展示分组后的待提交文件列表 + 安全扫描结果
@@ -178,6 +203,20 @@ Diff 内容：
 3. 多批次时：先展示分批方案和各批候选，等待用户逐批确认
 4. 用户确认最终消息后，记录 review manifest 路径和 snapshot hash
 5. **不要**在用户确认前执行 publish
+
+### review manifest 结构（.git/gitcode-workflow-review.json）
+
+| key | 类型 | 说明 |
+|---|---|---|
+| `version` | int | manifest 版本 |
+| `project_path` | str | 项目路径 |
+| `created_at` | str | 生成时间（ISO） |
+| `head_commit` | str | 生成时的 HEAD 提交 |
+| `status_lines` | list[str] | `git status --short` 原文行 |
+| `counts` | dict | 各状态文件计数 |
+| `files` | list[dict] | 逐文件详情（path/kind/status/raw） |
+| `stage_targets` | list[dict] | 建议的提交分组（含候选提示） |
+| `snapshot_hash` | str | 工作区快照哈希（**worktree 一致性校验**：publish 前重新计算比对，不一致须重跑 preview） |
 
 ---
 
@@ -191,11 +230,27 @@ uv run --project ~/.claude/skills python ~/.claude/skills/gitcode-workflow/scrip
 
 **单批次**：加载 review manifest → 验证 worktree 未变 → 安全扫描 → stage 文件 → commit → push → 清除 manifest
 
-**多批次**：不用 publish 脚本。手动逐批 `git add <files>` + `git commit -m "<msg>"`，全部完成后一次 `git push`。
+**多批次**：优先用 publish 的 `--batches <json>`（每批 `{files, message}`，脚本统一做
+manifest 校验 → snapshot 比对 → 安全扫描 → 逐批 commit → 一次 push）；脚本不可用时
+才手动逐批 `git add <files>` + `git commit -m "<msg>"`，全部完成后一次 `git push`。
 
 如果 worktree 在 preview 后发生了变化，必须重新运行 preview。
 
+**push 完成判定（9p 挂载已知噪音）**：`/mnt/e` 等 9p 挂载下 push 可能伴随
+`error: chmod on .../.git/config.lock failed: Operation not permitted` —— 只要输出含
+`To gitcode.com:...` 与 `master -> master`（或对应分支）即为成功；该警告无害，可顺带
+检查 `.git/config.lock` 无残留即可。
+
 ---
+
+## 中断恢复 SOP（主代理中断 / 子代理通知丢失）
+
+1. `list_agents`（scope: descendants）查看子代理状态：`ready` = 结果已产出可恢复
+2. 读候选落盘文件 `.git/gitcode-workflow-candidates/*.json` —— 有文件则直接取结果
+3. 无落盘文件时 `send_message` 让子代理"原样重述最终 JSON，不要重新分析"
+4. 子代理上下文也未留存（回复称无法重述）→ 按 review manifest 的 `files` / `stage_targets`
+   重新 spawn 子代理（输入用 manifest 中记录的 diff 信息）
+5. 恢复完成后校验 `snapshot_hash` 是否仍与工作区一致，再进入候选确认流程
 
 ## SSH 发布前检查
 

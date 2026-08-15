@@ -158,7 +158,13 @@ def build_parser() -> argparse.ArgumentParser:
     publish.add_argument("--description", default=None)
     publish.add_argument("--private", dest="private", action="store_true", default=True)
     publish.add_argument("--public", dest="private", action="store_false")
-    publish.add_argument("--commit-message", required=True)
+    publish.add_argument("--commit-message", default=None,
+                        help="单批次提交信息（与 --batches 二选一）")
+    publish.add_argument(
+        "--batches", default=None,
+        help="多批次 JSON 文件路径：[{\"files\": [...], \"message\": \"...\"}, ...]；"
+             "脚本统一做 manifest 校验/snapshot 比对/安全扫描后逐批提交，一次 push",
+    )
 
     # ── profile ──────────────────────────────────────────────────────
     profile_parser = subparsers.add_parser("profile", parents=[parent])
@@ -246,6 +252,10 @@ def emit(result: Dict[str, Any], as_json: bool) -> None:
     if result.get("publish"):
         pub = result["publish"]
         print(f"publish: committed={pub.get('committed')} pushed={pub.get('pushed')}")
+        if pub.get("batches"):
+            for b in pub["batches"]:
+                print(f"  batch {b['batch']}: {b['message']} -> {b['commit_hash'][:8]} "
+                      f"({len(b['files'])} files)")
     if result.get("docs_sync"):
         ds = result["docs_sync"]
         print(f"docs_sync: {ds.get('status')}")
@@ -511,13 +521,35 @@ def main() -> int:
                 args.repo_name, args.description,
                 bool(args.private), args.remote_name,
             )
-            result["publish"] = commit_and_push(
-                project.resolve(),
-                result["remote"]["remote_name"],
-                args.commit_message,
-                manifest_state["stored"],
-                Path(manifest_state["path"]),
-            )
+            if args.batches:
+                batches_path = Path(args.batches).expanduser().resolve()
+                if not batches_path.is_file():
+                    raise BootstrapError(f"--batches 文件不存在: {batches_path}")
+                with batches_path.open("r", encoding="utf-8") as fh:
+                    try:
+                        batches = json.load(fh)
+                    except json.JSONDecodeError as e:
+                        raise BootstrapError(f"--batches JSON 解析失败: {e}") from e
+                if isinstance(batches, dict):
+                    batches = batches.get("batches")
+                from lib.manifest import commit_and_push_batches
+                result["publish"] = commit_and_push_batches(
+                    project.resolve(),
+                    result["remote"]["remote_name"],
+                    batches,
+                    manifest_state["stored"],
+                    Path(manifest_state["path"]),
+                )
+            else:
+                if not args.commit_message:
+                    raise BootstrapError("publish 需要 --commit-message 或 --batches 之一")
+                result["publish"] = commit_and_push(
+                    project.resolve(),
+                    result["remote"]["remote_name"],
+                    args.commit_message,
+                    manifest_state["stored"],
+                    Path(manifest_state["path"]),
+                )
             # ── optional auto docs-sync after publish ──────────────────
             docs_config = config.get("docs_sync", {})
             if (
