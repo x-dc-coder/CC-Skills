@@ -1,4 +1,4 @@
-"""test_manifest_rename.py — 修复 gitcode-workflow publish 对 rename 的处理 bug.
+"""test_manifest_rename.py — 修复 github-workflow publish 对 rename 的处理 bug.
 
 Bug 复现：
   当工作区有 rename（git mv）时，build_review_manifest 把 old_path（源路径，
@@ -23,8 +23,8 @@ from pathlib import Path
 
 import pytest
 
-# 让测试能 import gitcode-workflow 的 lib 模块
-SKILL_ROOT = Path.home() / ".claude" / "skills" / "gitcode-workflow" / "scripts"
+# 让测试能 import github-workflow 的 lib 模块
+SKILL_ROOT = Path.home() / ".claude" / "skills" / "github-workflow" / "scripts"
 sys.path.insert(0, str(SKILL_ROOT))
 from lib.manifest import build_review_manifest  # noqa: E402
 from lib.common import run  # noqa: E402

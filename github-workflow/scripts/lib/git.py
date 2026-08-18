@@ -39,8 +39,8 @@ LOCAL_EXCLUDE_PATTERNS = [
     "application-prod.properties",
     "secrets*.json", "credentials*.json", "service-account*.json",
 ]
-IGNORE_BLOCK_HEADER = "# gitcode-workflow shared ignore rules"
-EXCLUDE_BLOCK_HEADER = "# gitcode-workflow local-only exclude rules"
+IGNORE_BLOCK_HEADER = "# github-workflow shared ignore rules"
+EXCLUDE_BLOCK_HEADER = "# github-workflow local-only exclude rules"
 
 
 def ensure_git_available() -> None:
@@ -110,12 +110,7 @@ def configure_remote(project: Path, desired_name: str, url: str) -> Dict[str, An
         if current_url == url:
             action = "unchanged"
         else:
-            fallback = (
-                "gitcode"
-                if remote_name != "gitcode" and "gitcode" not in existing_names
-                else f"{remote_name}-alt"
-            )
-            remote_name = fallback
+            remote_name = f"{remote_name}-alt"
             run(["git", "remote", "add", remote_name, url], cwd=project, check=True)
             action = "added_fallback"
     else:

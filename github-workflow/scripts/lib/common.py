@@ -1,4 +1,4 @@
-"""Shared utilities, constants, and base exception for gitcode-workflow scripts."""
+"""Shared utilities, constants, and base exception for github-workflow scripts."""
 from __future__ import annotations
 
 import hashlib
@@ -31,7 +31,7 @@ VALID_COMMIT_TYPES = {"feat", "fix", "docs", "style", "refactor", "perf", "test"
 COMMIT_MESSAGE_RE = re.compile(
     r"^(feat|fix|docs|style|refactor|perf|test|chore|revert)(\([^)]+\))?: (.+)$"
 )
-REVIEW_MANIFEST_FILENAME = "gitcode-workflow-review.json"
+REVIEW_MANIFEST_FILENAME = "github-workflow-review.json"
 
 
 class BootstrapError(RuntimeError):
@@ -124,7 +124,7 @@ def sha256_file(path: Path) -> Optional[str]:
 
 def log_info(message: str) -> None:
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[gitcode-workflow][{timestamp}] {message}", file=sys.stderr)
+    print(f"[github-workflow][{timestamp}] {message}", file=sys.stderr)
 
 
 def ensure_tool(name: str, error_message: Optional[str] = None) -> None:

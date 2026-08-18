@@ -149,6 +149,22 @@ def clear_review_manifest(path: Path) -> None:
         return
 
 
+def _push_with_fallback(project: Path, remote_name: str, branch: str) -> bool:
+    """推送当前分支；9p/drvfs 挂载下 `git push -u` 写 upstream 配置会因 chmod EPERM
+    失败，自动降级为不带 -u 的普通 push（内容已推送成功，仅上游跟踪未设置）。"""
+    res = run(["git", "push", "-u", remote_name, branch], cwd=project, check=False)
+    if res.returncode == 0:
+        return True
+    res2 = run(["git", "push", remote_name, branch], cwd=project, check=False)
+    if res2.returncode != 0:
+        raise BootstrapError(
+            f"git push 失败: {res.stderr.strip()}\n"
+            f"(fallback push 也失败: {res2.stderr.strip()})"
+        )
+    log_info("push 成功；但 -u 上游跟踪写入失败（9p 挂载 config 写锁受限），已降级为普通 push")
+    return False
+
+
 def commit_and_push(
     project: Path,
     remote_name: str,
@@ -183,7 +199,7 @@ def commit_and_push(
             cmd.extend(["-m", line])
         run(cmd, cwd=project, check=True)
     branch = repo_current_branch(project)
-    run(["git", "push", "-u", remote_name, branch], cwd=project, check=True)
+    _push_with_fallback(project, remote_name, branch)
     commit_hash = run(
         ["git", "rev-parse", "HEAD"], cwd=project, check=True
     ).stdout.strip()
@@ -266,7 +282,7 @@ def commit_and_push_batches(
         log_info(f"batch {i}/{len(batches)} committed: {lines[0]}")
 
     branch = repo_current_branch(project)
-    run(["git", "push", "-u", remote_name, branch], cwd=project, check=True)
+    _push_with_fallback(project, remote_name, branch)
     clear_review_manifest(manifest_path)
     return {
         "committed": True,
