@@ -75,6 +75,7 @@ import os
 import select
 import subprocess
 import threading
+import warnings
 import time
 import uuid
 from collections.abc import Generator
@@ -105,6 +106,44 @@ def _resolve_wsl_py_exe(py_exe: str) -> str:
         return "/mnt/" + drive + py_exe[2:].replace("\\", "/")
     return py_exe
 
+
+
+def _ensure_pythonw(py_exe: str, strict: bool = True) -> str:
+    """【强制规则-HEADLESS】确保用 pythonw.exe（GUI 子系统，永不弹窗）执行 Windows Python。
+
+    规则：
+      1. 拒绝裸名（python / pythonw）：必须绝对路径，防 WSL interop 走 PATH 命中 D:\Python311 等缺包环境。
+      2. python.exe → 自动探测同目录 pythonw.exe 替换并警告（python.exe 是控制台子系统，必弹 conhost）。
+      3. 找不到 pythonw 且 strict=True → 抛 ValueError（禁止弹窗执行）。
+      4. 其他自定义解释器名：strict=True 时报错，强制显式用 pythonw.exe。
+
+    返回替换后的 pythonw.exe 绝对路径（Windows 驱动器格式，供外部编排）。
+    """
+    if not py_exe or (os.sep not in py_exe and '/' not in py_exe and chr(92) not in py_exe):
+        raise ValueError(f'HEADLESS: py_exe 必须是绝对路径，收到裸名 {py_exe!r}（会命中可疑 PATH）')
+    norm = py_exe.replace(chr(92), '/')
+    base, name = os.path.split(norm)
+    lname = name.lower()
+    if lname == 'pythonw.exe':
+        return py_exe
+    if lname == 'python.exe':
+        cand_win = (base + '/pythonw.exe').replace('/', chr(92)) if base else ''
+        cand_wsl = _resolve_wsl_py_exe(cand_win) if cand_win else ''
+        if cand_wsl and os.path.exists(cand_wsl):
+            warnings.warn(f'HEADLESS: {py_exe} 会弹窗（控制台子系统），自动改用同目录 {cand_win}', stacklevel=2)
+            return cand_win
+        if strict:
+            raise ValueError(f'HEADLESS: {py_exe}（python.exe）会弹窗，且同目录无 pythonw.exe 可替换')
+        warnings.warn(f'HEADLESS: 使用 python.exe {py_exe} 会弹窗（strict=False 放行）', stacklevel=2)
+        return py_exe
+    if strict:
+        raise ValueError(f'HEADLESS: 未知解释器名 {name!r}，必须显式指向 pythonw.exe（严禁 python.exe 弹窗执行）')
+    return py_exe
+
+def _headless_cmd(py_exe: str, code: str, args: list[str] | None = None) -> list[str]:
+    """构建无弹窗命令：pythonw.exe + UTF-8 三层防护；不经 cmd.exe/capture 管道。"""
+    wsl_exe = _resolve_wsl_py_exe(py_exe)  # E:\... → /mnt/e/... 供 WSL subprocess 执行
+    return [wsl_exe, '-u', '-X', 'utf8', '-c', code] + list(args or [])
 
 # --------------------------------------------------------------------------- #
 # 数据结构
@@ -276,8 +315,9 @@ def run_gpu_windows(
     timeout: int = 1800,
     cwd: str = "/mnt/e/temp",
     capture: bool = True,
+    headless: bool = True,
 ) -> subprocess.CompletedProcess:
-    """通过 cmd.exe /c 启动 Windows 侧 GPU Python 子进程，带资源配额.
+    """以无窗口方式启动 Windows 侧 GPU Python 子进程（强制 pythonw.exe，HEADLESS），带资源配额.
 
     Parameters
     ----------
@@ -303,7 +343,10 @@ def run_gpu_windows(
     subprocess.CompletedProcess
     """
     limits = limits or GpuLimits()
-    cmd = ["cmd.exe", "/c", py_exe, "-c", code] + (args or [])
+    # 强制无弹窗：校验/替换为 pythonw.exe（HEADLESS 铁律），且不经 cmd.exe 中转，
+    # 避免 conhost 窗口弹出。python.exe（控制台子系统）在 strict 模式下会被拒绝/自动替换。
+    py_exe = _ensure_pythonw(py_exe, strict=headless)
+    cmd = _headless_cmd(py_exe, code, args)
     env = build_gpu_env(limits)
     return subprocess.run(
         cmd,

@@ -28,6 +28,31 @@ This skill documents **three channels** ranked by speed and simplicity:
 
 **核心原则：pythonw 优先于 cmd，能 cmd 不用 ps，能直调不套壳。**
 
+### ⚠️ 无弹窗强制规则（HEADLESS，代码级强制 → `scripts/gpu_safe_subprocess.py::_ensure_pythonw`）
+
+1. **全程 pythonw.exe**：任何 Windows Python 子进程必须用 `pythonw.exe`（GUI 子系统，**永不弹窗**）。严禁直接用 `python.exe`（控制台子系统，**必弹 conhost**）——即使输出已重定向。
+2. **拒绝裸名**：`py_exe` 必须绝对路径，禁止 `pythonw`/`python` 裸名（WSL interop 会命中 `D:\Python311` 等缺包环境）。
+3. **自动替换**：误传 `python.exe` 时，`_ensure_pythonw` 自动替换为同目录 `pythonw.exe` 并告警；同目录无 pythonw 或传未知解释器 → 抛 `ValueError`（strict 模式）。
+4. **不经 cmd.exe 中转**：`run_gpu_windows` 已改为 pythonw 直调（`_headless_cmd`），杜绝 conhost 弹窗；`cmd.exe /c` 仅限需 shell 重定向的显式 fallback（**会弹窗**）。
+5. **回归测试**：改脚本后必跑 `python3 scripts/test_headless.py`（17 项：强制规则 + 现有能力回归，须 0 FAIL）。
+6. **worker 内绑定 stdio**：pythonw 下 `sys.stdout=None`（print 抛异常且 traceback 丢失），worker 开头必须 `sys.stdout = sys.stderr = open(日志, 'a', encoding='utf-8', buffering=1)`（日志用 **Windows 路径**）。
+7. **高精度求解器禁日志**：HiGHS 等 C 库写 fd 1 在 pythonw 下可能阻塞 → 求解器 options 设 `output_flag=False` 等关闭日志。
+
+### 🪟 窗口机制与闪屏抑制（2026-08-18 实证）
+
+**底层事实（本机实证 + CREATE_NEW_CONSOLE 实验验证）**：
+- WSL interop（wslhost）**默认以 headless 方式启动控制台程序**：会创建 conhost 进程，但 `MainWindowHandle=0`、不渲染任何窗口。
+- 因此 `python.exe`、`tasklist.exe`、`cmd.exe` 等通过 DSH/WSL 后台 run_code 直调时**不会显示窗口**——这属于"碰巧看不见"，**不代表没有控制台副作用**（stdio 句柄、C 库写 fd1 等异常依然存在）。
+- **CREATE_NEW_CONSOLE (0x10)**：强制分配可见控制台窗口（本实验已验证可弹窗）。仅当你确实需要一个可见窗口时显式使用。
+- **CREATE_NO_WINDOW (0x08000000)**：对**新控制的控制台程序**抑制窗口创建（对 pythonw/GUI 程序无效，且经 wslhost 时行为不稳定——曾被观察到 worker 卡滞，谨慎使用）。
+
+**"实验期间弹窗/闪屏"的真相**：你观察到的"窗口一闪即关"，几乎全部来自**高频调用的控制台工具**（`tasklist` / `taskkill` / `powershell` / `cmd` / `wmic`）——每次 WSL interop 调用都会临时创建 conhost，命令结束即销毁 → 表现为一闪而过的黑框。只要 wslhost 处于可见渲染上下文就会闪。
+
+**闪屏抑制规范**：
+1. **大批量进程查询/清理时集中化**：避免在循环里逐条调 `taskkill`/`tasklist`（每调一次就闪一次）。改为：单次 PowerShell `Get-CimInstance Win32_Process` 批量过滤 + 按 PID 一次 `Stop-Process`；或用一个常驻 pythonw 代理做查询/清理。
+2. 需要确定"当前是否可见"：查 conhost 的 `MainWindowHandle`（`Get-Process conhost | Select MainWindowHandle`）——0 = headless 不可见。
+3. 判断会话/桌面：`qwinsta | iconv -f GBK` 看会话状态（Active/运行中/断开）+ `[System.Windows.Forms.SystemInformation]::UserInteractive` 确认是否交互会话。
+
 ## Channel C: pythonw.exe / cmd.exe — GPU & Python（⭐ 首选）
 
 ### ⭐ 首选：pythonw.exe 直调（无弹窗）
@@ -129,6 +154,19 @@ nvidia-smi                                        # 查看 GPU
 taskkill.exe /F /PID $(cat /mnt/e/temp/pid.txt)  # 终止
 tail -f /mnt/e/temp/train.log                     # 日志
 ```
+### 实验编排与批处理（多任务/并发/断点续跑，2026-08-18 实战沉淀）
+
+多算例/多任务并发的正确姿势（供批量实验、训练复现参考）：
+
+1. **batch worker 内部循环**（推荐）：每算例一进程的调度器常见坑——WSL 侧 `kill -0 $pid` 检测不到 Windows worker 完成、orchestrator 子进程被 run_code abort 连带杀、pkill 匹配自身自杀。**更稳**：单个 worker 进程内 `for inst in instances: ...` 循环处理多个算例，结果 JSON 行逐条 append 到共享盘文件；用 `nohup bash launch.sh &`（内 `wait $P1 $P2 $P3`）启动 3-4 个 worker 并行。
+2. **worker 内显式绑定 stdio**（必做）：pythonw 下 `sys.stdout=None`，`print()` 抛异常且 traceback 丢失（表现为"卡住"）。worker 开头：`sys.stdout = sys.stderr = open(log_path, 'a', encoding='utf-8', buffering=1)`（log_path 用 **Windows 路径**）。
+3. **C 库/求解器禁日志**：HiGHS 等写 fd1 在 pythonw+无重定向下可能阻塞 → `milp options={..., "output_flag": False}`。
+4. **MIP 返回防护**：`res.x` 可能为 None（HiGHS status 2/3/4，如无可行解）→ 必须 `if res.status in (0,1) and res.x is not None` 再解析，否则 worker 崩溃、数据静默丢失。
+5. **内存/CPU**：WSL 13GB / Windows 34GB——大变量 MIP 先看进程内存再并行；多 worker 并发会比串行慢（先采样 CPU 增长判断'慢'还是'卡'，不要急着 kill）。
+6. **断点续跑**：结果文件写 done 清单（`scenario` 一行），重启时跳过已完成，天然续跑。
+7. **Python 版本兼容**：Windows venv 常用 3.11，`f"{{row["k"]}}"` 嵌套同引号会 SyntaxError（3.12+ 才允许）→ 统一用单引号 `row['k']`。
+8. **单实例**：常驻调度进程必须单实例（`pgrep -f <脚本> | grep -v $$` 精确匹配并排除自身再 kill）。
+
 ### 实时输出与进度条（⭐ 长任务必读）
 
 WSL interop 使用匿名管道（非 PTY）通信，训练脚本输出经常"卡住"：tqdm 检测到 stdout 非 TTY 后自动静默，`\r` 进度条在 pipe 中被缓冲。本节提供四种模式解决实时输出问题。
@@ -255,6 +293,7 @@ launch_detached(
    - 找到 0 个 → **AI 自动创建 venv**（见下方"Windows 侧 venv 管理"章节），无需用户手动操作
    - 用户也可直接指定路径（如"E:\projects\myproj\.venv"），AI 直接用
    - ⚠️ **禁止用裸名 `pythonw.exe`**：WSL interop 会按 Windows PATH 命中 `D:\Python311`（未装 torch）或 `D:\Anconda`（conda），导致缺包或环境混乱。**必须用 uv venv 的绝对路径。**
+   - ✅ **强制 pythonw.exe**：必须用 `pythonw.exe`；严禁 `python.exe`（控制台子系统必弹窗）。若只找到 python.exe，`run_gpu_windows`/`_ensure_pythonw` 会自动替换同目录 pythonw.exe（HEADLESS 铁律，见上），替换失败则报错。
    - ⚠️ **禁止用 conda**：此 SKILL 一律用 uv 管理 venv。conda 的 27 个环境（`D:\Anconda\envs\`）是旧项目用的，不参与 GPU 训练。需要创建新环境时用 `uv.exe venv`（见下方"Windows 侧 venv 管理"章节）。
 2. **训练代码**：脚本内容或脚本路径
 
@@ -1463,6 +1502,14 @@ powershell.exe -Command "
 | `COM initialization failed` | COM not available in context | Ensure Windows-side process can access COM |
 | Command appears to hang | Process waiting for input | Use `-NoNewWindow` and redirect stdin |
 | `base64: invalid input` | EncodedCommand requires UTF-16LE | Always pipe through `iconv -t UTF-16LE` first |
+| pythonw 下 print 无输出/进程看似卡住 | sys.stdout=None → print 抛异常且 traceback 丢失 | worker 开头显式 sys.stdout=sys.stderr=open(日志,"a",encoding="utf-8",buffering=1)（Windows 路径） |
+| 求解器（HiGHS 等）在 pythonw 下阻塞 | C 库写 fd1 遇无效/无重定向句柄 | 设 output_flag=False / log_search=False；Popen 重定向 stdout |
+| 从 bash 传 Linux 路径给 Windows 进程（FileNotFoundError） | /mnt/e/... 不是 Windows 路径 | 用 wslpath -w 转 E:\\... |
+| Windows venv py3.11 SyntaxError: f-string unmatched | f-string 嵌套同引号 3.12 前非法 | 统一 '' 单引号 |
+| write/edit 工具在 /mnt/e 报 EPERM | NTFS 挂载 chmod 失败 | 改用 bash/python 读写文件 |
+| MIP res.x 为 None（status 2/3/4） | HiGHS 无可行解/错误 | if res.status in (0,1) and res.x is not None 再解析 |
+| WSL 侧 kill -0 检测不到 Windows worker 完成 | interop 包装进程未退出 | 改用 batch worker 内部循环 + done 清单续跑 |
+| pkill -f 脚本 误杀自身 | 命令行含匹配串 | pgrep -f ... 排除自身 |
 | `Cannot convert value to System.String` | PowerShell output type mismatch | Pipe through `Out-String` or `ConvertTo-Json` before capture |
 
 ### Debugging Strategy
@@ -1529,6 +1576,12 @@ powershell.exe -Command "
 - **用 JSON** 输出数据（`ConvertTo-Json`）便于 WSL 侧 `jq` 解析。
 - **GPU 规则**: 统一在 `/home/dc/CLAUDE.md` → "GPU 桥接" 章节。
 - **PyTorch env var**: `PYTORCH_CUDA_ALLOC_CONF` 只接受 `garbage_collection_threshold:0.7`、`max_split_size_mb:N` 等少数选项。`per_process_memory_fraction` 是 **Python API**（`torch.cuda.set_per_process_memory_fraction()`），不是 env var。
+- **无弹窗/HEADLESS**: 全程 pythonw.exe；`run_gpu_windows`/`launch_detached` 已内置强制校验。批量查进程/清理用集中式（一次 PowerShell/常驻代理），别循环调 tasklist/taskkill。
+- **跨边界路径**: bash/Python → Windows 进程必须 `wslpath -w`；Windows → WSL 用 `/mnt/<盘符>/`。worker 内日志/输入路径一律 Windows 格式。
+- **worker stdio**: pythonw 下显式 `sys.stdout=sys.stderr=open(日志,'a',encoding='utf-8',buffering=1)`，否则 print/traceback 静默丢失。
+- **求解器禁日志**: HiGHS/OR-Tools 等 C 库写 fd1 在 pythonw 下可能阻塞，设 `output_flag=False`/`log_search=False`。
+- **NTFS 挂载**: /mnt/e 下用 write/edit 原子替换工具会 EPERM(chmod 失败)——改用 bash/python 读写。
+- **MIP/求解器健壮性**: 解可能为 None/infeasible，必须防护后处理，防数据静默丢失。
 
 ---
 
