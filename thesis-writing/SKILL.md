@@ -1,29 +1,7 @@
 ---
 name: thesis-writing
 description: >
-  Dual-mode academic manuscript author. Generates structured Markdown drafts
-  with figure/table/equation placeholders wired to the diagram-* skill family,
-  and validates output against a Markdown spec checker.
-
-  Modes (auto-detected from user intent):
-  - undergraduate-thesis: writes a >=15000-word Web-system bachelor thesis
-    from project source code, following a fixed 6-chapter template
-    (绪论→需求→设计→实现→测试→结论) with use-case/ER/module/UI-shot figures.
-  - journal-paper: writes a domain-agnostic CS/engineering journal article by
-    reading a paper-analysis/ corpus (MinerU+Marker double-engine Markdown,
-    produced by the paper-reader skill), inducing the domain's section
-    skeleton, figure/table/equation placement conventions, and citation
-    style into a machine-readable profile, then drafting chapter-by-chapter
-    with framework/network/algorithm/result figures and benchmark tables.
-
-  Use this skill when the user: writes a thesis/paper draft, generates 论文/毕设
-  正文, drafts a journal manuscript from related-work PDFs, wants 期刊论文/会议
-  论文写作, says "写论文"/"draft the paper"/"generate the manuscript", or gives
-  a paper-analysis/ directory as input and asks for a draft based on it.
-
-  Do NOT use for: pure PDF→Markdown conversion (use paper-reader), figure
-  rendering (use diagram-* skills directly), LaTeX typesetting (use
-  md-to-thesis-latex), or reference-list reordering (use thesis-ref-check).
+  双模式学术论文写作助手：按用户意图自动选择本科毕设（≥15000 字、六章模板、Web 系统论文）或期刊论文模式，生成带图表/公式占位符的结构化 Markdown 草稿（对接 diagram-* 技能族），并经过 Markdown 规范检查器校验。当用户要求写论文、写毕设、生成论文草稿、整理期刊论文（write a thesis / draft a paper）时使用。
 ---
 
 # 学术论文正文撰写 Skill (Dual-Mode)

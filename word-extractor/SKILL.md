@@ -1,16 +1,7 @@
 ---
 name: word-extractor
 description: >
-  Extract all content from .docx Word documents with high accuracy, preserving
-  structure, images, tables, captions, and formatting. Use this skill whenever
-  the user wants to read, extract, analyze, or convert a Word document (.docx),
-  especially for academic papers, graduation theses, opening reports, or any
-  document containing headings, figures, and tables. Also use when the user
-  mentions "提取word", "读取docx", "分析论文", "word内容提取", or needs to
-  understand the full contents of a Word file for editing, correction, or review.
-  This skill goes beyond basic python-docx by deeply inspecting Word XML to
-  accurately map images and tables to their paragraph positions and associate
-  captions.
+  高精度提取 .docx Word 文档全部内容，保留结构、图片、表格与题注（基于 Word XML 深度解析，图片/表格与段落位置精确对应）。当用户需要读取、提取、分析或转换 Word 文档（论文、开题报告、含图表文档），或提到 提取word/读取docx/分析论文/word内容提取 时使用。
 ---
 
 # Word Document Extractor

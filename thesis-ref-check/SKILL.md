@@ -1,14 +1,7 @@
 ---
 name: thesis-ref-check
 description: >
-  论文术语一致性检查。仅做术语一致性检查：识别关键术语、检测前后变体（同一概念的不同写法）、
-  生成统一建议与修正报告。
-  引用编号检查由 thesis-writing checker 自动覆盖（check_markdown_spec.py 支持
-  REF_NUMBER_CONTINUITY / DUPLICATE / NOT_START_AT_ONE）。
-   触发关键词：术语统一、术语一致、术语检查、前后表述不一致、概念名称统一。
-   英语触发词：reference check, citation order, term consistency, reference renumbering.
-  适用于 Markdown 格式的学术论文，支持完整单文件或分章节多文件。
-  当论文字数超过 5 万字或文件大小超过 100KB 时，必须优先使用此 skill 而非直接处理。
+  论文术语一致性检查（仅术语）：识别关键术语、检测前后变体、生成统一建议与修正报告；引用编号检查由 thesis-writing 的 check_markdown_spec 自动覆盖。当用户要求术语统一/术语一致/术语检查/前后表述不一致检查（term consistency）时使用；论文超 5 万字或 100KB 时必须优先使用本技能。
 compatibility: >
   需要 Bash 工具执行文本分析脚本，需要 Read/Write 工具处理分块文件。
   仅支持 Markdown 格式输入，输出为 Markdown 格式。

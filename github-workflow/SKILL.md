@@ -1,6 +1,7 @@
 ---
 name: github-workflow
-description: GitHub-first git workflow skill built on the official gh CLI as an optimization/extension layer. Handles local git bootstrap (repo-local identity, master default branch, .gitignore + .git/info/exclude rules), pending-file preview with sensitive-file safety scanning, subagent-generated Conventional Commits message candidates, review manifest with worktree snapshot hash before publish, layered commit strategy for existing projects (adopt-existing-project), and GitHub remote creation via gh repo create --source. GitHub-side capabilities (auth, repos, issues, PRs, profile) all delegate to the official gh CLI; the skill only adds workflow optimization. Use whenever the user needs to initialize git, configure local repo identity, preview files before commit, generate commit message candidates, create a GitHub remote, publish after confirming the reviewed file set, manage GitHub issues/PRs, or fix contribution-graph problems. Replaces the retired gitcode-workflow skill.
+description: >
+  基于官方 gh CLI 的 GitHub-first git 工作流：本地仓库初始化（仓库级身份、master 默认分支、.gitignore）、提交前预览与敏感文件扫描、Conventional Commits 提交信息生成、review manifest 发布、gh repo create 建远程。当用户需要初始化 git、配置仓库身份、预览待提交文件、生成提交信息、创建 GitHub 远程或管理 issues/PR 时使用；替代已退役的 gitcode-workflow。
 ---
 
 # GitHub Git Workflow（基于 gh CLI）

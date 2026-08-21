@@ -1,6 +1,7 @@
 ---
 name: dataviz
-description: Data visualization design system — how to build charts, graphs, plots, dashboards, stat tiles, and any data visualization so they are correct, accessible, and elegant. Use this skill whenever you are about to create ANY chart, graph, plot, dashboard, or data visualization, in ANY output medium — an HTML or React artifact, inline SVG, plotting code in any library (matplotlib, plotly, d3, Recharts, …), an image/PNG you will render and upload, or a chart shared into Slack. Read it BEFORE writing the first line of chart code, choosing chart colors, building a stat tile / dashboard / KPI row, or laying out a dashboard. Produces visualizations that read as one system — elegant, accessible, consistent in light and dark — using a brand-neutral placeholder palette you swap for your own. Teaches a design-system-agnostic method: a form heuristic, a color formula with a runnable validator, mark specs, and interaction rules. A validated default palette is documented in `references/palette.md` — swap that file's values for your brand's. Triggers on: "chart", "graph", "plot", "data viz", "visualization", "dashboard", "analytics", "categorical colors", "sequential / diverging palette", "stat tile", "sparkline", "heatmap", "legend", "axis", "tooltip", "chart colors", "color by series".
+description: >
+  数据可视化设计系统：如何构建正确、可访问、优雅的图表/图形/仪表盘/统计卡片，适用于任何输出媒介（HTML artifact、内联 SVG、matplotlib/plotly/d3/Recharts 绘图代码、PNG 等）。在写图表代码、选色、构建 stat tile / dashboard / KPI 行之前先读本技能；提供设计系统无关的方法（表单启发、颜色公式与验证器、标记规范、交互规则）。触发：chart/graph/plot/data viz/可视化/图表/仪表盘/配色。
 ---
 
 # Data Visualization

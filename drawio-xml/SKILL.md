@@ -1,15 +1,7 @@
 ---
 name: drawio-xml
-description: |
-  生成高质量 draw.io 原生 .drawio 图表文件（XML），通过 SKILL 质量规则 + 官方 MCP server 协同工作。当用户需要以下功能时触发：
-  - 生成 .drawio 文件、draw.io 图表、可编辑图表文件
-  - 用 AI 绘制 ER 图、UML 类图/时序图/用例图、流程图、泳道图、架构图并交付可编辑文件
-  - 在 draw.io / Next AI Draw.io 桌面端中打开继续编辑的图表
-  - 通过官方 MCP server（@next-ai-drawio/mcp-server）创建/编辑/导出图表
-  - 需要"生成即精修"、多轮迭代逼近需求的图表场景
-  - 上传图片/截图要求转成可编辑 draw.io 图表（图片复刻，vision + SKILL + MCP 三方协同）
-
-  输出 draw.io 原生 XML（.drawio 文件），遵循 7 条边路由规则与布局约束，MCP 结构校验 + 本地质检脚本双层把关。与 diagram-* 技能族（Mermaid 渲染 PNG）互补：本技能产出可编辑原生文件。
+description: >
+  生成高质量 draw.io 原生 .drawio 图表文件（XML）：SKILL 质量规则 + 官方 MCP server 协同，支持 ER/类图/时序/用例/流程图、泳道图、架构图，交付可继续编辑的文件，也支持截图复刻为可编辑图表。当用户需要 .drawio 文件、可编辑图表或图片转 drawio 时使用；与 diagram-*（Mermaid 渲染 PNG）互补。
 ---
 
 # draw.io 图表生成 Skill（SKILL + MCP 协同）

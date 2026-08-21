@@ -1,7 +1,7 @@
 ---
 name: kimi-webbridge
-description: |
-  Kimi WebBridge lets AI control the user's real browser — navigate, click, type, read, screenshot, and interact with any website using the user's actual login sessions. Use this skill whenever the user wants to interact with websites, automate browser tasks, scrape web content, or perform any action requiring a real browser. Also use when the user mentions "browser", "webpage", "open URL", "screenshot", or asks to read/interact with any website. Use even for simple-sounding browser requests — the daemon handles all complexity.
+description: >
+  Kimi WebBridge 控制用户真实浏览器：导航、点击、输入、读取、截图、与任意网站交互（使用真实登录态）。当用户需要操作网站、自动化浏览器任务、抓取网页内容，或提及 browser/webpage/open URL/screenshot 时使用；简单的浏览器请求也用它——守护进程处理全部复杂度。
 ---
 
 # Kimi WebBridge

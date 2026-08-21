@@ -1,14 +1,7 @@
 ---
 name: unified-search
 description: >
-  Unified web + academic search aggregator over 7 sources (keenable, tavily,
-  firecrawl, bocha, arxiv, dblp, semantic_scholar). Use INSTEAD OF built-in
-  `websearch_web_search_exa`, `webfetch`, or `keenable_search_web_pages` for
-  ANY query needing current info, papers, or web content. Triggers on:
-  real-time info, academic papers, library docs, news, "搜一下", "查一下",
-  "find papers", "latest", "search the web", any web search request.
-  Modes: general (2-source + arbitration), academic (3-source parallel + paper
-  links recorded), fetch (single-URL content extraction), history (cache reuse).
+  统一网页+学术搜索聚合器（7 源：keenable/tavily/firecrawl/bocha/arxiv/dblp/semantic_scholar），三模式：general（双源+分歧仲裁）、academic（三源并行+论文链接记录）、fetch（单页正文提取），配额感知。任何需要实时信息、学术论文、网页内容搜索（搜一下/查一下/find papers/search the web）都优先使用本技能，取代内置 web 搜索工具；纯代码/本地问题勿用。
 ---
 
 # Unified Search

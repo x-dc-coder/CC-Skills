@@ -1,14 +1,7 @@
 ---
 name: artifact-design
 description: >
-  前端页面设计首席指导（融合 Anthropic frontend-design 美学 + IBM Carbon 决策框架 + 社区反 AI 味工程实践）。
-  设计或重构任何页面/组件/界面/落地页/文档/仪表盘时使用；提供按需选用的多套设计哲学与前端方案，配最小 Demo/MVP。
-  触发词："设计页面"、"重新设计"、"redesign"、"优化界面"、"页面不好看"、"帮我看看设计"、"设计一个落地页"、
-  "做一个网页"、"landing page"、"前端设计"、"UI 方案"、"设计方案"、"这个页面不行"、"给我几个设计方向"、
-  "build a page"、"design an HTML page"、"make a dashboard"、"create an artifact"。
-  适用：(1) 从零构建界面 (2) 页面/组件重设计 (3) UI/UX 方案评审 (4) 多方向方案选择 (5) 最小 Demo/MVP 原型。
-  核心能力：按需选用哲学 + 推荐技术栈（不绑定）+ 反 AI 味 + 设计计划先行（token 系统 + Signature）+ Carbon 式决策框架
-  + 双主题 token + 自包含本地交付 + 设计系统库参考。
+  前端页面设计首席指导：融合 Anthropic frontend-design 美学 + IBM Carbon 决策框架 + 社区反 AI 味工程实践。设计或重构任何页面/组件/界面/落地页/文档/仪表盘时使用，提供多套设计哲学与方案并配最小 Demo/MVP。触发：设计页面、重新设计、redesign、优化界面、UI 方案、landing page、make a dashboard、create an artifact。
 ---
 
 # Artifact Design — 前端设计工作室
