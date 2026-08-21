@@ -78,6 +78,12 @@ grep -l "<你的触发词>" ~/.claude/skills/*/SKILL.md
 
 **规则 B7**：SKILL.md 主文档**应** ≤ 400 行。超过 400 行时**必须**将参考内容拆到 `references/` 子目录。曾发现某兜底 SKILL 主文档 911 行——已拆分为短主文档 + `references/` 子文档。
 
+**规则 B7a（行数门禁，2026-08-22 补充）**：提交前必须跑以下检查，任何 SKILL.md 超 400 行即阻塞提交：
+```bash
+cd ~/.claude/skills && find . -name SKILL.md -not -path "*/node_modules/*" -not -path "*/.venv/*" -not -path "./archive/*" -not -path "./.git/*" \
+  | xargs wc -l | awk '$1 > 400 && $2 != "total" {print "❌ 超限:", $2, "("$1"行)"; bad=1} END {if (!bad) print "✅ 全部 ≤400 行"}'
+```
+
 **规则 B8**：SKILL.md 顶部**应**包含：能力概述、触发场景、依赖说明、快速用法。详细语法/模板/示例放 `references/`。
 
 ---

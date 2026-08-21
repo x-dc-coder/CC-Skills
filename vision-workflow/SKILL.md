@@ -1,11 +1,24 @@
 ---
 name: vision-workflow
-description: 图像理解、网页截图核验、OCR 文字提取、科研绘图验证与本地图片批量分析的编排流程。当任务涉及看图、识图、图片内容理解、截图验证、图表解读或批量处理图片时使用本技能。
+description: 图像理解、网页截图核验、OCR 文字提取、科研绘图验证、剪贴板/会话附件识图与多图/批量图片分析的编排流程。当任务涉及看图、识图、图片内容理解、截图验证、图表解读、批量处理图片、识别剪贴板图片或识别 DSH 会话中发送的图片时使用本技能。
 ---
 
 # Vision Workflow（视觉任务编排）
 
-本技能编排 Vision MCP 工具（`vision_health` / `describe_image` / `analyze_screenshot` / `extract_text` / `verify_figure` / `batch_analyze`）。当模型本身无视觉能力时，通过调用这些工具完成视觉任务。
+本技能编排 Vision MCP 工具（`vision_health` / `describe_image` / `clipboard_image` / `describe_images` / `analyze_screenshot` / `extract_text` / `verify_figure` / `batch_analyze`）。当模型本身无视觉能力时，通过调用这些工具完成视觉任务；当 new-api Bamboo 中继桥已开启图片自动识别时，日常发图由网关层完成，本技能工具聚焦**交叉验证与专业场景**（见下"分流原则"）。
+
+> **DSH 会话中用户直接发送的图片**：DSH 会把图片持久化为无扩展名的 content-addressed 文件（`~/.dsh/attachments/v1/objects/xx/<sha256>`），模型收到的是 `[Unsupported Image]` 占位符。此时把附件路径传给 `describe_image` / `describe_images` 即可（服务端已支持魔数嗅探，无需复制改名）。多张截图一次发来用 `describe_images` 逐张识别。
+
+> **Bamboo 中继桥自动识别（快速第一印象）**：new-api 已启用 Bamboo 中继桥 + 图片识别（`image_recognize_model=qwen3-vl-flash`，经 dashscope-vision 渠道）。用户在 DSH 会话直接发图时，图片会在**网关层**被自动识别成文字描述并注入上下文（历史图片替换为 `[image]` 标记），模型直接"看到"图片内容——**此时无需再调 Vision MCP 工具**。识别失败（hop 错误）会导致整个请求失败。
+
+## 分流原则（Bamboo 桥 vs Vision MCP 交叉验证）
+
+- **日常发图（快速第一印象）**：Bamboo 桥已自动完成（qwen3-vl-flash，~1.3s，稳定）——用户发图后模型可直接理解，**不要重复调 Vision MCP**。
+- **关键场景（必须主动交叉验证）**：用户要求"分析/确认/核验/校验/帮我看看这张图/数据/文字/图表"或图片涉及数据/科研图/重要文档时，**主动对同一附件做双模型交叉**：
+  1. 取附件路径（`~/.dsh/attachments/v1/objects/xx/<sha256>`，魔数嗅探已支持）
+  2. 调 `describe_image` 两次（不同厂商，如 qwen3-vl-flash + glm-4.6v），或调 `verify_figure`（自动双模型）
+  3. 两模型描述**一致** → 高置信，直接汇报 `meta.cross_validated`；**不一致** → 列出分歧点，标注待用户确认
+- **禁止**：对已由 Bamboo 桥识别过的日常图片重复调用 Vision MCP（浪费且多余）；除非场景是关键验证。
 
 ## 流程总则
 
@@ -15,7 +28,7 @@ description: 图像理解、网页截图核验、OCR 文字提取、科研绘图
 
 ## 分层路由（性价比 / 旗舰）
 
-- **日常性价比**：`describe_image` / `analyze_screenshot` / `extract_text` / `batch_analyze` 默认走性价比模型（qwen3-vl-flash / glm-4.6v-flash），成本最低。
+- **日常性价比**：`describe_image` / `clipboard_image` / `describe_images` / `analyze_screenshot` / `extract_text` / `batch_analyze` 默认走性价比模型（qwen3-vl-flash / glm-4.6v-flash），成本最低。
 - **质量要求高 / 旗舰**：`verify_figure` 走旗舰模型（glm-4.6v + qwen3-vl-plus 跨厂商交叉验证），结果最稳。
 - 策略引擎内置失败升级与跨厂商回退，无需人工干预；`meta.tier` / `meta.model` 标注实际档位与模型。
 
@@ -24,6 +37,14 @@ description: 图像理解、网页截图核验、OCR 文字提取、科研绘图
 ### A. 单图理解
 1. 调用 `describe_image(path, question)`；question 要具体（对象/关系/文字/异常点）。
 2. 直接引用返回的 `data.description`，不要脱离工具结果另行编造。
+
+### A-1. 剪贴板图片识别（用户刚 Ctrl+C 复制了图片）
+1. 调用 `clipboard_image(question)`；工具自动从 Windows 剪贴板抓图识别，无需路径。
+2. 剪贴板里是文本/路径时返回 `CLIPBOARD_NO_IMAGE`，提示用户先复制图片本身（截图或图片文件）再重试。
+
+### A-2. 多图识别（一次发来多张截图/附件）
+1. 调用 `describe_images(paths, question)`；paths 为路径数组（支持无扩展名附件）。
+2. 模型按顺序逐张描述，汇报时按编号对应到每张图；适合"这几张截图分别是什么/对比差异"。
 
 ### B. 网页截图核验
 1. 调用 `analyze_screenshot(path, checklist)`；checklist 用逗号分隔核验点（如"页面正常加载,无报错弹窗,关键元素可见"）。
@@ -51,7 +72,8 @@ description: 图像理解、网页截图核验、OCR 文字提取、科研绘图
 
 ## 失败回退
 
-- `code=IMAGE_ERROR`：检查路径/格式/大小（上限 4MB），修正后重试。
+- `code=IMAGE_ERROR`：检查路径/格式/大小（上限 4MB），修正后重试。无扩展名附件已自动嗅探格式，若仍报错说明文件非图片。
+- `code=CLIPBOARD_NO_IMAGE`：剪贴板无图片，引导用户复制图片后重试。
 - `code=PROVIDER_ERROR` 或提示未配置 key：告知用户补 ZHIPU_API_KEY（repo 根目录 .env）并把 config.json 的 mock 改为 false；或说明当前为 mock 结果。
 - 性价比模型失败会自动升级旗舰模型（策略引擎内置），无需人工干预。
 

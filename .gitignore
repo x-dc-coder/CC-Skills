@@ -133,3 +133,5 @@ paper-analysis/
 # so git treats them as single filenames — must use * globs for substring matching.
 *wsl$*
 *wsl.localhost*
+
+# github-workflow shared ignore rules
