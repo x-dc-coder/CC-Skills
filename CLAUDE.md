@@ -39,7 +39,7 @@ uv run --directory ~/.claude/skills python scripts/github_issues.py ...
 
 ## 核心约束：输出目录统一约定
 
-**所有 SKILL 的文件输出必须遵循以下两级回退规则**，杜绝孤儿目录和 `/tmp/skills-output/<date>/` 垃圾堆积。
+**所有 SKILL 的文件输出遵循以下两级回退规则**（**兜底规则**：技能显式指定输出目录或用户显式传 `--output` 时以显式指定为准），杜绝孤儿目录和 `/tmp/skills-output/<date>/` 垃圾堆积。统一约定全文见 `OUTPUT.md`（唯一事实源）。
 
 ### 规则
 

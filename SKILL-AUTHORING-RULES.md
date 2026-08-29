@@ -63,6 +63,16 @@ description: >
 
 **规则 B3**：禁止使用非标准 frontmatter 字段（如 `compatibility`）。OpenCode 可能忽略未知字段。
 
+**规则 B3a（推荐字段，2026-08-29 补充）**：除 `name`/`description` 必填外，推荐声明以下字段（聚合技能如 lark-cli/diagram 已示范）：
+```yaml
+version: 1.0.0            # 语义化版本，便于追踪技能变更
+whenToUse: ...            # 可选：额外路由引导（DSH 支持该字段）
+metadata:
+  requires:
+    bins: ["<工具名>"]    # 外部依赖声明，工具名与安装方式见 ENVIRONMENT.md
+```
+引入新外部工具时**必须**登记到 `ENVIRONMENT.md` 依赖登记表并在此声明。
+
 ### 2.2 触发词设计（防冲突）
 
 **规则 B4**：新增 SKILL 前，**必须**检查现有 SKILL.md 的触发词，避免重叠。检查命令：
@@ -89,6 +99,11 @@ cd ~/.claude/skills && find . -name SKILL.md -not -path "*/node_modules/*" -not 
 ---
 
 ## 三、输出路径约定
+
+**规则 C0（兜底定位，2026-08-29 补充）**：本章为**兜底规则**——技能正文显式指定输出位置（如
+paper-reader 输出到输入 PDF 同级）、用户显式传 `--output` 参数时，**以显式指定为准**；仅当技能
+未显式指明输出目录时按本章两级回退执行。统一约定全文见 `OUTPUT.md`（唯一事实源，CLAUDE.md
+与本章均引用它）。
 
 ### 3.1 禁止 /tmp/skills-output
 
@@ -185,12 +200,13 @@ fontname = "Noto Sans CJK SC"  # 在仅装 SimSun 的机器上方块
 
 ### 5.3 依赖说明
 
-**规则 E5**：SKILL.md **必须**列出所有外部二进制依赖及其安装方式：
+**规则 E5**：SKILL.md **必须**列出所有外部二进制依赖及其安装方式（登记表见 `ENVIRONMENT.md`）：
 ```
-依赖：
+依赖：见 ENVIRONMENT.md 依赖登记表
 - dot (graphviz)：apt install graphviz / brew install graphviz
 - pdftoppm (poppler-utils)：apt install poppler-utils / dnf install poppler-utils
 ```
+新工具先登记 `ENVIRONMENT.md`，技能内只需声明工具名 + 引用登记表，不重复安装步骤。
 
 ---
 

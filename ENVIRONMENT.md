@@ -1,0 +1,50 @@
+# SKILL 环境依赖总览（ENVIRONMENT.md）
+
+> **定位**：本仓库全部技能运行所需的**外部工具统一登记表**与验证入口。
+> 新增/修改技能引入新工具依赖时：① 登记到下表 → ② 技能 frontmatter 声明
+> `metadata.requires.bins` → ③ 正文引用本文件（勿在技能内自写安装段，避免散落）。
+> 与 SKILL-AUTHORING-RULES.md §5.3（依赖说明）配套使用。
+
+## 验证命令速查（一条命令核对核心依赖）
+
+```bash
+for t in uv gh git node lark-cli keenable mmdc officecli graph-easy mysql; do
+  printf '%-12s' "$t:"; "$t" --version 2>/dev/null | head -1 || echo "❌ 缺失"
+done
+```
+
+## 依赖登记表（2026-08-29 实采）
+
+| 工具 | 本机版本 | 依赖技能 | 安装方式 | 验证 |
+|---|---|---|---|---|
+| uv | 0.11.28 | 全部 Python 技能（执行环境：先 `cd ~/.claude/skills` 再 `uv run`，见 CLAUDE.md 核心约束） | 官方安装脚本（~/.local/bin/uv） | `uv --version` |
+| gh | 2.97.0 | github-workflow（认证/远端/Issue/PR） | 官方安装（~/.local/bin/gh） | `gh auth status` |
+| git | 2.55.0 | 全部（github-workflow 为基座） | 系统包 | `git --version` |
+| lark-cli | 1.0.89 | lark-cli（飞书 23 域聚合技能，硬依赖） | nvm npm 全局 | `lark-cli doctor` |
+| keenable | 0.1.22 | unified-search（keenable 源，**硬依赖**；脚本直接调用二进制） | 官方安装脚本（~/.cargo/bin） | `keenable --version`；安装/认证/MCP 配置见 unified-search/references/keenable-setup.md |
+| mmdc | 11.15.0 | diagram（sequence 类渲染） | npm（mermaid-cli，nvm 环境） | `mmdc --version` |
+| graph-easy | v0.76 | diagram（draft 类 ASCII 图） | `sudo apt install libgraph-easy-perl graphviz` | `graph-easy --version` |
+| Playwright + Chromium | chromium-1134/1234 | diagram（ers 类 ECharts 引擎，默认）；缺失时用 `--engine pillow` 兜底 | pip playwright + `playwright install chromium`（~/.cache/ms-playwright） | `ls ~/.cache/ms-playwright` |
+| officecli | 1.0.141 | officecli（docx/xlsx/pptx） | 官方安装（~/.local/bin/officecli） | `officecli --version` |
+| mysql | 8.0.46 | db-skill（项目本地库） | 系统/容器 | `mysql --version` |
+| node / npx | v24.16.0 / 11.13.0 | drawio-xml（`npx @next-ai-drawio/mcp-server` 按需拉取）、lark-cli | nvm | `node --version` |
+| python3 | 3.10.12 | 脚本运行（uv 环境内） | 系统包 | `python3 --version` |
+
+## 环境分类（与 SKILL-AUTHORING-RULES.md §1.1 一致）
+
+- **A 类（仓库自含）**：uv + pyproject.toml 声明，克隆即用，无需额外安装。
+- **B 类（本机工具）**：上表所列，每台机器安装一次即可。
+- **C 类（按需拉取）**：运行时下载，如 drawio MCP（npx）、Chromium（playwright install）。
+
+## 技能依赖声明模板
+
+frontmatter 声明（模型目录与检查工具可读）：
+
+```yaml
+metadata:
+  requires:
+    bins: ["lark-cli"]   # 工具名，多个用列表；对应用户环境的 B 类工具
+```
+
+正文声明：依赖段写"依赖见 `ENVIRONMENT.md` 依赖登记表"并指明所需工具即可，不重复安装步骤
+（keenable 例外：其安装/认证/MCP 配置细节保留在 unified-search/references/keenable-setup.md）。
