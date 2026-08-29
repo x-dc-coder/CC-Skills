@@ -1,7 +1,3 @@
----
-name: keenable-cli
-description: Install and use the Keenable CLI for fast web search and page fetching from the terminal. Use when you need to search the web, fetch a page as clean markdown, or configure Keenable as the search provider (MCP) for AI clients like Claude Code or Cursor.
----
 
 # Keenable CLI
 

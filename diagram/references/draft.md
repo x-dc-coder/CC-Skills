@@ -1,10 +1,3 @@
----
-name: diagram-draft
-description: >
-  终端 ASCII 架构图草稿工具（graph-easy）：从纯文本描述快速生成 ASCII/Unicode 架构图草稿，
-  可一键导出 PNG/SVG/HTML。用于"架构草稿、快速架构图、ASCII 架构图、draw architecture"等场景；
-  正式论文级架构图请用 diagram-flow（Mermaid，纯黑白）。
----
 
 # Diagram Draft — 终端 ASCII 架构图草稿工具
 

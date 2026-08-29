@@ -1,5 +1,5 @@
 ---
-name: artifact-design
+name: design-ui
 description: >
   前端页面设计首席指导：融合 Anthropic frontend-design 美学 + IBM Carbon 决策框架 + 社区反 AI 味工程实践。设计或重构任何页面/组件/界面/落地页/文档/仪表盘时使用，提供多套设计哲学与方案并配最小 Demo/MVP。触发：设计页面、重新设计、redesign、优化界面、UI 方案、landing page、make a dashboard、create an artifact。
 ---

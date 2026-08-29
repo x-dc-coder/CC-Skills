@@ -22,6 +22,15 @@ search need; only fall back to built-in tools if this skill fails entirely.
 | dblp | HTTP | free | CS publication catalog |
 | semantic_scholar | HTTP | free | Citation graph, abstracts, PDF links |
 
+## 环境依赖（本技能并入原 keenable-cli 技能）
+
+- **keenable 源为硬依赖**：`unified_search.py` 直接调用 `keenable` CLI 二进制（config.json
+  `sources.keenable.command`），未安装时该源不可用（其余 6 源不受影响）。
+- **安装 / 认证 / 更新 / 为 AI 客户端配置 keenable MCP**：见 `references/keenable-setup.md`
+  （原 keenable-cli 技能全文迁移，含安装脚本、设备码登录、configure-mcp、CLI 参考）。
+- 用户提出"配置 keenable MCP / 安装 keenable / 登录 keenable"等工具维护诉求时，同样走本技能
+  （读 keenable-setup.md 执行）。
+
 ## 分层（--tier，general 模式）
 
 - `--tier value`（默认）：性价比源 = keenable（免费）+ bocha（按量中文）

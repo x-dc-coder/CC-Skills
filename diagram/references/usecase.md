@@ -1,14 +1,3 @@
----
-name: diagram-usecase
-description: |
-  生成用例图（UML Use Case Diagram）。当用户需要以下功能时触发：
-  - 生成用例图、UML 用例图
-  - 创建用户功能关系图
-  - 可视化 Actor 与 UseCase 关系
-  - 绘制参与者与用例的关联图
-  
-  使用本项目的 CLI 工具 `uv run python -m scripts.cli` 生成用例图。
----
 
 > **ℹ️ 统一行为 (2026-07-19):** `--downsample` 参数语义已跨 4 个 diagram-* skill 统一（er, ers, module, usecase）。所有 skill 默认输出**高分辨率**，`--downsample` 为 opt-in 降至 1x。diagram-usecase 无变更（原本即正确实现）。
 

@@ -1,14 +1,3 @@
----
-name: diagram-er
-description: |
-  生成数据库单表 ER 图（实体关系图）。当用户需要以下功能时触发：
-  - 生成单表 ER 图、数据库表结构图
-  - 为单个数据库表创建可视化图表
-  - 可视化表的字段结构
-  - 生成 Chen 风格的单表 ER 图
-  
-  使用本项目的 CLI 工具 `uv run python -m scripts.cli` 生成 Chen 风格 ER 图。
----
 
 > **⚠️ BREAKING CHANGE (2026-07-19):** `--downsample` 参数语义已统一。默认输出**高分辨率**（4x 渲染，不下采样），与 diagram-usecase 行为一致。原默认 1x 低分辨率输出已被移除。如需低分辨率，请显式添加 `--downsample`。回滚方案：如用户抱怨输出过大，可在 CLI 中追加 `--downsample` 恢复旧行为。
 

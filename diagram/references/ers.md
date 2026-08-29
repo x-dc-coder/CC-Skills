@@ -1,14 +1,3 @@
----
-name: diagram-ers
-description: |
-  生成数据库实体关系图（ER图），展示多个实体及其关联关系。当用户需要以下功能时触发：
-  - 生成 ER 图、实体关系图、E-R 图
-  - 绘制多实体关联图（含可选属性）
-  - 展示数据库表之间的关系（1:1、1:n、m:n）
-  - 可视化系统数据模型
-
-  使用本项目的 CLI 工具 `uv run python -m scripts.cli` 生成 ER 图。
----
 
 > **⚠️ 重大升级 (2026-07-19):** 默认渲染引擎切换为 **ECharts + Playwright**（视觉与 ECharts 参考实现一致：白底黑边、矩形/菱形/椭圆、底部图例、主键加粗下划线）。默认布局算法为 **`deterministic`** —— 由 Graphviz `neato`（Kamada-Kawai 应力最小化）在 Python 端计算无交叉初始坐标，传给 ECharts 用 `layout='none'` 渲染。实测可做到 **0 连线交叉**（详见下方"布局算法"一节）。旧版 Pillow 手动坐标引擎通过 `--engine pillow` 保留作为离线兜底。
 

@@ -1,14 +1,3 @@
----
-name: diagram-sequence
-description: |
-  生成 UML 时序图（Sequence Diagram）。当用户需要以下功能时触发：
-  - 生成时序图、UML 时序图、顺序图
-  - 绘制系统交互流程图
-  - 可视化模块间方法调用关系
-  - 展示前端、后端、数据库之间的数据流转
-
-  使用 Mermaid sequenceDiagram 语法生成，通过 mmdc 渲染为 PNG。
----
 
 # UML 时序图生成 Skill
 

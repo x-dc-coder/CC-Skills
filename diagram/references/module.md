@@ -1,14 +1,3 @@
----
-name: diagram-module
-description: |
-  生成功能模块图（树形结构图）。当用户需要以下功能时触发：
-  - 生成功能模块图、系统模块结构图
-  - 创建树形功能层次图
-  - 可视化模块组成关系
-  - 展示系统功能架构
-  
-  使用本项目的 CLI 工具 `uv run python -m scripts.cli` 生成功能模块图。
----
 
 > **⚠️ BREAKING CHANGE (2026-07-19):** `--downsample` 参数语义已统一。默认输出**高分辨率**（4x 渲染，不下采样），与 diagram-usecase 行为一致。原默认 1x 低分辨率输出已被移除。如需低分辨率，请显式添加 `--downsample`。回滚方案：如用户抱怨输出过大，可在 CLI 中追加 `--downsample` 恢复旧行为。
 
