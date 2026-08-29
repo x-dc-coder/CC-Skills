@@ -12,60 +12,54 @@
 ~/.claude/skills/
 ├── README.md              # 本说明文档
 ├── CLAUDE.md              # 执行约束（cd ~/.claude/skills 再 uv run）
-├── pyproject.toml         # 统一依赖声明
-├── uv.lock                # 锁定文件（精确版本）
-├── .venv/                 # 统一的 uv 虚拟环境（所有轻量 skill 共享）
+├── ENVIRONMENT.md         # 外部工具依赖登记表（12 工具 + 验证命令 + 声明模板）
+├── OUTPUT.md              # 输出目录兜底规范（两级回退，唯一事实源）
+├── SKILL-AUTHORING-RULES.md # SKILL 开发与修改规则
+├── pyproject.toml / uv.lock / .venv/   # 统一依赖与虚拟环境（轻量 skill 共享）
 │
-├── diagram-er/            # 单表 ER 图
-│   ├── SKILL.md
+├── lark-cli/              # 飞书/Lark 聚合技能（23 域统一入口）
+│   ├── SKILL.md           # 路由表 + 共享底座 + 维护命令
+│   └── resources/         # CLI 不内嵌的机器资源（scripts/创意资产/模板）
+├── diagram/               # 图表聚合技能（7 类统一入口）
+│   ├── SKILL.md           # 路由表 + 通用规范
+│   └── references/        # 各类型规程分册（er/ers/module/usecase/sequence/flow/draft）
+│
+├── diagram-er/            # ⚠️ 非独立技能：聚合技能的脚本目录（单表 ER 图）
 │   ├── .venv -> ../.venv  # 符号链接到统一环境
-│   └── scripts/
-├── diagram-ers/           # 多实体 ER 图
-│   ├── .venv -> ../.venv
-│   └── ...
-├── diagram-module/        # 功能模块树形图
-│   ├── .venv -> ../.venv
-│   └── ...
-├── diagram-sequence/      # UML 时序图
-│   ├── .venv -> ../.venv
-│   └── ...
-├── diagram-usecase/       # UML 用例图
-│   ├── .venv -> ../.venv
-│   └── ...
+│   └── scripts/           # -m scripts.cli 入口 + renderer/parser/models
+├── diagram-ers/           # 多实体 ER 图脚本目录（ECharts/Playwright 或 Pillow）
+├── diagram-module/        # 功能模块树形图脚本目录
+├── diagram-sequence/      # UML 时序图脚本目录（mmdc 渲染）
+├── diagram-usecase/       # UML 用例图脚本目录
+├── diagram-draft/         # ASCII 架构草稿（graph-easy render.sh，无 Python）
+├── diagram-flow/          # Mermaid 流程图（纯代码输出，无脚本）
+│
+├── design-ui/             # 前端页面设计（原 artifact-design）
+├── design-diagram/        # Artifact 内联 SVG 图表（原 artifact-diagramming）
+├── design-dataviz/        # 数据可视化设计系统（原 dataviz）
+│
 ├── db-skill/              # MySQL/PostgreSQL 工具
-│   ├── .venv -> ../.venv  # 已统一（曾为独立 venv）
-│   └── scripts/
 ├── word-extractor/        # .docx 提取
-│   └── scripts/
-├── unified-search/        # 6 源聚合搜索
-│   └── scripts/
-├── gitcode-workflow/      # Git/GitCode 工作流
-│   └── scripts/
+├── unified-search/        # 7 源聚合搜索（含 keenable 源，原 keenable-cli 已并入）
+├── github-workflow/       # GitHub-first git 工作流（gh CLI）
+├── drawio-xml/            # .drawio 图表（MCP 协同，npx 按需拉取）
+├── officecli/             # Office 文档（docx/xlsx/pptx）
+├── kimi-webbridge/        # 真实浏览器控制（daemon）
+├── vision-workflow/       # 视觉任务编排（Vision MCP）
+├── thesis-writing/  thesis-ref-check/  md-to-thesis-latex/   # 论文写作族
 │
 ├── paper-reader/          # ⚠️ 例外：持有独立重型 venvs
-│   ├── SKILL.md
-│   ├── scripts/
-│   └── venvs/             # 独立 venv（不共享，含 GPU 模型权重）
-│       ├── marker/        # ~5.1GB（Marker + 模型）
-│       └── mineru/       # ~613MB（MinerU + 模型）
-│
-├── diagram-flow/          # 纯 Mermaid 代码生成，无 Python
-├── doubao-vision/         # curl 调 API，无 Python
-├── keenable-cli/          # 二进制 CLI，无 Python
-├── kimi-webbridge/        # curl 调 daemon，无 Python
-├── md-to-thesis-latex/    # 纯 xelatex，无 Python
-├── thesis-writing/        # 双模式论文写作（本科毕设 + 期刊论文），含 profiler + checker
-├── thesis-ref-check/      # 纯 Bash/grep，无 Python
-└── wsl-windows-bridge/      # WSL→Windows 三层桥接 + GPU 资源治理，含 Python 脚本但使用系统 Python，不纳入统一 .venv
+│   └── venvs/             # marker ~5.1GB / mineru ~613MB（GPU 模型权重，不共享）
+└── wsl-windows-bridge/    # WSL→Windows 桥接（系统 Python，不纳入统一 .venv）
 ```
 
 ## 三类环境策略
 
 | 类别 | 环境 | 适合的 Skill | 说明 |
 |------|------|-------------|------|
-| **A. 统一共享** | `.venv/` 符号链接 | diagram-er/ers/module/sequence/usecase, db-skill, word-extractor, unified-search, gitcode-workflow, thesis-writing | 依赖轻量（Pillow/sqlglot/psycopg2/pytest 等），共享一份 venv |
+| **A. 统一共享** | `.venv/` 符号链接 | diagram 聚合的脚本目录（diagram-er/ers/module/sequence/usecase）、db-skill、word-extractor、unified-search、github-workflow、thesis-writing | 依赖轻量（Pillow/sqlglot/psycopg2/pytest 等），共享一份 venv |
 | **B. 独立重型** | skill 内 `venvs/` | paper-reader | 含 GPU 模型权重（5GB+），不可合并，`.gitignore` 已忽略 |
-| **C. 无统一 venv** | 系统/Windows Python | diagram-flow, doubao-vision, keenable-cli, kimi-webbridge, md-to-thesis-latex, thesis-ref-check, wsl-windows-bridge | 无统一 venv（使用系统/Windows Python） |
+| **C. 无统一 venv** | 系统/Windows Python 或二进制 | diagram-draft/flow、design-ui/diagram/dataviz（纯文档）、lark-cli（Node）、drawio-xml（npx）、officecli（二进制）、kimi-webbridge、md-to-thesis-latex、thesis-ref-check、wsl-windows-bridge | 无统一 venv（系统/Windows Python 或自带运行时） |
 
 ## 统一执行约定（所有 Python skill 必须遵守）
 
@@ -81,15 +75,18 @@ cd ~/.claude/skills && uv run python <skill-name>/scripts/<script>.py ...
 
 `uv run --directory` 只影响 `pyproject.toml` 的查找位置，但**脚本相对路径仍基于当前工作目录解析**。先 `cd` 再执行可同时保证：pyproject.toml 正确 + 相对路径正确。
 
-### 例外：diagram-* 系列的 `scripts.cli` 模块
+### 例外：diagram 聚合技能的 `scripts.cli` 模块
 
-diagram-er/ers/module/sequence/usecase 使用 Python 包形式（`-m scripts.cli`），需进入 skill 子目录：
+diagram 聚合技能（er/ers/module/sequence/usecase 五类）使用 Python 包形式（`-m scripts.cli`），
+脚本保留在原 `diagram-*` 目录，需进入对应子目录执行：
 
 ```bash
 cd ~/.claude/skills/diagram-er && uv run python -m scripts.cli ...
 ```
 
-这是因为 `-m scripts.cli` 要求 `scripts/` 在 cwd 下。其 `.venv` 符号链接确保 uv 仍解析到统一环境。
+这是因为 `-m scripts.cli` 要求 `scripts/` 在 cwd 下；脚本内 `sys.path` 引用顶层 `scripts/common.py`
+（`resolve_output_path`，实现 OUTPUT.md 两级回退）。其 `.venv` 符号链接确保 uv 仍解析到统一环境。
+类型路由与使用规范见 `diagram/SKILL.md`。
 
 ## 环境管理命令
 
@@ -121,6 +118,7 @@ cd ~/.claude/skills
 for skill in diagram-er diagram-ers diagram-module diagram-sequence diagram-usecase db-skill; do
   ln -sf ../.venv "$skill/.venv"
 done
+# 注：diagram-er 等为 diagram 聚合技能的脚本目录（非独立技能）
 ```
 
 ### paper-reader 重型 venv 重建
@@ -161,8 +159,8 @@ bash ~/.claude/skills/paper-reader/scripts/bootstrap.sh
 
 | 包名 | 用途 |
 |------|------|
-| `Pillow` | 图片生成与处理（diagram-er/ers/module/sequence/usecase） |
-| `sqlglot` | SQL 解析（diagram-er） |
+| `Pillow` | 图片生成与处理（diagram 聚合：er/ers/module/usecase 脚本） |
+| `sqlglot` | SQL 解析（diagram 聚合：er 脚本） |
 | `python-docx` | .docx 提取（word-extractor） |
 | `psycopg2-binary` | PostgreSQL（db-skill） |
 | `pymysql` | MySQL（db-skill） |
@@ -174,8 +172,10 @@ bash ~/.claude/skills/paper-reader/scripts/bootstrap.sh
 | `pyyaml` | YAML 解析 |
 | `feedparser` | RSS/Atom 解析 |
 
-Node 工具（非 Python 依赖）：
-- `@mermaid-js/mermaid-cli`：用于 `diagram-sequence` 渲染 Mermaid 到 PNG（推荐用 `npx` 调用，避免全局安装）。
+Node 工具（非 Python 依赖，完整登记表见 ENVIRONMENT.md）：
+- `@mermaid-js/mermaid-cli`（mmdc）：用于 diagram 聚合的 sequence 类渲染 Mermaid 到 PNG（推荐用 `npx` 调用，避免全局安装）。
+- `lark-cli`：lark-cli 聚合技能硬依赖（Node 全局安装）。
+- `keenable`：unified-search 硬依赖（安装/认证/MCP 配置见 unified-search/references/keenable-setup.md）。
 
 ## WSL ↔ Windows 桥接 Skill
 
