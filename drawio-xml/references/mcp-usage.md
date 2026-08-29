@@ -96,3 +96,65 @@ claude mcp add drawio -- npx @next-ai-drawio/mcp-server@latest
 - draw.io 官方 jgraph/drawio-mcp：`npx @drawio/mcp`，支持 Mermaid 输入 + libavoid 自动布线，与 next MCP 工具集不冲突可并存
 - 社区 Agents365-ai/drawio-skill：单 SKILL.md，复杂图类型（SysML/BPMN/C4）+ 代码库转图
 - 无头/CI：AI 生成 Mermaid → draw.io Desktop CLI `-x -f xml` 转换导出，免 MCP
+
+## 七、实测验证记录（2026-08-25，本地源码构建版）
+
+> 验证环境：WSL + Node 24 + Chromium/Playwright + 本地构建 `packages/mcp-server/dist/index.js`。
+> 结论：**MCP + 浏览器渲染 + 高清导出全链路可用，复杂论文级图（Transformer：21 顶点[19 形状+2 容器]+16 边）端到端通过。**
+
+### 7.1 无头/无 DISPLAY 环境的三步法（关键）
+1. `BROWSER=echo` 启动 server，避免 `open()` 在无 DISPLAY 时抛错：
+   ```bash
+   BROWSER=echo DRAWIO_EXPORT_SCALE=4 node packages/mcp-server/dist/index.js
+   ```
+2. start_session 返回 URL `http://localhost:6002?mcp=<sessionId>`（HTTP server 仍正常监听 127.0.0.1）
+3. 用 Playwright/Chromium 打开该 URL 充当浏览器渲染器：
+   - 页面 JS 自动 poll `/api/state`（2s 间隔）→ 加载 diagram XML → 渲染
+   - 导出请求由浏览器 iframe postMessage 处理 → base64 回传 `/api/state`
+   - **浏览器必须保持打开**，否则 export_diagram 超时（默认 10s，投影导出 15s）
+
+### 7.2 PNG 高清导出（已参数化）
+- **原版硬编码 `scale: 2`**（http-server.ts 两处），逻辑图 762×722 → PNG 1524×1444
+- **已修改源码**：`DRAWIO_EXPORT_SCALE` 环境变量控制（默认 2），scale=4 实测 → **3048×2888（约 300DPI，论文可用）**
+- 修改点：src/http-server.ts 三处（EXPORT_SCALE 常量 + MCP 导出 + 浏览器手动导出按钮）
+- 发布版 npm 包仍是 0.2.3 旧行为；要用高清导出需本地构建或等上游合并
+
+### 7.3 视觉质检闭环（VLM 校验的 DSH 等价实现）
+主应用用 VLM（generateObject + /api/validate-diagram）对渲染截图做视觉校验并反馈修正。
+DSH/Claude 侧等价：导出 PNG → 用 vision 工具（describe_image / analyze_screenshot）
+核验（重叠/穿线/文字/完整性/布局）→ 发现问题 → edit_diagram 修正 → 再导出复检。
+**实测**：vision 对导出 PNG 逐项核验通过（无重叠/无穿线/编辑改动可见/论文级排版）。
+
+### 7.4 编辑门控实测
+create → get_diagram → edit_diagram（update 标签 + add 节点）→ get_diagram 验证改动
+→ export PNG，全流程通过。编辑门控正常：基于过期状态编辑会被拒并提示重新 get_diagram。
+
+### 7.5 常用调试
+- 端口：PORT=6002（默认），被占用自动 6003-6020
+- server 日志：stdout 前缀 [MCP-DrawIO]
+- 会话 TTL 1 小时；HTTP 仅绑 127.0.0.1
+- 页面控制台：Playwright console_messages 可查 iframe 错误
+
+
+### 7.6 重大坑：PNG 导出黑底（暗色主题）问题与解决方案（2026-08-25 实测）
+
+**症状**：`export_diagram` 导出的 PNG 是**黑底**（深色像素占比 70%+），放入浅色论文文档中节点/背景异常。用户浏览器暗色模式时更明显。
+
+**根因**（实测排除法）：
+- iframe 容器页/画布背景均浅色（bodyBg 241、pageBg 255、geDiagramContainer 236），但导出 PNG 四角纯黑 (0,0,0)
+- 设置 `ui=light`/`theme=default` URL 参数、`emulateMedia({colorScheme:'light'})`、`graph.background='#ffffff'`（mxGraph 实例不可访问，window.mxGraph 是类）、export 加 `backgroundColor:'#FFFFFF'` 参数——**全部无效**，PNG 仍黑底（文件大小完全一致，导出内容未变）
+- draw.io embed 的 PNG 导出固定使用暗色画布背景（与 iframe 主题无关）
+
+**关键事实**：`export_diagram` 的 **SVG 导出是自适应的**——SVG 头部 `color-scheme: light dark`，所有文字 fill 为 `light-dark(rgb(17,17,17), rgb(223,223,223))`（浅色渲染器=黑字，暗色渲染器=浅字），节点 fill 为显式浅色（#ffffff/#d9d9d9...）。
+
+**解决方案（已验证）**：**SVG → 强制 light 渲染 → PNG**：
+1. `export_diagram` 导出 .svg
+2. 用 Chromium/Playwright 加载 SVG（`file://` 路径），`emulateMedia({ colorScheme: 'light' })`
+3. evaluate 放大 SVG（`svg.setAttribute('width', W*4+'px')`），视口设 `W*4 × H*4`
+4. screenshot → 白底黑字高清 PNG（实测 3328×2020、深色像素仅 4%）
+5. PIL 可选裁剪边缘（`ImageOps.autocontrast` 或背景裁剪）
+
+**注意**：
+- SVG 交付物本身是"自适应"的（用户暗色浏览器打开 SVG 会显示浅色文字）——如需固定浅色，用上述转换后的 PNG
+- 转换脚本要点：SVG 文档无 `document.body`（根是 svg），用 `document.documentElement`；run_code_unsafe 环境无 require/fs/setTimeout，用 `file://` + `page.waitForTimeout`
+
