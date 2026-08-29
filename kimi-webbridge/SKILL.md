@@ -1,12 +1,31 @@
 ---
 name: kimi-webbridge
 description: >
-  Kimi WebBridge 控制用户真实浏览器：导航、点击、输入、读取、截图、与任意网站交互（使用真实登录态）。当用户需要操作网站、自动化浏览器任务、抓取网页内容，或提及 browser/webpage/open URL/screenshot 时使用；简单的浏览器请求也用它——守护进程处理全部复杂度。
+  Kimi WebBridge 控制用户【真实】浏览器（本地守护进程 127.0.0.1:10086，带用户登录态）：
+  导航、点击、输入、截图、填表、下载、存 PDF。⚠️ 路由优先级：浏览器自动化任务【默认使用
+  Playwright MCP】（mcp__browser__*，headless，见 ~/.dsh/knowledge/browser-mcp-guide.md），
+  仅当用户【显式指定】使用本技能时（提到 kimi-webbridge / WebBridge / Kimi 浏览器扩展 /
+  必须用真实浏览器登录态 / 用我的浏览器打开）才启用。需要真实登录态的网站操作且用户明确要求
+  时使用本技能；守护进程处理全部复杂度。
 ---
 
 # Kimi WebBridge
 
 Control the user's real browser (with their login sessions) via a local daemon at `http://127.0.0.1:10086`.
+
+## 触发与路由（重要，先读）
+
+**默认不用本技能。** 浏览器自动化/网页操作类请求按下述优先级路由：
+
+| 场景 | 使用通道 |
+|---|---|
+| 浏览器自动化默认（导航/点击/输入/截图/填表/页面验证，无需登录态） | **Playwright MCP**（`mcp__browser__*`，headless，WSL 内 Chromium），规程见 `~/.dsh/knowledge/browser-mcp-guide.md` |
+| 用户**显式**要求用 Kimi WebBridge（"用 kimi 的浏览器" / "webbridge" / "用我的浏览器" / "真实登录态"） | 本技能（下方全部规程） |
+
+**显式触发词**：kimi-webbridge、WebBridge、Kimi 浏览器（扩展）、真实浏览器登录态、
+"用我的浏览器打开/操作"、webbridge status。命中其一才启用本技能；未命中一律走 Playwright MCP。
+若用户要求操作"我的浏览器"且上下文暗示真实登录态（需访问其已登录的站点），先与用户确认
+用哪个通道（Playwright headless 无登录态）。
 
 ## Health check (always do this first)
 

@@ -30,6 +30,22 @@ done
 | node / npx | v24.16.0 / 11.13.0 | drawio-xml（`npx @next-ai-drawio/mcp-server` 按需拉取）、lark-cli | nvm | `node --version` |
 | python3 | 3.10.12 | 脚本运行（uv 环境内） | 系统包 | `python3 --version` |
 
+## MCP 工具清单（2026-08-29 全量核实）
+
+> 核实数据源：`claude mcp list`（Claude Code 侧）+ `~/.dsh/cordis.patch.yml`（DSH 插件侧）+
+> `~/.claude/.mcp.json` / `/home/dc/.mcp.json`（项目级）。**遗漏风险点**：插件挂载的 MCP
+> （如 browser）不在 `claude mcp list` 中，需查 cordis.patch.yml。
+
+| Server | 挂载侧 | 状态 | 依赖技能 / 用途 |
+|---|---|---|---|
+| vision | Claude Code（`~/.claude.json`） | ✔ | vision-workflow（编排 8 工具）、drawio-xml（视觉复核）、design-*（间接转调） |
+| keenable | Claude Code（`~/.claude.json`） | ✔ | unified-search（源之一，可 CLI 可 MCP） |
+| codegraph | Claude Code（`~/.claude.json`） | ✔ | 技能仓库 `.codegraph` 项目索引（代码检索） |
+| context7 | Claude Code 插件 | ✔ | 无技能引用（孤儿，保留） |
+| browser（Playwright） | DSH 插件（`cordis.patch.yml`，`playwright-mcp --headless`） | ✔ | **浏览器自动化默认通道**（`mcp__browser__*`，24 工具）；kimi-webbridge 仅在用户显式指定时使用；用法见 `~/.dsh/knowledge/browser-mcp-guide.md` |
+| drawio | 按需 `npx @next-ai-drawio/mcp-server` | ⚠️ 未注册 | drawio-xml（执行层：会话/预览/编辑门控/导出）；待 `claude mcp add drawio` 后全链路可用 |
+| fiddler / visio | — | ✘ 已清理（2026-08-29） | 孤儿（无技能引用），配置已从 `~/.claude.json` 与 `/home/dc/.mcp.json` 移除 |
+
 ## 环境分类（与 SKILL-AUTHORING-RULES.md §1.1 一致）
 
 - **A 类（仓库自含）**：uv + pyproject.toml 声明，克隆即用，无需额外安装。
