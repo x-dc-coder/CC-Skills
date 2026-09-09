@@ -15,7 +15,7 @@ IMG_HTML_RE = re.compile(r"<\s*img\b", re.IGNORECASE)
 IMAGE_MD_RE = re.compile(r"!\[(.*?)\]\(([^)]+)\)")
 SETEXT_RE = re.compile(r"^\s*(=+|-+)\s*$")
 ATX_HEADING_RE = re.compile(r"^\s*(#{1,6})\s+(.+?)\s*$")
-TABLE_CAPTION_RE = re.compile(r"^\s*\*{0,2}\s*(?:表|Table)\s*\d+(?:\s*[-－.]\s*\d+)?\s+.+\*{0,2}\s*$")
+TABLE_CAPTION_RE = re.compile(r"^\s*\*{0,2}\s*(?:表|Table)\s*\d+(?:\s*[-－.]\s*\d+)?\s+[^。！？!?\n]{1,60}\*{0,2}\s*$")
 FIGURE_TITLE_RE = re.compile(r"^\s*(?:图|Figure|Fig\.|Fi\.)\s*\d+(?:\s*[-－.]\s*\d+)?\s+.+\s*$")
 FIGURE_TITLE_RE_LOOSE = re.compile(r"^\s*\*{0,2}\s*(?:图|Figure|Fig\.|Fi\.)\s*\d+(?:\s*[-－.]\s*\d+)?\s+.+\*{0,2}\s*$")
 MERMAID_FENCE_RE = re.compile(r"^\s*```\s*mermaid\s*$", re.IGNORECASE)
@@ -864,7 +864,7 @@ class MarkdownChecker:
                 if _is_table_separator(s):
                     continue
                 inner = s[1:-1] if s.endswith("|") else s[1:]
-                cells = [_merge_parse_cell(c) for c in inner.split("|")]
+                cells = [_merge_parse_cell(c) for c in re.split(r"(?<!\\)\|", inner)]
                 rows.append((ln_no, cells))
             if not rows:
                 continue
@@ -1090,7 +1090,7 @@ class MarkdownChecker:
             if look >= 0 and _is_valid_text(self._lines[look]):
                 has_before = True
             has_after = False
-            look = table_end
+            look = table_end + 1
             while look < len(self._lines) and not self._lines[look].strip():
                 look += 1
             if look < len(self._lines) and _is_valid_text(self._lines[look]):
