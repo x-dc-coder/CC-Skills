@@ -1,0 +1,485 @@
+#!/usr/bin/env python3
+"""
+skillctl - SKILL 生命周期与 5 阶段安全移除管理工具
+纯 Python 3 标准库实现，零外部第三方依赖。
+
+命令集：
+  skillctl lint                    # 契约校验、死链扫描与规范体检
+  skillctl inspect <name>          # 查看单个技能详情与依赖拓扑
+  skillctl sweep-links             # 扫描并清理 ~/.dsh/skills 下的悬挂损坏软链接
+  skillctl remove <name>           # 5 阶段安全移除（默认归档隔离，支持 --dry-run / --purge-venvs）
+  skillctl list-archive            # 列出所有已归档隔离的技能
+  skillctl restore <archive-id>    # 秒级一键原样回滚已归档技能
+"""
+
+from __future__ import annotations
+
+import argparse
+import ast
+import json
+import os
+import re
+import shutil
+import sys
+from datetime import datetime
+from pathlib import Path
+
+SKILLS_ROOT = Path(__file__).resolve().parent.parent
+DSH_SKILLS_ROOT = Path(os.path.expanduser("~/.dsh/skills"))
+ARCHIVE_ROOT = SKILLS_ROOT / "archive"
+
+# 系统级核心基座技能防删白名单（常规禁止删除）
+IMMUTABLE_CORE_SKILLS = {
+    "lark-cli",           # 飞书全家桶 23 域底座
+    "diagram",            # 7 类图表统一入口
+    "unified-search",     # 全局多源检索中枢
+    "db-skill",           # 数据库治理底座
+    "github-workflow",    # Git/GitHub 工作流基石
+    "wsl-windows-bridge", # WSL 跨宿主调用核心框架
+}
+
+IGNORED_DIRS = {
+    ".git", ".omo", ".pytest_cache", ".uv-cache", ".venv",
+    "archive", "scripts", "node_modules", "__pycache__"
+}
+
+
+def get_all_skills() -> list[Path]:
+    """获取 ~/.claude/skills 下所有有效技能目录"""
+    skills = []
+    for item in SKILLS_ROOT.iterdir():
+        if item.is_dir() and item.name not in IGNORED_DIRS:
+            if (item / "SKILL.md").exists():
+                skills.append(item)
+    return sorted(skills, key=lambda p: p.name)
+
+
+def parse_frontmatter(skill_dir: Path) -> dict:
+    """提取 SKILL.md 中的 YAML Frontmatter 简易解析"""
+    skill_md = skill_dir / "SKILL.md"
+    if not skill_md.exists():
+        return {}
+    content = skill_md.read_text(encoding="utf-8", errors="replace")
+    m = re.match(r"^---\r?\n([\s\S]*?)\r?\n---", content)
+    if not m:
+        return {}
+    raw = m.group(1)
+    
+    # 提取 name
+    name_m = re.search(r"^name:\s*([^\r\n]+)", raw, re.M)
+    name = name_m.group(1).strip() if name_m else skill_dir.name
+
+    # 提取 tier / env_type
+    tier_m = re.search(r"tier:\s*([^\r\n]+)", raw)
+    tier = tier_m.group(1).strip().strip('"\'') if tier_m else "standard"
+
+    env_m = re.search(r"env_type:\s*([^\r\n]+)", raw)
+    if env_m:
+        env_type = env_m.group(1).strip().strip('"\'')
+    else:
+        # 启发式推断
+        if (skill_dir / "venvs").exists():
+            env_type = "B"
+        elif (skill_dir / ".venv").exists():
+            env_type = "A"
+        else:
+            env_type = "C"
+
+    # 提取 bins
+    bins = []
+    bins_m = re.search(r"bins:\s*\[([^\]]+)\]", raw)
+    if bins_m:
+        bins = [b.strip().strip('"\'') for b in bins_m.group(1).split(",") if b.strip()]
+
+    return {
+        "name": name,
+        "tier": tier,
+        "env_type": env_type,
+        "bins": bins,
+        "raw": raw
+    }
+
+
+def find_reverse_references(target_name: str) -> list[str]:
+    """反向扫描其他技能，检查是否有谁依赖/调用了 target_name"""
+    referrers = []
+    for skill in get_all_skills():
+        if skill.name == target_name:
+            continue
+        # 扫描该技能下的所有代码与文档
+        for f in skill.rglob("*"):
+            if f.is_file() and f.suffix in {".md", ".py", ".sh", ".json"}:
+                try:
+                    text = f.read_text(encoding="utf-8", errors="ignore")
+                    # 匹配对 target_name 的引用（如在路由表中或模块导入中）
+                    if re.search(rf"\b{re.escape(target_name)}\b", text):
+                        rel = f.relative_to(SKILLS_ROOT)
+                        referrers.append(str(rel))
+                        break
+                except Exception:
+                    pass
+    return referrers
+
+
+def get_dir_size_mb(path: Path) -> float:
+    """计算目录大小 (MB)"""
+    if not path.exists():
+        return 0.0
+    total = 0
+    for p in path.rglob("*"):
+        if p.is_file() and not p.is_symlink():
+            total += p.stat().st_size
+    return round(total / (1024 * 1024), 2)
+
+
+# ── 命令实现 ─────────────────────────────────────────────────────────────
+
+def cmd_lint(args):
+    """技能合规性检查与死链扫描"""
+    print(f"\n🔍 SKILL Linter — 全技能契约与环境体检")
+    print(f"========================================================")
+    
+    skills = get_all_skills()
+    broken_links = []
+    
+    # 1. 检查 DSH 投影层的软链接
+    if DSH_SKILLS_ROOT.exists():
+        for link in DSH_SKILLS_ROOT.iterdir():
+            if link.is_symlink():
+                target = link.resolve()
+                if not target.exists():
+                    broken_links.append(link)
+
+    print(f"📁 扫描技能总数: {len(skills)}")
+    print(f"🔗 发现损坏软链接: {len(broken_links)}")
+    if broken_links:
+        for bl in broken_links:
+            print(f"   ❌ 损坏链接: {bl} -> {os.readlink(bl)}")
+        print(f"   💡 提示: 可运行 `skillctl sweep-links` 一键清理损坏链接")
+    else:
+        print(f"   ✅ DSH 软链接投影层全部健康")
+
+    print(f"\n📋 技能元数据与环境类型：")
+    for s in skills:
+        meta = parse_frontmatter(s)
+        env = meta["env_type"]
+        tier = "🔒核心" if s.name in IMMUTABLE_CORE_SKILLS or meta["tier"] == "core" else "标准"
+        
+        # 检查 A 类 .venv 链接
+        venv_stat = "OK"
+        if env == "A":
+            v = s / ".venv"
+            if not v.exists() or not v.resolve().exists():
+                venv_stat = "❌坏链"
+
+        print(f" - {s.name:<22} [环境 {env}] [{tier:<4}] (venv: {venv_stat})")
+    print(f"========================================================\n")
+
+
+def cmd_inspect(args):
+    """查看单项技能详情"""
+    target = SKILLS_ROOT / args.skill
+    if not target.exists():
+        print(f"❌ 技能不存在: {args.skill}", file=sys.stderr)
+        sys.exit(1)
+
+    meta = parse_frontmatter(target)
+    size_mb = get_dir_size_mb(target)
+    refs = find_reverse_references(args.skill)
+    dsh_link = DSH_SKILLS_ROOT / args.skill
+
+    print(f"\n🔎 技能详情: {args.skill}")
+    print(f"--------------------------------------------------------")
+    print(f"物理路径:     {target}")
+    print(f"DSH 软链接:   {'✅ 存在 (' + str(dsh_link) + ')' if dsh_link.exists() else '❌ 未映射'}")
+    print(f"环境分类:     {meta['env_type']} 类")
+    print(f"防护等级:     {'🔒 核心基础设施 (防删)' if args.skill in IMMUTABLE_CORE_SKILLS else '标准技能'}")
+    print(f"物理磁盘占用: {size_mb} MB")
+    
+    if (target / "venvs").exists():
+        v_size = get_dir_size_mb(target / "venvs")
+        print(f"独立 venvs:   {v_size} MB ({target / 'venvs'})")
+
+    print(f"声明外部命令: {', '.join(meta['bins']) if meta['bins'] else '无'}")
+    
+    print(f"\n反向引用情况 (共有 {len(refs)} 处引用):")
+    if refs:
+        for r in refs[:8]:
+            print(f" - 引用来源: {r}")
+        if len(refs) > 8:
+            print(f"   ...以及其他 {len(refs) - 8} 处")
+    else:
+        print(" - 无外部技能依赖此技能（可安全隔离/解耦）")
+    print(f"--------------------------------------------------------\n")
+
+
+def cmd_sweep_links(args):
+    """清理 ~/.dsh/skills 下失效的悬挂链接"""
+    print(f"\n🧹 扫描清理 ~/.dsh/skills/ 悬挂死链...")
+    if not DSH_SKILLS_ROOT.exists():
+        print(f"目录不存在: {DSH_SKILLS_ROOT}")
+        return
+
+    cleaned = 0
+    for link in DSH_SKILLS_ROOT.iterdir():
+        if link.is_symlink():
+            if not link.resolve().exists():
+                print(f"🗑️  删除失效链接: {link.name} -> {os.readlink(link)}")
+                link.unlink()
+                cleaned += 1
+
+    print(f"✅ 清理完成，共清除 {cleaned} 个悬挂死链。\n")
+
+
+def cmd_remove(args):
+    """5 阶段安全移除状态机"""
+    skill_name = args.skill
+    target = SKILLS_ROOT / skill_name
+
+    if not target.exists():
+        print(f"❌ 技能不存在: {skill_name}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"\n🛡️  触发 5 阶段安全移除状态机: [{skill_name}]")
+    print(f"========================================================")
+
+    # ── 阶段 1: Pre-check 预检 ──
+    print(f"[阶段 1/5] Pre-check 预检与反向引用扫描...")
+    if skill_name in IMMUTABLE_CORE_SKILLS and not args.force:
+        print(f"\n❌ [CRITICAL 阻断]: '{skill_name}' 是系统级核心基础设施技能！", file=sys.stderr)
+        print(f"   该技能被锁定在全局白名单中（防止系统基座瘫痪）。", file=sys.stderr)
+        print(f"   如确有重构需要，必须附加 `--force` 参数显式覆写。\n", file=sys.stderr)
+        sys.exit(10)
+
+    refs = find_reverse_references(skill_name)
+    if refs and not args.force:
+        print(f"\n❌ [依赖阻断]: 存在 {len(refs)} 处上游技能依赖当前技能：", file=sys.stderr)
+        for r in refs[:5]:
+            print(f"   - {r}", file=sys.stderr)
+        print(f"   强行移除将直接导致上游技能调用崩溃！", file=sys.stderr)
+        print(f"   请先修改上游代码/路由表解绑该引用，或使用 `--force` 强制移除。\n", file=sys.stderr)
+        sys.exit(11)
+    print(f"   ✅ 预检通过（无破坏性强依赖阻断）")
+
+    # ── 阶段 2: Plan & Dry-Run 计划 ──
+    print(f"[阶段 2/5] Plan & 影响评估清单...")
+    meta = parse_frontmatter(target)
+    dsh_link = DSH_SKILLS_ROOT / skill_name
+    size_mb = get_dir_size_mb(target)
+    venvs_dir = target / "venvs"
+    has_venvs = venvs_dir.exists()
+    venvs_size_mb = get_dir_size_mb(venvs_dir) if has_venvs else 0.0
+
+    print(f"   • 目标路径:       {target} ({size_mb} MB)")
+    print(f"   • DSH 暴露软链接: {dsh_link} ({'待解绑' if dsh_link.exists() else '未映射'})")
+    print(f"   • 归档隔离目标:   {ARCHIVE_ROOT}/<timestamp>-{skill_name}/")
+    if has_venvs:
+        print(f"   • 专属独立环境:   {venvs_dir} ({venvs_size_mb} MB)")
+        print(f"     -> 策略: {'彻底清除独立 venv 释放空间' if args.purge_venvs else '随源码一同归档保留'}")
+
+    # 用户输出资产保护提示
+    print(f"   • 资产安全保护:   承诺不删除工作区产物与 OUTPUT 成果")
+
+    if args.dry_run:
+        print(f"\n💡 [Dry-Run 模式]: 试跑完毕，未做任何实际文件修改。\n")
+        return
+
+    # ── 阶段 3: Archive & Isolate 归档隔离 (软删除先行) ──
+    print(f"[阶段 3/5] Archive & Isolate 执行软删除隔离...")
+    ARCHIVE_ROOT.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    archive_dir = ARCHIVE_ROOT / f"{ts}-{skill_name}"
+
+    # 1. 解绑 DSH 暴露层
+    if dsh_link.exists() or dsh_link.is_symlink():
+        dsh_link.unlink()
+        print(f"   🔗 已解绑 DSH 投影软链接: {dsh_link}")
+
+    # 2. 移动至归档目录
+    shutil.move(str(target), str(archive_dir))
+    print(f"   📦 技能已整体移入归档区: {archive_dir}")
+
+    # 3. 将 SKILL.md 改名为 SKILL.md.archived 致盲
+    archived_md = archive_dir / "SKILL.md"
+    if archived_md.exists():
+        archived_md.rename(archive_dir / "SKILL.md.archived")
+
+    # 4. 生成恢复凭证
+    receipt = {
+        "skill_name": skill_name,
+        "archived_at": datetime.now().isoformat(),
+        "source_path": str(target),
+        "dsh_link": str(dsh_link),
+        "env_type": meta["env_type"],
+        "had_venvs": has_venvs
+    }
+    (archive_dir / "restore-receipt.json").write_text(json.dumps(receipt, indent=2, ensure_ascii=False), encoding="utf-8")
+    print(f"   🧾 已生成恢复收据: {archive_dir / 'restore-receipt.json'}")
+
+    # ── 阶段 4: Selective Purge 受控清理 ──
+    print(f"[阶段 4/5] Selective Purge 受控环境清理...")
+    if has_venvs and args.purge_venvs:
+        archived_venvs = archive_dir / "venvs"
+        if archived_venvs.exists():
+            shutil.rmtree(archived_venvs)
+            print(f"   🧹 已释放专属独立 venv 空间: {venvs_size_mb} MB")
+            print(f"   🛡️  [全局缓存保护]: ~/.cache/huggingface 等系统级模型缓存已完整保留。")
+    
+    if meta["env_type"] == "C" and meta["bins"]:
+        print(f"   ℹ️  [系统工具保留]: 外部命令 ({', '.join(meta['bins'])}) 属于系统环境，未作改动。")
+
+    # ── 阶段 5: Post-check 后检与审计 ──
+    print(f"[阶段 5/5] Post-check 死链清理与审计日志记录...")
+    # 扫除死链
+    if DSH_SKILLS_ROOT.exists():
+        for link in DSH_SKILLS_ROOT.iterdir():
+            if link.is_symlink() and not link.resolve().exists():
+                link.unlink()
+
+    # 写入审计日志
+    audit_log = ARCHIVE_ROOT / "audit.log"
+    with open(audit_log, "a", encoding="utf-8") as f:
+        f.write(f"[{datetime.now().isoformat()}] REMOVE skill={skill_name} archive={archive_dir.name} purged_venvs={args.purge_venvs}\n")
+
+    print(f"========================================================")
+    print(f"🎉 技能 [{skill_name}] 已成功安全移除！")
+    print(f"💡 若需一键回滚还原，可执行:")
+    print(f"   skillctl restore {archive_dir.name}\n")
+
+
+def cmd_list_archive(args):
+    """列出所有归档技能"""
+    print(f"\n📦 SKILL 归档隔离区 ({ARCHIVE_ROOT}):")
+    print(f"--------------------------------------------------------")
+    if not ARCHIVE_ROOT.exists():
+        print("归档区为空。")
+        return
+
+    count = 0
+    for item in sorted(ARCHIVE_ROOT.iterdir(), reverse=True):
+        if item.is_dir():
+            receipt_file = item / "restore-receipt.json"
+            orig_name = item.name
+            at = "未知"
+            if receipt_file.exists():
+                try:
+                    data = json.loads(receipt_file.read_text(encoding="utf-8"))
+                    orig_name = data.get("skill_name", item.name)
+                    at = data.get("archived_at", "")[:19].replace("T", " ")
+                except Exception:
+                    pass
+            size_mb = get_dir_size_mb(item)
+            print(f" - 归档ID: {item.name:<30} 原技能: {orig_name:<16} 大小: {size_mb:>6}MB  时间: {at}")
+            count += 1
+    if count == 0:
+        print("暂无归档技能。")
+    print(f"--------------------------------------------------------\n")
+
+
+def cmd_restore(args):
+    """一键回滚恢复归档技能"""
+    archive_id = args.archive_id
+    archive_dir = ARCHIVE_ROOT / archive_id
+    if not archive_dir.exists():
+        print(f"❌ 归档目录不存在: {archive_dir}", file=sys.stderr)
+        sys.exit(1)
+
+    receipt_file = archive_dir / "restore-receipt.json"
+    if not receipt_file.exists():
+        print(f"❌ 丢失 restore-receipt.json 凭证，无法安全回滚！", file=sys.stderr)
+        sys.exit(1)
+
+    receipt = json.loads(receipt_file.read_text(encoding="utf-8"))
+    skill_name = receipt["skill_name"]
+    source_path = Path(receipt["source_path"])
+    dsh_link = Path(receipt["dsh_link"])
+
+    print(f"\n🔄 正在回滚还原技能: [{skill_name}] 从 {archive_id}...")
+    if source_path.exists():
+        print(f"❌ 目标目录已存在对应技能，无法直接覆盖: {source_path}", file=sys.stderr)
+        sys.exit(1)
+
+    # 1. 恢复 SKILL.md
+    archived_md = archive_dir / "SKILL.md.archived"
+    if archived_md.exists():
+        archived_md.rename(archive_dir / "SKILL.md")
+
+    # 2. 移回物理位置
+    shutil.move(str(archive_dir), str(source_path))
+
+    # 3. 删除 restore-receipt.json
+    clean_receipt = source_path / "restore-receipt.json"
+    if clean_receipt.exists():
+        clean_receipt.unlink()
+
+    # 4. 重新建立 DSH 软链接
+    if not dsh_link.exists():
+        dsh_link.symlink_to(source_path)
+        print(f"🔗 已恢复 DSH 投影软链接: {dsh_link} -> {source_path}")
+
+    # 5. 若为 A 类技能，检查/重建 .venv 链接
+    if receipt.get("env_type") == "A":
+        v_link = source_path / ".venv"
+        if not v_link.exists():
+            v_link.symlink_to("../.venv")
+            print(f"🐍 已自动恢复 A 类共享环境链接: {v_link} -> ../.venv")
+
+    # 6. 记录审计日志
+    audit_log = ARCHIVE_ROOT / "audit.log"
+    with open(audit_log, "a", encoding="utf-8") as f:
+        f.write(f"[{datetime.now().isoformat()}] RESTORE skill={skill_name} from={archive_id}\n")
+
+    print(f"✅ 技能 [{skill_name}] 已成功秒级原样回滚就绪！\n")
+
+
+# ── CLI 入口 ─────────────────────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="skillctl",
+        description="SKILL 生命周期与 5 阶段安全移除管理工具"
+    )
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    # lint
+    subparsers.add_parser("lint", help="技能契约校验、死链扫描与规范体检")
+
+    # inspect
+    p_inspect = subparsers.add_parser("inspect", help="查看单个技能详情与依赖拓扑")
+    p_inspect.add_argument("skill", help="技能名称")
+
+    # sweep-links
+    subparsers.add_parser("sweep-links", help="清理 ~/.dsh/skills/ 下的悬挂损坏软链接")
+
+    # remove
+    p_remove = subparsers.add_parser("remove", help="5 阶段安全移除技能（默认隔离归档）")
+    p_remove.add_argument("skill", help="技能名称")
+    p_remove.add_argument("--dry-run", action="store_true", help="试跑模式：仅打印计划与影响清单，不修改文件")
+    p_remove.add_argument("--purge-venvs", action="store_true", help="清理独立专属虚拟环境以释放磁盘")
+    p_remove.add_argument("--force", action="store_true", help="强制模式：无视上游依赖或核心白名单警告")
+
+    # list-archive
+    subparsers.add_parser("list-archive", help="列出所有归档隔离的技能")
+
+    # restore
+    p_restore = subparsers.add_parser("restore", help="一键秒级原样回滚已归档技能")
+    p_restore.add_argument("archive_id", help="归档目录名/ID")
+
+    args = parser.parse_args()
+
+    if args.command == "lint":
+        cmd_lint(args)
+    elif args.command == "inspect":
+        cmd_inspect(args)
+    elif args.command == "sweep-links":
+        cmd_sweep_links(args)
+    elif args.command == "remove":
+        cmd_remove(args)
+    elif args.command == "list-archive":
+        cmd_list_archive(args)
+    elif args.command == "restore":
+        cmd_restore(args)
+
+
+if __name__ == "__main__":
+    main()
