@@ -164,26 +164,67 @@ def search_keenable(query: str, cfg: dict, timeout: int | None = None) -> list[d
             [src["command"], "search", query, "--site", ""],
             capture_output=True, text=True, timeout=to
         )
-        # keenable search prints YAML to stdout
+        # keenable search prints a YAML *wrapper* to stdout:
+        #   query: ...
+        #   mode: pro
+        #   results:
+        #   - title: ...
+        #     url: ...
+        # Older releases could append a trailing "Update: ..." notice that
+        # breaks YAML parsing, so strip anything before the first mapping key
+        # and tolerate a bare list for forward compatibility.
         out = proc.stdout
         if not out.strip():
             return []
-        docs = yaml.safe_load(out)
+        docs = _load_keenable_yaml(out)
+        if isinstance(docs, dict):
+            docs = docs.get("results") or []
         if not isinstance(docs, list):
             docs = [docs] if docs else []
         results = []
         for d in docs:
+            if not isinstance(d, dict):
+                continue
+            title = d.get("title", "") or ""
+            url = d.get("url", "") or ""
+            if not title and not url:
+                continue
             results.append(make_result(
-                title=d.get("title", ""),
-                url=d.get("url", ""),
+                title=title,
+                url=url,
                 snippet=d.get("snippet") or d.get("description", ""),
                 source="keenable",
                 score=0.6,
-                published_at=d.get("published_at"),
+                published_date=_iso_date(d.get("published_at")),
             ))
         return results
     except (subprocess.TimeoutExpired, FileNotFoundError, Exception) as e:
         return [make_result("", "", f"[keenable error: {type(e).__name__}: {e}]", "keenable", 0.0, error=str(e))]
+
+
+def _iso_date(value) -> str | None:
+    """把 YAML 解析出的 datetime / date 归一为 ISO 字符串（JSON 可序列化）。"""
+    if value is None:
+        return None
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return str(value)
+
+
+def _load_keenable_yaml(out: str):
+    """解析 keenable 的 YAML 输出，容忍尾部 update 提示等噪声。"""
+    try:
+        return yaml.safe_load(out)
+    except yaml.YAMLError:
+        # 截断到最后一个 YAML 顶格键（如 "results:"）之后仍失败时，逐行裁剪尾部噪声
+        lines = out.splitlines()
+        for cut in range(len(lines), 0, -1):
+            chunk = "\n".join(lines[:cut])
+            try:
+                return yaml.safe_load(chunk)
+            except yaml.YAMLError:
+                continue
+        raise
 
 
 def search_tavily(query: str, cfg: dict, advanced: bool = False, topic: str | None = None,
