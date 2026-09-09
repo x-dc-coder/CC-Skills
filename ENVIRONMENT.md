@@ -13,19 +13,22 @@ for t in uv gh git node lark-cli keenable mmdc officecli graph-easy mysql; do
 done
 ```
 
-## 依赖登记表（2026-08-29 实采）
+> **更省事的替代**：`skill-update-check`（版本/更新，见下方「自动化工具链」）
+> 与 `skill-doctor`（有效性，<200ms）已覆盖本节手工命令的全部能力。
+
+## 依赖登记表（2026-08-29 实采；版本以 `skill-update-check` 为准）
 
 | 工具 | 本机版本 | 依赖技能 | 安装方式 | 验证 |
 |---|---|---|---|---|
 | uv | 0.11.28 | 全部 Python 技能（执行环境：先 `cd ~/.claude/skills` 再 `uv run`，见 CLAUDE.md 核心约束） | 官方安装脚本（~/.local/bin/uv） | `uv --version` |
 | gh | 2.97.0 | github-workflow（认证/远端/Issue/PR） | 官方安装（~/.local/bin/gh） | `gh auth status` |
 | git | 2.55.0 | 全部（github-workflow 为基座） | 系统包 | `git --version` |
-| lark-cli | 1.0.89 | lark-cli（飞书 23 域聚合技能，硬依赖） | nvm npm 全局 | `lark-cli doctor` |
+| lark-cli | 1.0.89 | lark-cli（飞书 23 域聚合技能，硬依赖） | nvm npm 全局 `@larksuite/cli` | `lark-cli --version`；升级 `lark-cli update` |
 | keenable | 0.1.22 | unified-search（keenable 源，**硬依赖**；脚本直接调用二进制） | 官方安装脚本（~/.cargo/bin） | `keenable --version`；安装/认证/MCP 配置见 unified-search/references/keenable-setup.md |
 | mmdc | 11.15.0 | diagram（sequence 类渲染） | npm（mermaid-cli，nvm 环境） | `mmdc --version` |
-| graph-easy | v0.76 | diagram（draft 类 ASCII 图） | `sudo apt install libgraph-easy-perl graphviz` | `graph-easy --version` |
+| graph-easy | v0.76 | diagram（draft 类 ASCII 图） | `sudo apt install libgraph-easy-perl graphviz` | `graph-easy --version`（注意：退出码为 2，属正常） |
 | Playwright + Chromium | chromium-1134/1234 | diagram（ers 类 ECharts 引擎，默认）；缺失时用 `--engine pillow` 兜底 | pip playwright + `playwright install chromium`（~/.cache/ms-playwright） | `ls ~/.cache/ms-playwright` |
-| officecli | 1.0.141 | officecli（docx/xlsx/pptx） | 官方安装（~/.local/bin/officecli） | `officecli --version` |
+| officecli | 1.0.148 | officecli（docx/xlsx/pptx） | 官方安装（~/.local/bin/officecli）；**自更新**，版本漂移常见 | `officecli --version` |
 | mysql | 8.0.46 | db-skill（项目本地库） | 系统/容器 | `mysql --version` |
 | node / npx | v24.16.0 / 11.13.0 | drawio-xml（`npx @next-ai-drawio/mcp-server` 按需拉取）、lark-cli | nvm | `node --version` |
 | python3 | 3.10.12 | 脚本运行（uv 环境内） | 系统包 | `python3 --version` |
@@ -64,3 +67,22 @@ metadata:
 
 正文声明：依赖段写"依赖见 `ENVIRONMENT.md` 依赖登记表"并指明所需工具即可，不重复安装步骤
 （keenable 例外：其安装/认证/MCP 配置细节保留在 unified-search/references/keenable-setup.md）。
+
+## 自动化工具链（scripts/，全部只读）
+
+三个工具职责严格分离，互不重叠：
+
+| 命令 | 脚本 | 职责 | 网络 | 耗时 |
+|---|---|---|---|---|
+| `skill-doctor` | `scripts/skill-doctor.mjs` | **有效性**：二进制可执行 / 守护进程端口 / venv 健全 / 凭据就绪 → READY·DEGRADED·UNAVAILABLE | ❌ 零网络 | <200ms |
+| `skill-update-check` | `scripts/skill-update-check.py` | **版本**：npm / pypi / github / self / baseline 五类通道扫更新 + ENVIRONMENT.md 登记漂移 | ✅ 只读 | ~1-3s |
+| `skillctl` | `scripts/skillctl` | **生命周期**：契约 lint / 死链清理 / 5 阶段安全移除 / 秒级回滚 | ❌ 零网络 | 毫秒级 |
+
+`check-engine-updates` 为向后兼容薄壳，等价于 `skill-update-check --focus engines`。
+
+**新增外部依赖时**：① 本表登记版本 → ② 技能 frontmatter 声明 `metadata.requires.bins`
+→ ③ 在 `scripts/skill-update-check.py` 的 `TRACKED_DEPS` 加一行（含 channel 与 upgrade 命令），
+即可纳入自动更新扫描。
+
+> **登记漂移**：本表版本会被 `skill-update-check` 作为基线比对；自更新型工具
+> （officecli 等）版本漂移频繁，发现漂移时同步更新本表即可。
