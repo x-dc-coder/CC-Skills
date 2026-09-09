@@ -24,7 +24,7 @@ done
 | gh | 2.97.0 | github-workflow（认证/远端/Issue/PR） | 官方安装（~/.local/bin/gh） | `gh auth status` |
 | git | 2.55.0 | 全部（github-workflow 为基座） | 系统包 | `git --version` |
 | lark-cli | 1.0.94 | lark-cli（飞书 23 域聚合技能，硬依赖） | nvm npm 全局 `@larksuite/cli` | `lark-cli --version`；升级 `lark-cli update` |
-| keenable | 0.1.22 | unified-search（keenable 源，**硬依赖**；脚本直接调用二进制） | 官方安装脚本（~/.cargo/bin） | `keenable --version`；安装/认证/MCP 配置见 unified-search/references/keenable-setup.md |
+| keenable | 0.2.3 | unified-search（keenable 源，**硬依赖**；脚本直接调用二进制） | 官方安装脚本（~/.cargo/bin）；升级 `keenable update` | `keenable --version`；安装/认证/MCP 配置见 unified-search/references/keenable-setup.md |
 | mmdc | 11.17.0 | diagram（sequence 类渲染） | npm（mermaid-cli，nvm 环境） | `mmdc --version` |
 | graph-easy | v0.76 | diagram（draft 类 ASCII 图） | `sudo apt install libgraph-easy-perl graphviz` | `graph-easy --version`（注意：退出码为 2，属正常） |
 | Playwright + Chromium | chromium-1134/1234 | diagram（ers 类 ECharts 引擎，默认）；缺失时用 `--engine pillow` 兜底 | pip playwright + `playwright install chromium`（~/.cache/ms-playwright） | `ls ~/.cache/ms-playwright` |

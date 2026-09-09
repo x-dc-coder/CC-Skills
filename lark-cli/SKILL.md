@@ -1,7 +1,7 @@
 ---
 name: lark-cli
 description: >-
-  飞书/Lark 全家桶统一入口（聚合原 lark-* 全系 27 个技能）。覆盖：审批、妙搭/Spark/Miaoda 应用开发托管、
+  飞书/Lark 全家桶统一入口（聚合原 lark-* 全系 28 个技能）。覆盖：审批、妙搭/Spark/Miaoda 应用开发托管、
   考勤打卡、多维表格/Base/bitable、日历/日程/会议室预订、通讯录/联系人解析、云文档 Docx/Wiki/思维笔记、
   云盘/Drive 上传下载/权限/评论/版本/导入导出、实时事件监听、IM 消息/群聊/卡片/Feed/加急、邮箱/邮件/草稿/
   模板/收信规则、Markdown 文件、视频会议/妙记/纪要/逐字稿/机器人参会、OKR、原生 OpenAPI、电子表格/Sheet/
@@ -17,10 +17,10 @@ metadata:
 
 # lark-cli — 飞书/Lark 全家桶统一入口（聚合技能）
 
-本技能聚合原 27 个 `lark-*` 独立技能（approval / apps / attendance / base / calendar / contact / doc /
+本技能聚合原 28 个 `lark-*` 独立技能（approval / apps / attendance / base / calendar / contact / doc /
 drive / event / im / mail / markdown / meeting / okr / openapi-explorer / shared / sheets /
 skill-maker / slides / task / vc / vc-agent / minutes / note / whiteboard / wiki /
-workflow-meeting-summary），模型目录只保留本一个条目；各域权威规程内嵌于 lark-cli 二进制，
+workflow-meeting-summary / workflow-standup-report），模型目录只保留本一个条目；各域权威规程内嵌于 lark-cli 二进制，
 随 CLI 版本自动同步，用 `lark-cli skills read` 按需读取。
 
 ## 0. 总则（每次操作前）
@@ -109,5 +109,5 @@ workflow-meeting-summary），模型目录只保留本一个条目；各域权�
 - 技能查看：`lark-cli skills list` / `lark-cli skills list <域>`（列一层）/ `lark-cli skills read <域>`
 - 探索 API：`lark-cli schema <service.resource.method>`（参数/类型/scope/示例）；
   `lark-cli api GET|POST <path> [--params <json>] [--data <json>]`（逃生舱）
-- 回退到分散技能模式（如官方恢复独立技能）：`npx skills add larksuite/cli -g -y`（重装 27 个独立 SKILL.md
+- 回退到分散技能模式（如官方恢复独立技能）：`npx skills add larksuite/cli -g -y`（重装 28 个独立 SKILL.md
   到 `~/.claude/skills/`，本聚合技能可自行决定去留）
