@@ -87,11 +87,12 @@ D2 / Soul-Spark / lab-monitor / monitor-panel / Custom-Agents / Vision-MCP / dsh
 |---|---|
 | 大仓里找符号 / 追调用链 / 评估改动影响 | ✅ `codegraph_explore` |
 | 小仓（<50 文件） | ⚪ grep + read 更快 |
-| 查配置 / 文档 / Markdown / shell 脚本 | ⚪ codegraph 不索引这些，用 grep/read |
+| 查配置 / 文档 / **Markdown 规则** / shell 脚本 | ⚪ codegraph **不支持 Markdown**（实测 init 纯 md 目录 → "No files found to index"），用 grep/read |
 | 确认某个具体细节（explore 未覆盖） | ⚪ 单点 Read |
 | 改前看爆炸半径 / 改后选测试 | ✅ `codegraph impact` / `codegraph affected` |
 
 **反模式**：用 codegraph 拿到结果后再 grep 复核一遍——那是重复劳动，浪费上下文。
+**特别提醒**：检索 DSH 自己的文档/规则（AGENTS.md、knowledge/*.md、RULES.md 等，都是 Markdown）**不要用 codegraph**，用 grep + read 或查 `knowledge/README.md` 索引。
 
 ---
 
