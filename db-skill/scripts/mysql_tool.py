@@ -10,12 +10,26 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+# ── 共享实现（顶层 scripts/common.py）─────────────────────────────────────────
+# resolve_config_path / choose_limit / shutil_which 原为 mysql_tool.py 与 pg_tool.py
+# 各存一份逐字节相同的副本；现统一收在 scripts/common.py，本模块只保留
+# 「候选配置文件名」这一处引擎差异。
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "scripts"))
+from common import choose_limit, shutil_which  # noqa: E402
+from common import resolve_config_path as _resolve_config_path  # noqa: E402
+
 
 CANDIDATE_CONFIG_FILES = (
     ".db-skill/mysql.json",
     ".db-skill.json",
     "config/mysql.json",
 )
+
+
+def resolve_config_path(explicit: Optional[str]) -> Path:
+    """MySQL 专用包装：传入本引擎的候选配置文件名。"""
+    return _resolve_config_path(explicit, CANDIDATE_CONFIG_FILES)
+
 
 
 def parse_args() -> argparse.Namespace:
@@ -37,32 +51,6 @@ def parse_args() -> argparse.Namespace:
     )
     return parser.parse_args()
 
-
-def resolve_config_path(explicit: Optional[str]) -> Path:
-    if explicit:
-        path = Path(explicit).expanduser().resolve()
-        if not path.exists():
-            raise FileNotFoundError(f"Config not found: {path}")
-        return path
-
-    env_path = os.environ.get("DB_SKILL_CONFIG")
-    if env_path:
-        path = Path(env_path).expanduser().resolve()
-        if not path.exists():
-            raise FileNotFoundError(f"Config from DB_SKILL_CONFIG not found: {path}")
-        return path
-
-    cwd = Path.cwd().resolve()
-    for base in (cwd, *cwd.parents):
-        for rel in CANDIDATE_CONFIG_FILES:
-            candidate = base / rel
-            if candidate.exists():
-                return candidate
-
-    checked = ", ".join(CANDIDATE_CONFIG_FILES)
-    raise FileNotFoundError(
-        "No config file found. Use --config, set DB_SKILL_CONFIG, or create one of: " + checked
-    )
 
 
 def load_config(path: Path) -> Dict[str, Any]:
@@ -108,17 +96,6 @@ def bounded_select_sql(sql: str, limit: int) -> str:
     # Wrap query to enforce hard row cap without relying on user-provided LIMIT.
     return f"SELECT * FROM ({sql}) AS __db_skill_q LIMIT {int(limit)}"
 
-
-def choose_limit(user_limit: Optional[int], config: Dict[str, Any]) -> Tuple[int, int]:
-    default_limit = int(config["limits"].get("default_limit", 200))
-    max_limit = int(config["limits"].get("max_limit", 1000))
-
-    chosen = default_limit if user_limit is None else int(user_limit)
-    if chosen < 1:
-        chosen = 1
-    if chosen > max_limit:
-        chosen = max_limit
-    return chosen, max_limit
 
 
 def connect_mysql(mysql_cfg: Dict[str, Any]):
@@ -236,13 +213,6 @@ def jq_preview(path: Path, jq_filter: str) -> Tuple[bool, str]:
         preview = preview[:6000] + "\n...<truncated>"
     return True, preview
 
-
-def shutil_which(name: str) -> Optional[str]:
-    for p in os.environ.get("PATH", "").split(os.pathsep):
-        full = Path(p) / name
-        if full.exists() and os.access(full, os.X_OK):
-            return str(full)
-    return None
 
 
 def run_sql(args: argparse.Namespace) -> int:
