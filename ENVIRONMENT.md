@@ -28,7 +28,8 @@ done
 | mmdc | 11.17.0 | diagram（sequence 类渲染） | npm（mermaid-cli，nvm 环境） | `mmdc --version` |
 | graph-easy | v0.76 | diagram（draft 类 ASCII 图） | `sudo apt install libgraph-easy-perl graphviz` | `graph-easy --version`（注意：退出码为 2，属正常） |
 | Playwright + Chromium | chromium-1134/1234 | diagram（ers 类 ECharts 引擎，默认）；缺失时用 `--engine pillow` 兜底 | pip playwright + `playwright install chromium`（~/.cache/ms-playwright） | `ls ~/.cache/ms-playwright` |
-| officecli | 1.0.148 | officecli（docx/xlsx/pptx） | 官方安装（~/.local/bin/officecli）；**自更新**，版本漂移常见 | `officecli --version` |
+| officecli | 1.0.149 | officecli（docx/xlsx/pptx） | 官方安装（~/.local/bin/officecli）；**自更新**，版本漂移常见 | `officecli --version` |
+| codegraph | 1.6.0 | 代码知识图谱（符号检索/调用图/MCP 工具，非 skill 依赖） | 官方 installer（`~/.codegraph/versions/`）；升级 `codegraph upgrade` | `codegraph --version`；接入规程见 `~/.dsh/knowledge/codegraph-guide.md` |
 | mysql | 8.0.46 | db-skill（项目本地库） | 系统/容器 | `mysql --version` |
 | node / npx | v24.16.0 / 11.13.0 | drawio-xml（`npx @next-ai-drawio/mcp-server` 按需拉取）、lark-cli | nvm | `node --version` |
 | python3 | 3.10.12 | 脚本运行（uv 环境内） | 系统包 | `python3 --version` |

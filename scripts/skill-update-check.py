@@ -102,6 +102,15 @@ TRACKED_DEPS: list[dict] = [
         "upgrade": "curl -fsSL https://d.officecli.ai/install.sh | bash",
         "notes": "docx/xlsx/pptx 处理；无公开版本 API，只能查官方安装脚本",
     },
+    {
+        "id": "codegraph",
+        "skill": "（工具）代码知识图谱 / MCP",
+        "bin": "codegraph",
+        "channel": "github",
+        "repo": "colbymchenry/codegraph",
+        "upgrade": "codegraph upgrade",
+        "notes": "符号级代码索引与调用图；Claude Code 侧已挂 MCP，DSH 侧见 cordis.patch.yml",
+    },
     # ── 基线比对通道（系统包，不联网）────────────────────────────────────
     {"id": "uv", "skill": "全部 Python 技能", "bin": "uv", "channel": "baseline",
      "upgrade": "uv self update"},
