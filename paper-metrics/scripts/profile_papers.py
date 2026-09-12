@@ -1184,6 +1184,67 @@ def _aggregate_metric(per_paper_values: dict[str, float], unit: str,
     }
 
 
+# Languages whose text metrics this layer can actually compute. Anything else
+# must be reported as "not measured", never as 0 (see the project issues: a
+# Chinese corpus silently produced all-zero metrics before this guard existed).
+SUPPORTED_METRIC_LANGUAGES = ("en",)
+
+
+def _suppress_language_dependent_paragraph_stats(metrics: dict) -> None:
+    """Apply the language guard to M-PCNT-25, which is computed here (from block
+    structure) rather than by text_metrics, so it has to be guarded explicitly.
+
+    Everything is suppressed, including the count. The count is NOT
+    language-independent in practice either: the paragraph filter is
+    "len(text.split()) >= 15", and CJK paragraphs often carry no whitespace at
+    all, so real Chinese paragraphs get filtered out (measured: a Chinese corpus
+    reported ~62 "words"/paragraph for the ones that survived, and dropped the
+    rest). A proper CJK paragraph metric is part of the Chinese-support work
+    (issue #10); until then this layer reports "not measured".
+    """
+    pm = metrics.get("M-PCNT-25")
+    if not isinstance(pm, dict):
+        return
+    pm["value"] = None
+    pm["distribution"] = None
+    pm["n"] = 0
+    pm["denominator"] = 0
+    pm["evidence"] = {"count": 0, "sample": []}
+    pm["warnings"] = sorted(set(pm.get("warnings") or []) | {"LANGUAGE_NOT_SUPPORTED"})
+    pm["note"] = ("suppressed: paragraph segmentation depends on whitespace "
+                  "tokenisation, which CJK text does not provide (issue #10)")
+
+
+def _language_facts(text_metrics_mod, text: str, metrics: dict) -> dict:
+    """Per-paper language facts.
+
+    Single source of truth is text_metrics.detect_language(). When the language
+    cannot be judged we return language_supported = None, i.e. "not assessed" —
+    NEVER True. A default of True would be actively dangerous: on a Chinese
+    corpus it would let an artifact declare "language verified" while the
+    numbers in it are all zeros.
+    """
+    detect = getattr(text_metrics_mod, "detect_language", None)
+    if callable(detect):
+        info = detect(text) or {}
+        supported = info.get("supported")
+        return {
+            "language": info.get("language", "unknown"),
+            "cjk_ratio": info.get("cjk_ratio", 0.0),
+            "language_supported": None if supported is None else bool(supported),
+        }
+    for m in metrics.values():
+        if isinstance(m, dict) and "language" in m:
+            warnings = m.get("warnings") or []
+            return {
+                "language": m.get("language"),
+                "cjk_ratio": m.get("cjk_ratio"),
+                "language_supported": "LANGUAGE_NOT_SUPPORTED" not in warnings,
+            }
+    # Language layer not present yet: undetermined, not "OK".
+    return {"language": "unknown", "cjk_ratio": None, "language_supported": None}
+
+
 def aggregate_corpus(records: list[dict], corpus_id: str | None = None) -> dict:
     """Aggregate per-paper records into _corpus_summary.json.
 
@@ -1264,10 +1325,59 @@ def aggregate_corpus(records: list[dict], corpus_id: str | None = None) -> dict:
             corpus_warnings.append(
                 {"code": "SECTION_SKEW", "metric": "",
                  "detail": f"section '{section}' present in {cnt}/{n_papers} papers"})
+    # Language coverage: an unsupported language must be loud, not silent. Papers
+    # in such a language contribute null values (counted as missing) and raise
+    # CORPUS_LANGUAGE_UNSUPPORTED, so no downstream consumer can mistake
+    # "not measured" for "zero".
+    lang_counts: Counter = Counter()
+    unsupported = 0
+    undetermined = 0
+    for r in records:
+        lang_counts[str(r.get("language") or "unknown")] += 1
+        if r.get("language_supported") is False:
+            unsupported += 1
+        elif r.get("language_supported") is None:
+            undetermined += 1
+    # True only when every paper was positively judged as a supported language.
+    # None = "not assessed" (the language layer is absent or could not decide):
+    # consumers must not read this as a pass.
+    if unsupported:
+        language_supported: bool | None = False
+    elif undetermined:
+        language_supported = None
+    else:
+        language_supported = True
+    if undetermined and not unsupported:
+        corpus_warnings.append({
+            "code": "LANGUAGE_NOT_ASSESSED", "metric": "",
+            "detail": (f"{undetermined}/{n_papers} paper(s) have no language verdict "
+                       f"(language layer unavailable or text undecidable); "
+                       f"language_supported is null meaning \"not assessed\", not \"supported\"."),
+        })
+    if language_supported is False:
+        # Every text metric is null for the same reason, so 13x NO_VALID_VALUES +
+        # 13x N_LT_5 + 13x N_VALID_LT_3 is pure noise that hides the real cause.
+        # Collapse them into the single, actionable LANGUAGE_NOT_SUPPORTED code.
+        _small_n_codes = {"NO_VALID_VALUES", "N_LT_5", "N_VALID_LT_3"}
+        for msum in metrics.values():
+            codes = set(msum.get("warnings") or [])
+            if msum.get("n_valid") == 0 and codes and codes <= _small_n_codes | {"LANGUAGE_NOT_SUPPORTED"}:
+                msum["warnings"] = sorted((codes - _small_n_codes) | {"LANGUAGE_NOT_SUPPORTED"})
+        corpus_warnings = [w for w in corpus_warnings if w["code"] not in _small_n_codes]
+    if unsupported:
+        corpus_warnings.append({
+            "code": "CORPUS_LANGUAGE_UNSUPPORTED", "metric": "",
+            "detail": (f"{unsupported}/{n_papers} paper(s) are outside the supported "
+                       f"metric languages {list(SUPPORTED_METRIC_LANGUAGES)}; their metrics are "
+                       f"reported as null and counted as missing, never as 0. "
+                       f"Chinese support is tracked in issue #10."),
+        })
     out = {
         "schema_version": SCHEMA_VERSION,
         "analysis_unit": "paper",
         "weight_mode": "equal_paper",
+        "languages": {k: lang_counts[k] for k in sorted(lang_counts)},
+        "language_supported": language_supported,
         # Median/p25/p75 are nearest-rank (no interpolation). For an even n the
         # reported median is therefore the lower middle observation.
         "quantile_method": "nearest_rank_no_interpolation",
@@ -1323,16 +1433,21 @@ def run_profile(corpus_dir: Path, out_dir: Path,
                                     _LOCAL_CONFOUND_METRICS)
             if include_section_metrics else {}
         )
-        records.append({
+        text = paper.canonical_text()
+        record: dict = {
             "paper_key": paper.paper_key,
             "inputs": paper.inputs,
             "sections": paper.sections_present(),
-            "n_tokens": len(text_metrics_mod.tokenize(paper.canonical_text())),
+            "n_tokens": len(text_metrics_mod.tokenize(text)),
             "metrics": metrics,
             "section_metrics": section_metrics,
             "upstream": paper.upstream,
             "warnings": list(paper.warnings),
-        })
+        }
+        record.update(_language_facts(text_metrics_mod, text, metrics))
+        if record.get("language_supported") is False:
+            _suppress_language_dependent_paragraph_stats(record["metrics"])
+        records.append(record)
 
     corpus_id = _corpus_fingerprint(records)
     summary = aggregate_corpus(records, corpus_id)

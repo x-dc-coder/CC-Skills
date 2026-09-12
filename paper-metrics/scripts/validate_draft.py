@@ -17,11 +17,18 @@ Design rules (frozen):
     A clause outside its target band is "fail" when level==gate and "warn"
     otherwise. Actual value or target unavailable -> "skipped".
   * No 0-100 aggregate value is produced: assessment is strictly per clause.
-  * Exit code: 2 when the draft is not usable evidence (fewer than
-    MIN_ALPHA_TOKENS alpha tokens, or fewer than MIN_EVALUABLE_RATIO of the
-    clauses evaluable), 1 when a gate clause fails, 0 otherwise. Degenerate input
-    can never pass: an empty / non-target-language / heading-only draft reports
-    draft_validity.status=insufficient_evidence instead of a silent all-skipped 0.
+  * Language scope comes first: text_metrics.detect_language() decides whether the
+    draft's language is inside the metrics' scope. When it is not, the result is
+    draft_validity.status=language_unsupported, every clause is skipped without any
+    gate/warn arithmetic (no metric is even computed) and the exit code is 2. The
+    language verdict is never re-derived here: text_metrics is the single source of
+    truth, so an unavailable or unusable verdict is reported as such, never guessed.
+  * Exit code: 2 when the draft is not usable evidence (unsupported language, fewer
+    than MIN_ALPHA_TOKENS alpha tokens, no evaluable clause, or fewer than
+    MIN_EVALUABLE_RATIO of the clauses evaluable), 1 when a gate clause fails, 0
+    otherwise. Degenerate input can never pass: an empty / heading-only draft
+    reports draft_validity.status=insufficient_evidence instead of a silent
+    all-skipped 0, and an all-skipped contract always exits 2.
   * A warn-only contract (no gate clause) exits 0 but says so loudly: passing a
     contract that has no gate clause is not evidence that the baseline is met.
   * The draft is NFC-normalized once before any metric or offset math, mirroring
@@ -69,6 +76,11 @@ MAX_EVIDENCE = 5
 # passing, because "every clause skipped" is not evidence of compliance.
 MIN_ALPHA_TOKENS = 50
 MIN_EVALUABLE_RATIO = 0.5
+
+# Languages the OBSERVED metric layer is defined for. The list is informational:
+# text_metrics.detect_language() owns the actual decision (thresholds included).
+SUPPORTED_METRIC_LANGUAGES = ("en",)
+UNSUPPORTED_LANGUAGE_NOTE = "当前支持的指标语言 = en（中文支持见 issue #10）"
 # Only used when text_metrics (the frozen tokenizer) is unavailable; it never
 # produces a metric value, it only keeps the guard from silently disappearing.
 _FALLBACK_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z'\-]*")
@@ -91,6 +103,7 @@ class ValidatorError(Exception):
 
 
 ComputeFn = Callable[[str], dict]
+LanguageDetector = Callable[[str], Any]
 
 
 # ---------------------------------------------------------------------------
@@ -152,6 +165,129 @@ def load_compute_module(module_name: str) -> ComputeFn:
         return result
 
     return compute
+
+
+# ---------------------------------------------------------------------------
+# Draft language scope (single source of truth: text_metrics.detect_language)
+# ---------------------------------------------------------------------------
+
+def load_language_detector(
+    module_name: str = _DEFAULT_METRICS_MODULE,
+    *,
+    required: bool = False,
+) -> "LanguageDetector | None":
+    """Resolve detect_language() from the metrics module.
+
+    Returns None when an optional (default) module has no detector, so the
+    validator keeps working before the detector lands. An explicitly requested
+    module that lacks it is an error instead of a silent downgrade.
+    """
+    try:
+        module = importlib.import_module(module_name)
+    except ImportError as exc:
+        if required:
+            raise ValidatorError(f"cannot import language module {module_name!r}: {exc}") from exc
+        return None
+    detector = getattr(module, "detect_language", None)
+    if not callable(detector):
+        if required:
+            raise ValidatorError(
+                f"language module {module_name!r} must expose detect_language(text)"
+            )
+        return None
+    return detector
+
+
+def _first_of(raw: Any, keys: tuple[str, ...], kind: type) -> Any:
+    for key in keys:
+        value = raw.get(key) if isinstance(raw, dict) else getattr(raw, key, None)
+        if isinstance(value, bool):
+            if kind is bool:
+                return value
+            continue
+        if isinstance(value, kind):
+            return value
+    return None
+
+
+def normalize_language_verdict(raw: Any, detector: str | None = None) -> dict:
+    """Normalize whatever detect_language() returns into the validator's shape.
+
+    Accepted: a mapping or object with supported/is_supported, language/lang/code
+    and cjk_ratio/ratio; a bare bool; or a language code alone. Anything else is
+    reported as an unusable verdict rather than approximated.
+    """
+    if isinstance(raw, bool):                       # detect_language() -> bool
+        supported, language, cjk_ratio = raw, None, None
+    elif isinstance(raw, str):                      # detect_language() -> "en" / "zh"
+        supported, language, cjk_ratio = None, raw, None
+    else:
+        supported = _first_of(raw, ("supported", "is_supported", "ok", "in_scope"), bool)
+        language = _first_of(raw, ("language", "lang", "code", "detected"), str)
+        cjk_ratio = _first_of(raw, ("cjk_ratio", "ratio", "han_ratio", "cjk"), float)
+    if supported is None and isinstance(language, str) and language:
+        supported = language.lower().split("-")[0] in SUPPORTED_METRIC_LANGUAGES
+    warnings: list[str] = []
+    if supported is None:
+        warnings.append(
+            f"unusable detect_language() verdict ({type(raw).__name__}: {raw!r}); "
+            "the language scope could not be checked"
+        )
+        return {
+            "available": False, "supported": None, "language": language,
+            "cjk_ratio": round(cjk_ratio, 6) if cjk_ratio is not None else None,
+            "supported_languages": list(SUPPORTED_METRIC_LANGUAGES),
+            "detector": detector, "note": UNSUPPORTED_LANGUAGE_NOTE, "warnings": warnings,
+        }
+    return {
+        "available": True,
+        "supported": bool(supported),
+        "language": language,
+        "cjk_ratio": round(cjk_ratio, 6) if cjk_ratio is not None else None,
+        "supported_languages": list(SUPPORTED_METRIC_LANGUAGES),
+        "detector": detector,
+        "note": None if supported else UNSUPPORTED_LANGUAGE_NOTE,
+        "warnings": warnings,
+    }
+
+
+def detect_draft_language(
+    text: str,
+    detector: "LanguageDetector | None" = None,
+    *,
+    module_name: str | None = None,
+) -> dict:
+    """Language verdict for the draft, delegated to text_metrics.detect_language."""
+    module = module_name or _DEFAULT_METRICS_MODULE
+    resolved = detector if detector is not None else load_language_detector(module)
+    if resolved is None:
+        return {
+            "available": False, "supported": None, "language": None, "cjk_ratio": None,
+            "supported_languages": list(SUPPORTED_METRIC_LANGUAGES), "detector": None,
+            "note": UNSUPPORTED_LANGUAGE_NOTE,
+            "warnings": [f"language detection unavailable: {module}.detect_language is missing "
+                         "(see issue #10); the language scope was not checked"],
+        }
+    name = f"{getattr(resolved, '__module__', module)}.detect_language"
+    try:
+        raw = resolved(text)
+    except Exception as exc:  # noqa: BLE001 - an exploding detector is not a pass
+        return {
+            "available": False, "supported": None, "language": None, "cjk_ratio": None,
+            "supported_languages": list(SUPPORTED_METRIC_LANGUAGES), "detector": name,
+            "note": UNSUPPORTED_LANGUAGE_NOTE,
+            "warnings": [f"detect_language() failed ({type(exc).__name__}): {exc}"],
+        }
+    return normalize_language_verdict(raw, name)
+
+
+def language_scope_message(language: dict) -> str:
+    """One-line reason used in JSON reasons and in the human report."""
+    parts = [f"language={language.get('language')} is not supported"]
+    if language.get("cjk_ratio") is not None:
+        parts.append(f"cjk_ratio={language['cjk_ratio']}")
+    parts.append(UNSUPPORTED_LANGUAGE_NOTE)
+    return "; ".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -449,38 +585,49 @@ def validate(
     contract_name: str | None = None,
     min_alpha_tokens: int = MIN_ALPHA_TOKENS,
     min_evaluable_ratio: float = MIN_EVALUABLE_RATIO,
+    language_detector: LanguageDetector | None = None,
+    require_language_detector: bool = False,
 ) -> dict:
     """Compare draft metrics against contract clauses (per clause, no aggregate)."""
     check_contract(contract)
     # One NFC pass before any metric or offset math: the corpus side normalizes in
     # Paper.canonical_text(), and the two sides must tokenize identical characters.
     draft_text = unicodedata.normalize("NFC", draft_text)
-    if compute is None:
-        compute = load_default_compute()
-    try:
-        metrics = compute(draft_text)
-    except ValidatorError:
-        raise
-    except Exception as exc:  # noqa: BLE001 - a broken metrics layer is an error, never a gate failure
-        raise ValidatorError(
-            f"metrics computation failed ({type(exc).__name__}): {exc}"
-        ) from exc
-    if not isinstance(metrics, dict):
-        raise ValidatorError("metrics provider did not return a mapping")
+
+    # Language scope is decided before anything else. An out-of-scope draft gets no
+    # pass/fail/warn verdict at all, so it can never be graded against an English
+    # baseline (and no metric is computed, which also keeps the provider uncalled).
+    draft_language = detect_draft_language(draft_text, language_detector)
+    language_blocked = bool(draft_language["available"] and draft_language["supported"] is False)
 
     starts = line_starts(draft_text)
     n_lines = len(starts)
-
-    # M-PCNT-25 is structural: compute it here from the draft's block layout unless
-    # the injected provider already produced an OBSERVED value for it.
     paragraph_blocks: list[ParagraphBlock] = []
     block_lines: dict[int, int] = {}
-    if any(clause["metric"] == PARAGRAPH_METRIC_ID for clause in contract["clauses"]):
-        paragraph_blocks = split_paragraphs(draft_text)
-        block_lines = {block.index: line_of(block.start, starts) for block in paragraph_blocks}
-        if _metric_value(metrics.get(PARAGRAPH_METRIC_ID)) is None:
-            metrics = dict(metrics)
-            metrics[PARAGRAPH_METRIC_ID] = compute_paragraph_metric(draft_text, paragraph_blocks)
+    metrics: dict = {}
+
+    if not language_blocked:
+        if compute is None:
+            compute = load_default_compute()
+        try:
+            metrics = compute(draft_text)
+        except ValidatorError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - a broken metrics layer is an error, never a gate failure
+            raise ValidatorError(
+                f"metrics computation failed ({type(exc).__name__}): {exc}"
+            ) from exc
+        if not isinstance(metrics, dict):
+            raise ValidatorError("metrics provider did not return a mapping")
+
+        # M-PCNT-25 is structural: compute it here from the draft's block layout unless
+        # the injected provider already produced an OBSERVED value for it.
+        if any(clause["metric"] == PARAGRAPH_METRIC_ID for clause in contract["clauses"]):
+            paragraph_blocks = split_paragraphs(draft_text)
+            block_lines = {block.index: line_of(block.start, starts) for block in paragraph_blocks}
+            if _metric_value(metrics.get(PARAGRAPH_METRIC_ID)) is None:
+                metrics = dict(metrics)
+                metrics[PARAGRAPH_METRIC_ID] = compute_paragraph_metric(draft_text, paragraph_blocks)
 
     results: list[dict] = []
     warnings: list[str] = []
@@ -488,6 +635,25 @@ def validate(
         metric_id = clause["metric"]
         level = clause["level"]
         target = clause.get("target")
+        if language_blocked:
+            blocked: dict = {
+                "id": clause["id"],
+                "metric": metric_id,
+                "actual": None,
+                "target": list(target) if isinstance(target, (list, tuple)) else None,
+                "deviation": None,
+                "level": level,
+                "status": "skipped",
+                "status_reason": "language_unsupported",
+                "evidence_lines": [],
+                "evidence": [],
+            }
+            if isinstance(clause.get("unit"), str):
+                blocked["unit"] = clause["unit"]
+            if isinstance(clause.get("provenance"), dict):
+                blocked["provenance"] = clause["provenance"]
+            results.append(blocked)
+            continue
         entry = metrics.get(metric_id)
         metric_entry = entry if isinstance(entry, dict) else {}
         actual = _metric_value(entry)
@@ -545,15 +711,32 @@ def validate(
 
     alpha_tokens, tokenizer = count_alpha_tokens(draft_text)
     validity_reasons: list[str] = []
-    if alpha_tokens < min_alpha_tokens:
-        validity_reasons.append(f"alpha_tokens={alpha_tokens} < {min_alpha_tokens}")
-    if evaluable_ratio < min_evaluable_ratio:
-        validity_reasons.append(
-            f"evaluable_clauses={n_evaluable}/{n_clauses} ({evaluable_ratio:.3g}) < {min_evaluable_ratio}"
-        )
+    if language_blocked:
+        validity_reasons.append(language_scope_message(draft_language))
+        validity_status = "language_unsupported"
+    else:
+        if alpha_tokens < min_alpha_tokens:
+            validity_reasons.append(f"alpha_tokens={alpha_tokens} < {min_alpha_tokens}")
+        if n_clauses and n_evaluable == 0:
+            # absolute floor: an all-skipped contract is unusable evidence whatever
+            # the configurable ratio threshold says
+            validity_reasons.append(f"no evaluable clause: 0/{n_clauses} clause(s) skipped")
+        elif evaluable_ratio < min_evaluable_ratio:
+            validity_reasons.append(
+                f"evaluable_clauses={n_evaluable}/{n_clauses} ({evaluable_ratio:.3g}) < {min_evaluable_ratio}"
+            )
+        if require_language_detector and not draft_language["available"]:
+            # opt-in strictness: without a detector the language scope cannot be
+            # checked at all, so a caller who needs that guarantee refuses instead
+            detail = (draft_language.get("warnings") or ["no language verdict"])[0]
+            validity_reasons.append(f"language detection unavailable: {detail}")
+        validity_status = "insufficient_evidence" if validity_reasons else "ok"
     draft_validity = {
-        "status": "insufficient_evidence" if validity_reasons else "ok",
+        "status": validity_status,
         "reasons": validity_reasons,
+        "language": draft_language.get("language"),
+        "language_supported": draft_language.get("supported"),
+        "cjk_ratio": draft_language.get("cjk_ratio"),
         "alpha_tokens": alpha_tokens,
         "min_alpha_tokens": min_alpha_tokens,
         "tokenizer": tokenizer,
@@ -575,9 +758,11 @@ def validate(
     if not isinstance(gate_mode, str) or not gate_mode:
         gate_mode = "quantile-gate" if n_gate_clauses else "warn-only"
     note = None
-    if n_gate_clauses == 0:
+    if n_gate_clauses == 0 and not language_blocked:
         note = ("contract has no gate clause (warn-only): passing this check does NOT mean "
                 "the draft meets the corpus baseline")
+    for warning in draft_language.get("warnings") or []:
+        warnings.append(f"language: {warning}")
 
     summary = {
         "n_clauses": n_clauses,
@@ -622,6 +807,7 @@ def validate(
             "nfc_normalized": True,
         },
         "draft_validity": draft_validity,
+        "draft_language": draft_language,
         "clauses": results,
         "summary": summary,
         "assessment_policy": {"aggregate": None, "policy": "per_clause_only"},
@@ -644,7 +830,15 @@ def render_report(result: dict) -> str:
     validity = result.get("draft_validity") or {}
     gate_policy = (f"gate_mode={result['summary'].get('gate_mode')} "
                    f"gate_clauses={result['summary'].get('n_gate_clauses')}")
-    if validity.get("status") == "insufficient_evidence":
+    if validity.get("status") == "language_unsupported":
+        language = result.get("draft_language") or {}
+        lines.append("[validate_draft] UNSUPPORTED LANGUAGE (exit 2): language="
+                     f"{language.get('language')} cjk_ratio={language.get('cjk_ratio')} "
+                     f"supported={language.get('supported')}")
+        lines.append("[validate_draft] " + str(language.get("note") or UNSUPPORTED_LANGUAGE_NOTE))
+        lines.append("[validate_draft] no verdict was produced: an unsupported language is outside "
+                     "the metrics' scope, so no gate/warn evaluation was performed")
+    elif validity.get("status") == "insufficient_evidence":
         lines.append(f"[validate_draft] INSUFFICIENT EVIDENCE (exit 2): "
                      + "; ".join(validity.get("reasons") or []))
         lines.append(f"[validate_draft] {gate_policy}; "
@@ -701,12 +895,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--compute-module", default=None,
                         help="inject a metrics provider module exposing compute(text) -> metrics "
                              "(default: text_metrics.compute_text_metrics + lexicon_loader)")
+    parser.add_argument("--language-module", default=None, metavar="MODULE",
+                        help="inject a language detector module exposing detect_language(text) "
+                             "(default: text_metrics.detect_language)")
     parser.add_argument("--min-alpha-tokens", type=int, default=MIN_ALPHA_TOKENS,
                         help="drafts below this alpha-token count are insufficient evidence "
                              f"(default {MIN_ALPHA_TOKENS}); 0 disables the guard")
     parser.add_argument("--min-evaluable-ratio", type=float, default=MIN_EVALUABLE_RATIO,
                         help="minimum share of clauses that must be evaluable "
                              f"(default {MIN_EVALUABLE_RATIO}); 0 disables the guard")
+    parser.add_argument("--require-language-detector", action="store_true",
+                        help="refuse (exit 2) when text_metrics.detect_language is unavailable, "
+                             "instead of validating without checking the language scope")
     parser.add_argument("--quiet", action="store_true", help="suppress the human-readable report")
     args = parser.parse_args(argv)
 
@@ -723,6 +923,8 @@ def main(argv: list[str] | None = None) -> int:
         contract = load_contract(contract_path)
         draft_text = draft_path.read_text(encoding="utf-8")
         compute = load_compute_module(args.compute_module) if args.compute_module else None
+        language_detector = (load_language_detector(args.language_module, required=True)
+                             if args.language_module else None)
         result = validate(
             contract,
             draft_text,
@@ -731,6 +933,8 @@ def main(argv: list[str] | None = None) -> int:
             contract_name=contract_path.name,
             min_alpha_tokens=args.min_alpha_tokens,
             min_evaluable_ratio=args.min_evaluable_ratio,
+            language_detector=language_detector,
+            require_language_detector=args.require_language_detector,
         )
     except (ValidatorError, build_contract.YamlError, OSError, UnicodeDecodeError) as exc:
         print(f"[validate_draft] error: {exc}", file=sys.stderr)

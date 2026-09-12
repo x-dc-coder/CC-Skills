@@ -106,11 +106,42 @@ def _dump(result: dict) -> str:
     return json.dumps(result, ensure_ascii=False, sort_keys=True, allow_nan=False)
 
 
+def _detector(supported: bool = True, language: str = "en", cjk_ratio: float | None = 0.0):
+    """Injected language verdict. text_metrics.detect_language owns the real one."""
+    def detect(text: str) -> dict:
+        return {"language": language, "supported": supported, "cjk_ratio": cjk_ratio}
+    return detect
+
+
+PERMISSIVE_DETECTOR = _detector()
+CJK_DETECTOR = _detector(supported=False, language="zh", cjk_ratio=0.9235)
+
+
+def _write_lang_module(tmp_path: Path, supported: bool = True, language: str = "en",
+                       cjk_ratio: float = 0.0, name: str = "fake_lang") -> str:
+    """Write an injectable detector module for CLI tests (--language-module)."""
+    (tmp_path / f"{name}.py").write_text(
+        "def detect_language(text):\n"
+        f"    return {{'language': {language!r}, 'supported': {supported!r}, "
+        f"'cjk_ratio': {cjk_ratio!r}}}\n",
+        encoding="utf-8",
+    )
+    return name
+
+
 def _validate(contract, draft, compute=None, **kwargs):
     """validate() with the degenerate-input guard disabled: these fixtures are tiny
     on purpose, and the guard itself is covered by its own tests below."""
     kwargs.setdefault("min_alpha_tokens", 0)
     kwargs.setdefault("min_evaluable_ratio", 0.0)
+    kwargs.setdefault("language_detector", PERMISSIVE_DETECTOR)
+    return vd.validate(contract, draft, compute, **kwargs)
+
+
+def _validate_guarded(contract, draft, compute=None, **kwargs):
+    """validate() with the real thresholds but a permissive language verdict, so the
+    degenerate-input tests never depend on metrics-text's evolving detector."""
+    kwargs.setdefault("language_detector", PERMISSIVE_DETECTOR)
     return vd.validate(contract, draft, compute, **kwargs)
 
 
@@ -174,6 +205,7 @@ def test_gate_failure_exit_code_is_visible_to_a_real_subprocess(tmp_path):
         "            'warnings': []}}\n",
         encoding="utf-8",
     )
+    lang_module = _write_lang_module(tmp_path, name="fake_lang_en")
     json_path = tmp_path / "report.json"
     env = dict(os.environ)
     env["PYTHONPATH"] = str(tmp_path) + os.pathsep + env.get("PYTHONPATH", "")
@@ -183,7 +215,8 @@ def test_gate_failure_exit_code_is_visible_to_a_real_subprocess(tmp_path):
             [sys.executable, str(SCRIPTS_DIR / "validate_draft.py"),
              "--contract", str(contract_path), "--draft", str(draft_path),
              "--compute-module", "fake_metrics_for_test", "--json", str(json_path), "--quiet",
-             "--min-alpha-tokens", "0", "--min-evaluable-ratio", "0"],
+             "--min-alpha-tokens", "0", "--min-evaluable-ratio", "0",
+             "--language-module", lang_module],
             capture_output=True, text=True, env=env, cwd=str(SCRIPTS_DIR),
         )
 
@@ -217,7 +250,10 @@ def test_null_target_and_missing_actual_are_skipped():
     assert clauses["M-MTLD-02"]["actual"] == 70.0
     assert clauses["M-NOM-10"]["status"] == "skipped"
     assert clauses["M-NOM-10"]["deviation"] is None
-    assert result["exit_code"] == 0
+    # an all-skipped contract is unusable evidence, whatever the threshold flags say
+    assert result["draft_validity"]["status"] == "insufficient_evidence"
+    assert any("no evaluable clause" in reason for reason in result["draft_validity"]["reasons"])
+    assert result["exit_code"] == 2
     assert result["summary"]["n_skipped"] == 2
     assert any("M-NOM-10" in warning for warning in result["summary"]["warnings"])
 
@@ -413,7 +449,9 @@ def test_paragraph_clause_is_skipped_only_when_no_paragraph_reaches_the_minimum(
     assert clause["status_reason"] == "no_paragraphs_above_min_words"
     assert any("M-PCNT-25" in warning and "15 words" in warning
                for warning in result["summary"]["warnings"])
-    assert result["exit_code"] == 0
+    # nothing evaluable -> exit 2 (never a silent pass), see the all-skipped floor
+    assert result["exit_code"] == 2
+    assert result["draft_validity"]["status"] == "insufficient_evidence"
 
 
 def test_provider_value_for_the_paragraph_metric_is_not_overwritten():
@@ -455,9 +493,11 @@ def test_main_writes_json_and_returns_gate_failure_exit_code(tmp_path, capsys):
     sys.path.insert(0, str(tmp_path))
     try:
         json_path = tmp_path / "report.json"
+        lang_module = _write_lang_module(tmp_path, name="fake_lang_cli")
         rc = vd.main(["--contract", str(contract_path), "--draft", str(draft_path),
                       "--compute-module", "fake_metrics_cli", "--json", str(json_path),
-                      "--min-alpha-tokens", "0", "--min-evaluable-ratio", "0"])
+                      "--min-alpha-tokens", "0", "--min-evaluable-ratio", "0",
+                      "--language-module", lang_module])
     finally:
         sys.path.remove(str(tmp_path))
     assert rc == 1
@@ -484,9 +524,11 @@ def test_main_json_dash_writes_machine_readable_stdout(tmp_path, capsys):
     )
     sys.path.insert(0, str(tmp_path))
     try:
+        lang_module = _write_lang_module(tmp_path, name="fake_lang_dash")
         rc = vd.main(["--contract", str(contract_path), "--draft", str(draft_path),
                       "--compute-module", "fake_metrics_dash", "--json", "-", "--quiet",
-                      "--min-alpha-tokens", "0", "--min-evaluable-ratio", "0"])
+                      "--min-alpha-tokens", "0", "--min-evaluable-ratio", "0",
+                      "--language-module", lang_module])
     finally:
         sys.path.remove(str(tmp_path))
     assert rc == 0
@@ -543,8 +585,10 @@ def test_broken_metrics_provider_exits_2_not_1(tmp_path, capsys):
         "def compute(text):\n    raise ValueError('provider exploded')\n", encoding="utf-8")
     sys.path.insert(0, str(tmp_path))
     try:
+        lang_module = _write_lang_module(tmp_path, name="fake_lang_broken")
         rc = vd.main(["--contract", str(contract_path), "--draft", str(draft_path),
-                      "--compute-module", "fake_metrics_broken"])
+                      "--compute-module", "fake_metrics_broken",
+                      "--language-module", lang_module])
     finally:
         sys.path.remove(str(tmp_path))
     assert rc == 2
@@ -564,7 +608,7 @@ def test_integration_with_real_text_metrics_layer():
                 "time of the vehicle routing local search while preserving exactness ")
     draft = (sentence * 5).strip() + ".\n"
     # default guard thresholds: a realistic English draft must still be judged by its gates
-    result = vd.validate(contract, draft, draft_name="draft.md")
+    result = _validate_guarded(contract, draft, draft_name="draft.md")
     for clause in result["clauses"]:
         assert clause["status"] in vd.VALID_STATUSES
     assert any(clause["actual"] is not None for clause in result["clauses"])
@@ -586,7 +630,7 @@ def _gate_contract(n_clauses: int = 3) -> dict:
 def test_pure_chinese_draft_is_insufficient_evidence():
     contract = _gate_contract()
     draft = "# 1 \u7eea\u8bba\n\n\u7eaf\u4e2d\u6587\u65e0\u82f1\u6587\u5185\u5bb9\n"
-    result = vd.validate(contract, draft, _compute({}))          # default guard thresholds
+    result = _validate_guarded(contract, draft, _compute({}))          # default guard thresholds
     assert [clause["status"] for clause in result["clauses"]] == ["skipped"] * 3
     assert result["draft_validity"]["status"] == "insufficient_evidence"
     assert result["draft_validity"]["alpha_tokens"] == 0
@@ -598,7 +642,7 @@ def test_pure_chinese_draft_is_insufficient_evidence():
 @pytest.mark.parametrize("draft", ["", "   \n\n", "# \u7ae0\u8282\u6807\u9898\n",
                                    "\u0060\u0060\u0060\ncode\n\u0060\u0060\u0060\n"])
 def test_empty_and_heading_only_drafts_are_insufficient_evidence(draft):
-    result = vd.validate(_gate_contract(), draft, _compute({}))
+    result = _validate_guarded(_gate_contract(), draft, _compute({}))
     assert result["draft_validity"]["status"] == "insufficient_evidence"
     assert result["exit_code"] == 2
 
@@ -606,7 +650,7 @@ def test_empty_and_heading_only_drafts_are_insufficient_evidence(draft):
 def test_low_evaluable_ratio_is_insufficient_evidence_even_with_enough_tokens():
     contract = _gate_contract(4)
     compute = _compute({"M-TEST-00": 0.15})       # only 1 of 4 clauses can be evaluated
-    result = vd.validate(contract, "word " * 60, compute)
+    result = _validate_guarded(contract, "word " * 60, compute)
     validity = result["draft_validity"]
     assert validity["status"] == "insufficient_evidence"
     assert validity["n_evaluable"] == 1 and validity["n_clauses"] == 4
@@ -618,7 +662,7 @@ def test_low_evaluable_ratio_is_insufficient_evidence_even_with_enough_tokens():
 @pytest.mark.parametrize("actual, expected_exit", [(0.15, 0), (0.9, 1)])
 def test_normal_english_draft_keeps_the_gate_verdict(actual, expected_exit):
     contract = _contract([_clause("M-TEST-00", "gate", [0.1, 0.2])])
-    result = vd.validate(contract, "word " * 60, _compute({"M-TEST-00": actual}))
+    result = _validate_guarded(contract, "word " * 60, _compute({"M-TEST-00": actual}))
     assert result["draft_validity"]["status"] == "ok"
     assert result["exit_code"] == expected_exit
 
@@ -633,8 +677,10 @@ def test_cli_reports_insufficient_evidence_and_exits_2(tmp_path, capsys):
         "def compute(text):\n    return {}\n", encoding="utf-8")
     sys.path.insert(0, str(tmp_path))
     try:
+        lang_module = _write_lang_module(tmp_path, name="fake_lang_ok")
         rc = vd.main(["--contract", str(contract_path), "--draft", str(draft_path),
                       "--compute-module", "fake_metrics_cjk",
+                      "--language-module", lang_module,
                       "--json", str(tmp_path / "report.json")])
     finally:
         sys.path.remove(str(tmp_path))
@@ -660,7 +706,7 @@ def _warn_only_contract() -> dict:
 
 def test_warn_only_contract_exits_0_but_reports_warn_failures_loudly():
     contract = _warn_only_contract()
-    result = vd.validate(contract, "word " * 60, _compute({"M-HED-14": 0.09, "M-BOO-15": 0.015}))
+    result = _validate_guarded(contract, "word " * 60, _compute({"M-HED-14": 0.09, "M-BOO-15": 0.015}))
     summary = result["summary"]
     assert result["exit_code"] == 0                      # no gate clause -> no gate failure
     assert summary["n_gate_clauses"] == 0
@@ -679,19 +725,19 @@ def test_warn_only_contract_exits_0_but_reports_warn_failures_loudly():
 def test_contract_without_gate_mode_field_is_inferred_from_the_clauses():
     contract = _warn_only_contract()
     del contract["generated_from"]["gate_mode"]
-    result = vd.validate(contract, "word " * 60, _compute({"M-HED-14": 0.02, "M-BOO-15": 0.015}))
+    result = _validate_guarded(contract, "word " * 60, _compute({"M-HED-14": 0.02, "M-BOO-15": 0.015}))
     assert result["summary"]["gate_mode"] == "warn-only"
     assert result["summary"]["note"] is not None
 
     gate_contract = _contract([_clause("M-HED-14", "gate", [0.01, 0.05])])
-    gate_result = vd.validate(gate_contract, "word " * 60, _compute({"M-HED-14": 0.02}))
+    gate_result = _validate_guarded(gate_contract, "word " * 60, _compute({"M-HED-14": 0.02}))
     assert gate_result["summary"]["gate_mode"] == "quantile-gate"
     assert gate_result["summary"]["note"] is None
 
 
 def test_warn_failures_do_not_change_the_exit_code_but_are_in_the_json():
     contract = _warn_only_contract()
-    result = vd.validate(contract, "word " * 60, _compute({"M-HED-14": 5.0, "M-BOO-15": 5.0}))
+    result = _validate_guarded(contract, "word " * 60, _compute({"M-HED-14": 5.0, "M-BOO-15": 5.0}))
     payload = json.loads(_dump(result))
     assert payload["exit_code"] == 0
     assert payload["summary"]["warn_failures"] == ["C-M-HED-14", "C-M-BOO-15"]
@@ -703,7 +749,7 @@ def test_draft_is_nfc_normalized_before_any_metric_math():
     composed = unicodedata.normalize("NFC", decomposed)
     assert decomposed != composed
     compute = _compute({"M-HED-14": 0.02})
-    result = vd.validate(_contract([_clause("M-HED-14", "gate", [0.01, 0.05])]), decomposed, compute)
+    result = _validate_guarded(_contract([_clause("M-HED-14", "gate", [0.01, 0.05])]), decomposed, compute)
     assert compute.calls == [composed]                 # the metrics layer sees NFC text
     assert result["draft"]["nfc_normalized"] is True
     assert result["draft"]["n_chars"] == len(composed)
@@ -744,7 +790,7 @@ def test_real_corpus_warn_only_contract_never_fails_the_gate(tmp_path):
     total_warn_failures = 0
     for paper in papers:
         paper.load_blocks()
-        result = vd.validate(contract, paper.canonical_text(), compute)
+        result = _validate_guarded(contract, paper.canonical_text(), compute)
         assert result["exit_code"] == 0, f"{paper.name}: {result['summary']}"
         assert result["summary"]["n_gate_clauses"] == 0
         assert result["summary"]["note"] is not None
@@ -792,7 +838,7 @@ def test_f1_components_at_their_lower_bounds_pass_the_total_gate():
     # then at its minimum, and it must NOT be rejected by the total clause
     compute = _compute({"M-CONN-30c": 0.004, "M-CONN-30k": 0.007, "M-CONN-30r": 0.001,
                         "M-CONN-30": 0.012})
-    result = vd.validate(contract, "word " * 60, compute)
+    result = _validate_guarded(contract, "word " * 60, compute)
     statuses = {clause["metric"]: clause["status"] for clause in result["clauses"]}
     assert statuses == {"M-CONN-30": "pass", "M-CONN-30c": "pass",
                         "M-CONN-30k": "pass", "M-CONN-30r": "pass"}
@@ -805,7 +851,237 @@ def test_f1_components_at_their_lower_bounds_pass_the_total_gate():
     for clause in legacy["clauses"]:
         if clause["metric"] == "M-CONN-30":
             clause["target"] = [independent_lo, 0.030]
-    legacy_result = vd.validate(legacy, "word " * 60, compute)
+    legacy_result = _validate_guarded(legacy, "word " * 60, compute)
     legacy_status = {clause["metric"]: clause["status"] for clause in legacy_result["clauses"]}
     assert legacy_status["M-CONN-30"] == "fail"
     assert legacy_result["exit_code"] == 1
+
+
+# ---------------------------------------------------------------------------
+# 15. A4: an unsupported language is refused, never pseudo-judged
+# ---------------------------------------------------------------------------
+
+CHINESE_DRAFT = "# 绪论\n\n本文研究车辆路径问题的 GPU 加速方法，共 1296 个字。\n"
+
+
+def test_chinese_draft_is_refused_as_unsupported_language():
+    contract = _gate_contract(3)
+    result = vd.validate(contract, CHINESE_DRAFT, _compute({"M-TEST-00": 0.9}),
+                         language_detector=CJK_DETECTOR)
+    assert result["draft_validity"]["status"] == "language_unsupported"
+    assert result["exit_code"] == 2
+    # no pass/fail/warn verdict anywhere, and no "warn-only" wording either
+    assert {clause["status"] for clause in result["clauses"]} == {"skipped"}
+    assert {clause["status_reason"] for clause in result["clauses"]} == {"language_unsupported"}
+    assert result["summary"]["n_fail"] == 0 and result["summary"]["n_warn"] == 0
+    assert result["summary"]["gate_failures"] == [] and result["summary"]["warn_failures"] == []
+    assert result["summary"]["note"] is None
+    language = result["draft_language"]
+    assert language["cjk_ratio"] == 0.9235
+    assert language["supported"] is False
+    assert language["language"] == "zh"
+    assert "当前支持的指标语言 = en（中文支持见 issue #10）" in language["note"]
+
+    payload = _dump(result)
+    assert "cjk_ratio" in payload
+    assert "当前支持的指标语言 = en（中文支持见 issue #10）" in payload
+    report = vd.render_report(result)
+    assert "UNSUPPORTED LANGUAGE" in report
+    assert "cjk_ratio=0.9235" in report
+    assert "当前支持的指标语言 = en（中文支持见 issue #10）" in report
+    assert "warn-only" not in report
+    assert "INSUFFICIENT" not in report
+
+
+def test_language_verdict_precedes_any_gate_math():
+    compute = _compute({"M-TEST-00": 0.9})
+    result = vd.validate(_gate_contract(1), CHINESE_DRAFT, compute,
+                         language_detector=CJK_DETECTOR)
+    assert compute.calls == []                      # the provider is never called
+    assert result["draft"]["n_paragraph_blocks"] == 0
+    assert result["summary"]["n_evaluable"] == 0
+    assert result["summary"]["n_skipped"] == 1
+    assert result["exit_code"] == 2
+
+
+def test_english_draft_behavior_is_unchanged():
+    contract = _contract([_clause("M-HED-14", "gate", [0.01, 0.05])])
+    inside = vd.validate(contract, "word " * 60, _compute({"M-HED-14": 0.02}),
+                         language_detector=PERMISSIVE_DETECTOR)
+    assert inside["draft_language"]["supported"] is True
+    assert inside["draft_validity"]["status"] == "ok"
+    assert inside["exit_code"] == 0
+    outside = vd.validate(contract, "word " * 60, _compute({"M-HED-14": 0.9}),
+                          language_detector=PERMISSIVE_DETECTOR)
+    assert outside["exit_code"] == 1
+    assert outside["summary"]["gate_failures"] == ["C-M-HED-14"]
+
+
+def test_mixed_draft_below_the_cjk_threshold_is_validated_normally():
+    contract = _contract([_clause("M-HED-14", "gate", [0.01, 0.05])])
+    draft = "mixed 中英 draft words more text " * 20      # ~100 alpha tokens
+    result = vd.validate(contract, draft, _compute({"M-HED-14": 0.02}),
+                         language_detector=_detector(supported=True, cjk_ratio=0.1))
+    assert result["draft_language"]["cjk_ratio"] == 0.1
+    assert result["draft_validity"]["status"] == "ok"
+    assert result["exit_code"] == 0
+
+
+def test_mixed_draft_above_the_cjk_threshold_is_refused():
+    contract = _contract([_clause("M-HED-14", "gate", [0.01, 0.05])])
+    draft = "mixed 中英 draft words more text " * 20
+    result = vd.validate(contract, draft, _compute({"M-HED-14": 0.02}),
+                         language_detector=_detector(supported=False, language="zh", cjk_ratio=0.11))
+    assert result["draft_language"]["cjk_ratio"] == 0.11
+    assert result["draft_validity"]["status"] == "language_unsupported"
+    assert result["exit_code"] == 2
+
+
+@pytest.mark.parametrize("raw, expected_supported", [("en", True), ("zh", False),
+                                                     (True, True), (False, False)])
+def test_simple_language_verdicts_are_accepted(raw, expected_supported):
+    result = vd.validate(_contract([_clause("M-HED-14", "gate", [0.01, 0.05])]),
+                         "word " * 60, _compute({"M-HED-14": 0.02}),
+                         language_detector=lambda text: raw)
+    assert result["draft_language"]["available"] is True
+    assert result["draft_language"]["supported"] is expected_supported
+    assert result["exit_code"] == (0 if expected_supported else 2)
+
+
+@pytest.mark.parametrize("raw", [None, 42, {"unexpected": True}, object()])
+def test_unusable_language_verdict_is_reported_never_guessed(raw):
+    result = vd.validate(_contract([_clause("M-HED-14", "gate", [0.01, 0.05])]),
+                         "word " * 60, _compute({"M-HED-14": 0.02}),
+                         language_detector=lambda text: raw)
+    assert result["draft_language"]["available"] is False
+    assert result["draft_language"]["supported"] is None
+    assert any("unusable detect_language" in warning
+               for warning in result["draft_language"]["warnings"])
+    assert any("language:" in warning for warning in result["summary"]["warnings"])
+    assert result["exit_code"] == 0                 # English behavior is unchanged
+
+
+def test_language_detector_unavailable_keeps_validating_and_says_so(monkeypatch):
+    monkeypatch.setattr(vd, "load_language_detector", lambda *args, **kwargs: None)
+    result = vd.validate(_contract([_clause("M-HED-14", "gate", [0.01, 0.05])]),
+                         "word " * 60, _compute({"M-HED-14": 0.02}))
+    assert result["draft_language"]["available"] is False
+    assert any("language detection unavailable" in warning
+               for warning in result["draft_language"]["warnings"])
+    assert result["exit_code"] == 0
+
+
+def test_require_language_detector_refuses_when_it_is_unavailable(monkeypatch):
+    monkeypatch.setattr(vd, "load_language_detector", lambda *args, **kwargs: None)
+    kwargs = {"language_detector": None, "require_language_detector": True}
+    result = vd.validate(_contract([_clause("M-HED-14", "gate", [0.01, 0.05])]),
+                         "word " * 60, _compute({"M-HED-14": 0.02}), **kwargs)
+    assert result["draft_language"]["available"] is False
+    assert result["draft_validity"]["status"] == "insufficient_evidence"
+    assert any("language detection unavailable" in reason
+               for reason in result["draft_validity"]["reasons"])
+    assert result["exit_code"] == 2
+    # opt-out (the default) keeps validating: English behavior is unchanged
+    default = vd.validate(_contract([_clause("M-HED-14", "gate", [0.01, 0.05])]),
+                          "word " * 60, _compute({"M-HED-14": 0.02}), **{"language_detector": None})
+    assert default["exit_code"] == 0
+
+
+def test_cli_require_language_detector_when_missing(tmp_path, capsys):
+    contract_path = tmp_path / "_writing_contract.yaml"
+    contract_path.write_text(bc.dump_yaml(_gate_contract(1)), encoding="utf-8")
+    draft_path = tmp_path / "d.md"
+    draft_path.write_text("word " * 60, encoding="utf-8")
+    (tmp_path / "fake_lang_absent.py").write_text("OTHER = 1\n", encoding="utf-8")
+    sys.path.insert(0, str(tmp_path))
+    try:
+        strict = vd.main(["--contract", str(contract_path), "--draft", str(draft_path),
+                          "--language-module", "fake_lang_absent",
+                          "--require-language-detector", "--quiet"])
+    finally:
+        sys.path.remove(str(tmp_path))
+    assert strict == 2                       # --language-module must exist, so this is an error
+
+
+def test_all_targets_null_and_all_skipped_exits_2_even_with_relaxed_thresholds():
+    contract = _contract([_clause("M-HED-14", "gate", None),
+                          _clause("M-BOO-15", "warn", None)])
+    result = _validate(contract, "word " * 60, _compute({"M-HED-14": 0.02, "M-BOO-15": 0.01}))
+    assert {clause["status"] for clause in result["clauses"]} == {"skipped"}
+    assert result["draft_validity"]["status"] == "insufficient_evidence"
+    assert any("no evaluable clause" in reason for reason in result["draft_validity"]["reasons"])
+    assert result["exit_code"] == 2
+
+
+def test_cli_language_unsupported_exit_2_with_ratio_and_note(tmp_path, capsys):
+    contract_path = tmp_path / "_writing_contract.yaml"
+    contract_path.write_text(bc.dump_yaml(_gate_contract(2)), encoding="utf-8")
+    draft_path = tmp_path / "初稿.md"
+    draft_path.write_text(CHINESE_DRAFT, encoding="utf-8")
+    lang_module = _write_lang_module(tmp_path, supported=False, language="zh",
+                                     cjk_ratio=0.9, name="fake_lang_zh")
+    sys.path.insert(0, str(tmp_path))
+    try:
+        rc = vd.main(["--contract", str(contract_path), "--draft", str(draft_path),
+                      "--language-module", lang_module,
+                      "--json", str(tmp_path / "report.json")])
+    finally:
+        sys.path.remove(str(tmp_path))
+    stdout = capsys.readouterr().out
+    assert rc == 2
+    assert "UNSUPPORTED LANGUAGE" in stdout
+    assert "cjk_ratio=0.9" in stdout
+    assert "当前支持的指标语言 = en（中文支持见 issue #10）" in stdout
+    assert "warn-only" not in stdout
+    payload = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
+    assert payload["draft_validity"]["status"] == "language_unsupported"
+    assert payload["draft_language"]["cjk_ratio"] == 0.9
+    assert payload["exit_code"] == 2
+
+
+def test_cli_rejects_a_language_module_without_detect_language(tmp_path, capsys):
+    contract_path = tmp_path / "_writing_contract.yaml"
+    contract_path.write_text(bc.dump_yaml(_gate_contract(1)), encoding="utf-8")
+    draft_path = tmp_path / "d.md"
+    draft_path.write_text("word " * 60, encoding="utf-8")
+    (tmp_path / "fake_lang_empty.py").write_text("VALUE = 1\n", encoding="utf-8")
+    sys.path.insert(0, str(tmp_path))
+    try:
+        rc = vd.main(["--contract", str(contract_path), "--draft", str(draft_path),
+                      "--language-module", "fake_lang_empty"])
+    finally:
+        sys.path.remove(str(tmp_path))
+    assert rc == 2
+    assert "must expose detect_language" in capsys.readouterr().err
+
+
+# --- integration with the real detector (skips until metrics-text lands it) ---
+
+def _real_detector():
+    text_metrics = pytest.importorskip("text_metrics")
+    detector = getattr(text_metrics, "detect_language", None)
+    if not callable(detector):
+        pytest.skip("text_metrics.detect_language has not landed yet (issue #10)")
+    return detector
+
+
+def test_integration_chinese_draft_is_refused_by_the_real_detector():
+    detector = _real_detector()
+    draft = "# 绪论\n\n" + "本文研究车辆路径问题的 GPU 加速方法。" * 30
+    if vd.normalize_language_verdict(detector(draft), "real")["supported"] is not False:
+        pytest.skip(f"real detector does not flag the Chinese draft: {detector(draft)!r}")
+    result = vd.validate(_gate_contract(2), draft, _compute({}))
+    assert result["draft_validity"]["status"] == "language_unsupported"
+    assert result["exit_code"] == 2
+
+
+def test_integration_mixed_drafts_around_the_real_cjk_threshold():
+    detector = _real_detector()
+    mostly_english = "the proposed method improves vehicle routing results " * 40 + "中"
+    mostly_chinese = "the proposed method improves results 中文中文中文中文中文中文 " * 40
+    low = vd.normalize_language_verdict(detector(mostly_english), "real")
+    high = vd.normalize_language_verdict(detector(mostly_chinese), "real")
+    assert low["available"] and high["available"]
+    assert low["cjk_ratio"] is not None and high["cjk_ratio"] is not None
+    assert low["cjk_ratio"] <= 0.10 < high["cjk_ratio"]
+    assert low["supported"] is True and high["supported"] is False

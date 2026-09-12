@@ -99,9 +99,10 @@ description: >
 **目标**：将 `paper-analysis/` 语料（可能数十篇论文 × 上百 MB）转化为一份机器可读的领域写作规范摘要，**不消耗 LLM token 重读所有文献**。
 
 #### A.1 定位语料
-- 确认用户提供 `<user_paper_dir>/paper-analysis/` 目录
+- 语料目录名**以实际存在的为准**：可能是 `paper-analysis/`（历史/v1 布局），也可能是 `paper-conversion/`（paper-reader 当前实际写出，见 `paper_reader.py` 的 `_derive_output_dirs`）。两者都存在时问用户要哪个，**不要默认猜**；也可直接用 `paper-metrics/scripts/run_pipeline.py`（它按 `--analysis-dir` → `paper-analysis` → `paper-conversion` → 结构扫描的顺序自动探测）。
 - 校验目录结构：每篇论文应有 `mineru/<id>/auto/<id>_content_list.json`（由 paper-reader 生成）
 - 若用户尚未转换 PDF，**提示用户先调用 paper-reader skill**；不要自行重跑
+- **语言边界（红线）**：本模式依赖的指标层**只支持英文**。中文语料下指标会全部为 `null` 并触发 `CORPUS_LANGUAGE_UNSUPPORTED`（中文支持见 issue #10）——此时**不要**把 mode B 的"领域写作规范"结论给用户，如实说明不支持。
 
 #### A.2 运行 paper-metrics profiler（确定性 OBSERVED 层）
 ```bash

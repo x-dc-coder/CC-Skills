@@ -91,6 +91,15 @@ uv run python paper-metrics/scripts/pas_spotcheck.py --corpus <paper-analysis> -
 - **第三方复核入口**：`_domain_profile.json → corpus.profiled[].inputs[].sha256` 给出每个输入产物的哈希；`_per_paper_metrics.jsonl` 给出逐篇数值与 evidence span，可直接回指原文坐标。
 - **词表冻结**：`data/lexicons/v1/*.json` 随发布冻结，bundle 指纹写入产物；改词表即改数值，**必须 bump 版本并重锁基线**。
 
+## 支持的语言（红线：不支持就**显式失败**，绝不给假数字）
+
+- 当前指标层**只支持英文**：分句器以 `.!?` 为句末、token 只认 ASCII 字母、8 个词表均为英文口径。
+- 每篇都会算 `cjk_ratio = 汉字数 / (汉字数 + ASCII 字母 token 数)`，**`cjk_ratio > 0.10` 判为不支持**（阈值与实现见 `text_metrics.detect_language`）。
+- 不支持的篇目：**每一个指标输出 `null`**（`n = 0`、`warnings = ["LANGUAGE_NOT_SUPPORTED"]`），计入 `n_missing`，并在语料级触发 `CORPUS_LANGUAGE_UNSUPPORTED` 告警；**任何情况下不得用 0 代替"未测量"**。
+- 草稿校验遇到不支持的语言直接 **退出码 2**（`language_unsupported`），**不输出任何通过/不通过结论**。
+- 为什么这条是红线：在真实中文语料上，本层曾**静默**产出 `citation_style=unknown`、`reference_count=0`、hedge/连接词/被动/名词化**全为 0.0**、句数中位 **2 句**，而 `n_missing` 全为 0、无任何语言告警——看起来像"合法结果"，实际是垃圾。证据：`/mnt/e/AllProjects202601/M-PCA/_paper-metrics-run/运筹与管理/报告.md`。
+- 中文支持路线见 GitHub issue #10；中文词表/标注集等缺口见 issue #11 的评审意见。
+
 ## 指标定义（可解释性的事实源）
 
 - 每条指标的定义、公式、分母、evidence 坐标系，以及**不能推断什么**，见 `references/metric-definitions.md`。

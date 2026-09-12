@@ -560,6 +560,93 @@ def test_corpus_medians_are_not_additive_but_per_paper_identity_holds(
     assert abs(sum(means) / len(means) - sum(part_means) / len(part_means)) < 1e-9
 
 
+def test_language_facts_are_null_when_undetermined() -> None:
+    """Absent language layer must NOT report "supported".
+
+    A default of True would let a Chinese corpus declare "language verified"
+    while containing all-zero metrics.
+    """
+    class _NoDetect:  # simulates text_metrics without detect_language
+        pass
+    facts = pp._language_facts(_NoDetect(), "some text", {})
+    assert facts["language"] == "unknown"
+    assert facts["language_supported"] is None, facts
+
+
+def test_language_facts_use_metric_fields_when_available() -> None:
+    class _NoDetect:
+        pass
+    metrics = {"M-SLEN-01": {"language": "zh", "cjk_ratio": 0.9,
+                             "warnings": ["LANGUAGE_NOT_SUPPORTED"]}}
+    facts = pp._language_facts(_NoDetect(), "中文", metrics)
+    assert facts["language"] == "zh"
+    assert facts["language_supported"] is False
+
+
+def test_aggregate_flags_unsupported_and_undetermined_language() -> None:
+    def _rec(key: str, lang: str, supported, value=None):
+        return {
+            "paper_key": key, "inputs": [], "sections": [], "n_tokens": 10,
+            "language": lang, "cjk_ratio": 0.9 if lang == "zh" else 0.0,
+            "language_supported": supported, "section_metrics": {}, "upstream": {},
+            "warnings": [],
+            "metrics": {"M-SLEN-01": {
+                "value": value, "n": 0, "denominator": 0,
+                "unit": "words/sentence", "state": "OBSERVED", "method": "rule",
+                "metric_spec": "M-SLEN-01",
+                "evidence": {"count": 0, "sample": []},
+                "warnings": ([] if supported else ["LANGUAGE_NOT_SUPPORTED"])}},
+        }
+
+    zh = pp.aggregate_corpus([_rec("a", "zh", False), _rec("b", "zh", False)], "cid")
+    assert zh["language_supported"] is False
+    assert zh["languages"] == {"zh": 2}
+    assert "CORPUS_LANGUAGE_UNSUPPORTED" in {w["code"] for w in zh["corpus_warnings"]}
+    assert zh["metrics"]["M-SLEN-01"]["n_valid"] == 0
+    assert zh["metrics"]["M-SLEN-01"]["n_missing"] == 2
+
+    undet = pp.aggregate_corpus([_rec("a", "unknown", None)], "cid")
+    assert undet["language_supported"] is None
+    assert "LANGUAGE_NOT_ASSESSED" in {w["code"] for w in undet["corpus_warnings"]}
+
+    en = pp.aggregate_corpus([_rec("a", "en", True, value=25.0)], "cid")
+    assert en["language_supported"] is True
+    assert en["metrics"]["M-SLEN-01"]["n_valid"] == 1
+
+
+def test_unsupported_language_suppresses_paragraph_length_stats(tmp_path: Path) -> None:
+    """M-PCNT-25's length stats must be suppressed for unsupported languages.
+
+    Regression: a Chinese corpus reported ~62 "words"/paragraph because
+    len(text.split()) counts whitespace chunks in CJK text; the ">=15 words"
+    paragraph filter also drops real CJK paragraphs. Everything is suppressed.
+    """
+    corpus = tmp_path / "zh"
+    d = corpus / "CN1" / "mineru" / "c1" / "auto"
+    d.mkdir(parents=True)
+    para = "本文构建了一个用于车辆路径问题的张量加速框架并进行了大量实验验证" * 3
+    (d / "c1_content_list.json").write_text(
+        '[{"type": "text", "text_level": 2, "text": "1 引言"},'
+        '{"type": "text", "text": "' + para + '"},'
+        '{"type": "text", "text": "2 方法"},'
+        '{"type": "text", "text": "' + para + '"}]', encoding="utf-8")
+    out = tmp_path / "out"
+    pp.run_profile(corpus, out)
+    summary = json.loads((out / "_corpus_summary.json").read_text(encoding="utf-8"))
+    assert summary["language_supported"] is False
+    assert "CORPUS_LANGUAGE_UNSUPPORTED" in {w["code"] for w in summary["corpus_warnings"]}
+    # no small-n noise once the language cause is known
+    codes = {c for m in summary["metrics"].values() for c in (m.get("warnings") or [])}
+    assert "NO_VALID_VALUES" not in codes and "N_LT_5" not in codes, codes
+    assert "LANGUAGE_NOT_SUPPORTED" in codes
+    rec = json.loads((out / "_per_paper_metrics.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    pm = rec["metrics"]["M-PCNT-25"]
+    assert pm["value"] is None and pm["distribution"] is None
+    assert pm["n"] == 0 and pm["denominator"] == 0  # no half-valid count either
+    assert "LANGUAGE_NOT_SUPPORTED" in pm["warnings"]
+    assert pm["note"], "the suppression must explain itself"
+
+
 def test_quantile_convention_is_declared_and_nearest_rank(
         synthetic_corpus: Path, tmp_path: Path) -> None:
     """The summary must declare its quantile method, and it must be nearest-rank.

@@ -11,7 +11,7 @@
 
 | 维度 | 本指标体系成立 | 不成立 / 禁止使用 |
 |---|---|---|
-| 语言 | **英文**论文（token 规则 `_ALPHA_TOKEN_RE` 只吃 ASCII 字母） | 中文学位论文：中文汉字不被匹配，分母塌缩为 0，所有 ratio 类指标为 `None` 或 0；**不得**把该结果读作「中文写作 hedge 为 0」 |
+| **语言（可执行的失败契约，不只是声明）** | **仅英文**（`SUPPORTED_METRIC_LANGUAGES = ("en",)`）。判定量 `cjk_ratio = 汉字数 / (汉字数 + ASCII 字母 token 数)`，**阈值 0.10**：`cjk_ratio <= 0.10` 才判定为支持。语料级 `language_supported` 为**三态**：true（全篇正面判定受支持）/ false（存在不支持）/ **null = 未判定且不是「受支持」** | **`cjk_ratio > 0.10` ⇒ 不支持，必须显式失败**：① 该篇**每一个指标**输出 `value = null`、`n = 0`、`warnings = ["LANGUAGE_NOT_SUPPORTED"]`；② 计入该指标的 `n_missing`（整语料不支持时 `n_missing == n_papers`）；③ 语料级 `_corpus_summary.json` 顶层 `languages` / `language_supported` 记录语言分布，并追加告警 **`CORPUS_LANGUAGE_UNSUPPORTED`**；④ 草稿校验 `validate_draft.py` **退出码 2（language_unsupported）且不输出任何通过/不通过结论**。**红线：任何情况下不得用 `0` 代替「未测量」**——`0` 只能是「测到了，值为 0」，未测量必须是 `null` |
 | 输入 | MinerU `*_content_list.json`（Canonical Document，冻结 + sha256） | PDF 直读；`marker/*.md` 只参与 `M-CITSTYLE-50` / `M-CONTRIB-52` 两条，不参与句/词级指标 |
 | 层 | **仅 OBSERVED**（确定性程序产出） | 本文件不定义任何 INFERRED / RECOMMENDED 指标；语步（move）、引用功能（citation function）、论证图一律不在本层，本期不实现 |
 | 依赖 | 纯 stdlib（json/re/pathlib/statistics/collections），无模型、无 NLP 库、零 LLM 调用 | 引入 spaCy/torch/numpy 后本文件的确定性承诺失效，必须重新立项并记录模型 `sha256` |
@@ -27,6 +27,58 @@
 本轮**没有**实现 Marker 与 MinerU 的双链指标漂移对照。profile 侧只有两件事：① 每篇输入产物的 sha256（可寻址）；② `ENGINE_VERSION_NOT_RECORDED` 语料告警（暴露 paper-reader 的 `_META.json` 未记引擎版本）。因此「PDF→Canonical」的漂移**既没有数值、也无法归因到引擎版本**——§0 第 5 行的确定性承诺边界依然只覆盖 Canonical→指标。
 
 **可选加分项**：`baseline_eval.py --drift-probe N`（默认关闭）提供文本层三项指标的探针，实测与局限见 §5.2。**未做部分**：结构类指标（章节骨架/图表公式落位）在 Marker 侧无对应物；按引擎版本分层的漂移；PDF 原点到 Canonical 的端到端漂移。
+
+### 0.2 语言不支持：从「声明」到「可执行的失败契约」（A 轮）
+
+**契约要素（冻结）**
+
+- **判定量**：`cjk_ratio = 汉字数 / (汉字数 + ASCII 字母 token 数)`；**阈值 0.10**——纯英文学术文本通常 ≈ 0，中文文本通常 ≈ 0.5-0.96。唯一事实源：`text_metrics.detect_language()`。
+- **单篇**：不支持篇目的**每一条指标** = `value: null`、`n: 0`、`warnings: ["LANGUAGE_NOT_SUPPORTED"]`，并计入该指标的 `n_missing`。因此「整语料语言不支持」的判据是 **`n_missing == n_papers`**。
+- **语料**：`_corpus_summary.json` 顶层新增 `languages`（语言 → 篇数）与 `language_supported`（布尔）；不支持时追加语料告警 **`CORPUS_LANGUAGE_UNSUPPORTED`**。
+- **草稿**：`validate_draft.py` 遇到不支持语言直接 **exit 2（language_unsupported）**，**不输出任何 pass/fail 结论**（不再依赖 `alpha_tokens >= 50` 这类与语言无关的门槛）。
+- **红线**：**不得用 `0` 代替「未测量」**。`0` 只能表示「测到了，值为 0」；未测量必须是 `null`。历史缺陷正是把「中文测不出」静默写成 0，使产物看起来像合法结果。
+- **三态语义（`language_supported`，冻结）**：该字段**不是布尔**，必须按三态解读；**null ≠ 通过**。
+
+| `language_supported` | 含义 | 触发条件 | 语料告警码 |
+|---|---|---|---|
+| `true` | **每篇都被正面判定为受支持** | 全部篇目 `cjk_ratio <= 0.10` 且探测层可用 | 无 |
+| `false` | **存在明确不支持的篇目** | 至少一篇 `cjk_ratio > 0.10` | `CORPUS_LANGUAGE_UNSUPPORTED` |
+| **`null`** | **未判定**（**不是**「受支持」） | 存在未判定篇目且无明确 `false`：探测层不可用、文本无法判定、或空文本 | **`LANGUAGE_NOT_ASSESSED`** |
+
+- **消费方规则（红线）**：**`null` 不得被当作语言已校验**。看到 `null` 时必须按「无语言结论」处理——不得据此解读任何指标数值，也不得在报告里写成「语言已通过」。`LANGUAGE_NOT_ASSESSED` 的 detail 已显式写明「null 意为 not assessed，不是 supported」。
+
+**实测对照（真实中文语料，10 篇可 profile）**
+
+语料：`/mnt/e/AllProjects202601/M-PCA/_paper-metrics-run/运筹与管理/corpus_ycgl_pdf/paper-conversion`（11 个目录，10 篇可 profile、1 篇跳过）
+
+命令：
+
+    cd ~/.claude/skills && uv run python paper-metrics/scripts/profile_papers.py --corpus '/mnt/e/AllProjects202601/M-PCA/_paper-metrics-run/运筹与管理/corpus_ycgl_pdf/paper-conversion' --out /tmp/cn
+
+| 观测量 | **修复前**（A 轮前，实跑） | **修复后**（探测层落地后，同一命令实跑） |
+|---|---|---|
+| M-SLEN-01 逐篇句数 | `1,1,1,2,2,2,3,7,7,9` → **中位 2** | 指标整体置空：`n_valid 0` / **`n_missing 10`** / median `null` |
+| `text_metrics` 的 **13** 个指标（M-SLEN-01 / M-LSF-16 / M-MTLD-02 / M-HED-14 / M-BOO-15 / M-CONN-30 及三分量 / M-AWR-03 / M-PAS-09 / M-NOM-10 / M-TENSE-28） | median **0.0**、mean **0.0**、**n_missing 0** | 单篇 `value: null`、`n: 0`、`denominator: 0`、`warnings: ["LANGUAGE_NOT_SUPPORTED"]`；语料 `n_valid 0` / **`n_missing 10`** / median `null` |
+| **M-PCNT-25（段落指标）** | median **0.0**、**n_missing 0**（曾被当作「计数仍可用」的例外） | **整条抑制**：`value: null`、`distribution: null`、`n: 0`、`denominator: 0`，并附 `note` 说明原因 |
+| M-BOO-15 / M-CONN-30（30c/30k/30r）/ M-PAS-09 / M-NOM-10 / M-LSF-16 / M-MTLD-02 / M-AWR-03 / M-TENSE-28 | 全部 0.0 或极小值、n_missing 0 | 同 M-HED-14：**全部置空 + `LANGUAGE_NOT_SUPPORTED`** |
+| `citation_style` | `unknown`（numeric 0 / author-year 0） | **仍为 `unknown`** —— 该条**不在语言门覆盖范围**（属引用/结构抽取问题），**不得**因语言契约生效就宣称它已修好 |
+| `reference_count` | median **0**、`n_papers_with_references 0` | **仍为 0** —— 同上，属独立缺陷 |
+| `corpus_warnings` | **仅 `SECTION_SKEW`**，无任何语言条目 | **只保留 `CORPUS_LANGUAGE_UNSUPPORTED` + `SECTION_SKEW`**——13×`NO_VALID_VALUES` / 13×`N_LT_5` / 13×`N_VALID_LT_3` 的噪声已**收敛**为这一条语言告警（否则 40+ 条重复告警会淹没真正的成因） |
+| `languages` / `language_supported` | `{"unknown": 10}` / **`true`（旧默认：未判定被读成已通过）** | **`{"zh": 10}` / `false`** |
+| 单篇语言记录 | 无 | `{language: "zh", cjk_ratio: 0.955892, language_supported: false}` |
+| 草稿校验 `validate_draft.py` | 靠 `alpha_tokens >= 50` 与语言无关的门槛，**静默给结论** | **exit 2（`language_unsupported`）**：14 条条款全部 `skipped`、`pass=0 fail=0 warn=0`，**不输出任何通过/不通过结论** |
+| 语料指纹 | `corpus_id = da93384bfdbef458…` | 同（语言字段不改变输入 hash） |
+
+**历史记录 —— 过渡期实测（探测层落地前，docs-baseline 第二次实跑）**：`language_supported = null`、`languages = {"unknown": 10}`、告警出现 **`LANGUAGE_NOT_ASSESSED`**（detail 原文：`10/10 paper(s) have no language verdict ... language_supported is null meaning "not assessed", not "supported".`），单篇记录为 `{language: "unknown", cjk_ratio: null, language_supported: null}`。
+**但同一跑里指标仍为 0.0 且 n_missing = 0**（如 M-HED-14 n_valid=10 / n_missing=0 / median 0.0）——即**「语言裁决」已修好，「指标置空」尚未生效**。两者必须同时到位才算契约生效：只修前者，产物仍会给出一堆 0.0；只修后者而无裁决，则无从说明为何置空。
+
+**为什么连「段落计数」也不可信（必须写清楚，避免误以为计数可用）**：M-PCNT-25 的段落过滤器是「**空白分词 >= 15 词**」。中文没有词间空格，整段汉字会被当成**一个** token ⇒ ① 真实段落常被整段过滤掉；② 侥幸留下的段落报出的是**汉字串长度**而非词数（实测中文语料报出约 **62 "词"/段**）。因此**计数类指标同样不能被当作语言无关**，最终实现选择**整条抑制**并附 `note: "suppressed: paragraph segmentation depends on whitespace tokenisation, which CJK text does not provide (issue #10)"`。**结论：不受支持语言下 14/14 指标（13 条 text_metrics + M-PCNT-25）全部为 `null`。**
+
+**草稿校验的失败契约（validate_draft）**：语言不支持 ⇒ `language_unsupported` + **exit 2**，**不调用任何 provider、不输出通过/不通过**；另设硬下限「**可评估条款数为 0 → exit 2**」（实测：14 条条款全部 `skipped`、`n_evaluable = 0`）。若检测器本身不可用，则 `available = false` 并在 warnings 明示「语言范围未检查」，可用 `--require-language-detector` 切换为 fail-closed。
+
+**独立旁证（CJK 规模，来自 `evidence/lang_failure_probe.out`）**：CN-1 / CN-2 / CN-3 的汉字数分别为 6745 / 7276 / 7327，ASCII token 仅 268 / 1203 / 934 ⇒ `cjk_ratio` 约 **0.96 / 0.86 / 0.89**，**远超 0.10 阈值**，即当前语料必然落入「不支持」分支；对照英文篇 EN-1 的汉字数 = 0。
+
+> **关于 `null` 的规则与三态演变（探测层已落地）**：`null` 表示**未判定**，只应出现在两种场景——**文本无法判定**（既无足够汉字也无足够 ASCII 字母）或**空文本**；此时按「无语言结论」处理，**不得**解读任何指标数值。三态演变可作回归锚点：① 早期版本对未判定回退默认 `true`（**已修缺陷**：未判定被读成已通过）；② 探测层落地前，`language_supported` 已为 `null` + `LANGUAGE_NOT_ASSESSED`（见上「历史记录」）；③ 探测层落地后，中文语料给出 `false` + `CORPUS_LANGUAGE_UNSUPPORTED`（见上表「修复后」列）。**任何版本下，`null` 都不得被当作语言已校验。**」
 
 ---
 
@@ -65,6 +117,9 @@ text_metrics.compute_text_metrics(text, bundle) 的返回值为 {metric_id: metr
 - **截断规则（易错点）**：`excerpt == text[start:end][:80]`，即**先切片、后截断 80 字符**。**不得**用 `text[start:end] == excerpt` 全切片比较——长 span 会被合法截断，全切片比较会把正确数据判成错误（曾导致回指率被误报为 0.769）。
 - **块索引型证据**（`M-PCNT-25`）：形态为 `{block_index, section, words, excerpt}`，**没有 span**；核验方式 = 该论文 content_list.json 的 `blocks[block_index]` 存在且其文本以 `excerpt` 开头。两种形态**合并**计算回指率。
 - **证据本身必须可复现**：`evidence.count == n`，且每条证据必须能由原文逐字符重放（span 型用上面的截断规则，块索引型用块文本前缀）。**无法回指的数值不得通过 OBSERVED 层验收**：基线报告以回指率为 gate（目标 >= 0.95，真实语料实测 1.000）。
+- **语言自查（先做这一步，再看任何数值）**：唯一事实源是 `text_metrics.detect_language(text)`，返回 `{language, cjk_ratio, supported}`；`cjk_ratio > 0.10` ⇒ 不支持。复算命令：
+  `cd ~/.claude/skills && uv run python -c "import sys; sys.path.insert(0,'paper-metrics/scripts'); import text_metrics as t; print(t.detect_language(open('<canonical_text.txt>').read()))"`
+  语言不支持时**不要解读任何数值**：依 §0 契约，此时每指标为 `null` + `LANGUAGE_NOT_SUPPORTED`、计入 `n_missing`，语料级报 `CORPUS_LANGUAGE_UNSUPPORTED`。契约与中文语料实测对照见 **§0.2**。
 - **第三方复算命令**：
   `cd ~/.claude/skills && uv run python paper-metrics/scripts/baseline_eval.py --corpus <corpus> --out <out>`
   报告 `_baseline_report.json` 的 `evidence_samples[]` 逐条给出 `span` / `block_index`、`source_slice`（实测切片）与 `verified` 布尔值。
@@ -403,6 +458,7 @@ text_metrics.compute_text_metrics(text, bundle) 的返回值为 {metric_id: metr
 - **不能推断什么**：不能推断论证结构（「一段等于一个 move」是无依据假设）；不能推断可读性。
 - **已知失效场景**：双栏/跨页段落被切分；图表题注被计为段落；MinerU 版本升级改变分段。
 - **复算路径**：直接从 `_content_list.json` 计数复算；抽检 2 篇人工核对段落边界。
+- **语言边界（红线，见 §0.2）**：在**不受支持语言**（`cjk_ratio > 0.10`）下本条**整条抑制**——`value: null`、`distribution: null`、`n: 0`、`denominator: 0`，并附 `note`。**原因：段落过滤器是「空白分词 >= 15 词」，中文无词间空格 ⇒ 真实段落被整段过滤、留下的报出汉字串长度（实测约 62 "词"/段）**；因此本条的「计数」**不是**语言无关量，不得在中文语料上引用。
 - **依据文献**：01-指标契约 M-PCNT-25（设计案行303）；MVP 推荐理由：段长上下界是写作契约的可判定子项，**必须**用计数实现而非 LLM 判断。
 
 ### 5.2 V7 可选探针：MinerU vs Marker 文本层对照（默认关闭，属加分项）

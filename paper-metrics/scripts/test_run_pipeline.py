@@ -149,6 +149,128 @@ def test_skip_convert_without_corpus_returns_2(tmp_path: Path) -> None:
     assert "existing canonical corpus" in proc.stderr
 
 
+# ---------------------------------------------------------------------------
+# Test: canonical-corpus auto-detection (A5/G7 — default must not assume a name)
+# ---------------------------------------------------------------------------
+
+def _make_corpus(root: Path, name: str = "paper-analysis", paper: str = "P1") -> Path:
+    """Create <root>/<name>/<paper>/mineru/<id>/auto/<id>_content_list.json."""
+    d = root / name / paper / "mineru" / paper.lower() / "auto"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{paper.lower()}_content_list.json").write_text(
+        '[{"type": "text", "text_level": 2, "text": "1 Introduction"}, '
+        '{"type": "text", "text": "The method is evaluated on benchmarks."}]',
+        encoding="utf-8")
+    return root / name
+
+
+def test_detect_explicit_analysis_dir_wins(tmp_path: Path) -> None:
+    _make_corpus(tmp_path, "paper-analysis")
+    explicit = tmp_path / "elsewhere"
+    d = rp.detect_analysis_dir(tmp_path, explicit)
+    assert d["path"] == explicit.resolve()
+    assert d["how"] == "explicit (--analysis-dir)"
+
+
+def test_detect_prefers_paper_analysis_over_paper_conversion(tmp_path: Path) -> None:
+    _make_corpus(tmp_path, "paper-analysis")
+    _make_corpus(tmp_path, "paper-conversion")
+    d = rp.detect_analysis_dir(tmp_path)
+    assert d["path"] == tmp_path / "paper-analysis"
+    assert "paper-analysis" in d["how"]
+    assert d["warning"], "an ambiguity between both corpus dirs must be reported"
+
+
+def test_detect_falls_back_to_paper_conversion(tmp_path: Path) -> None:
+    _make_corpus(tmp_path, "paper-conversion")
+    d = rp.detect_analysis_dir(tmp_path)
+    assert d["path"] == tmp_path / "paper-conversion"
+    assert d["warning"] is None
+
+
+def test_detect_structural_scan_for_unconventional_name(tmp_path: Path) -> None:
+    """The name is not assumed: structure alone identifies a canonical corpus."""
+    corpus = _make_corpus(tmp_path, "third-party-export")
+    d = rp.detect_analysis_dir(tmp_path)
+    assert d["path"] == corpus
+    assert d["how"].startswith("structural scan")
+
+
+def test_detect_predicts_paper_conversion_when_converting(tmp_path: Path) -> None:
+    (tmp_path / "a.pdf").write_bytes(b"%PDF-1.4")
+    d = rp.detect_analysis_dir(tmp_path, allow_prediction=True)
+    assert d["path"] == tmp_path / "paper-conversion"
+    assert d["how"].startswith("predicted")
+
+
+def test_detect_returns_none_when_prediction_is_forbidden(tmp_path: Path) -> None:
+    d = rp.detect_analysis_dir(tmp_path, allow_prediction=False)
+    assert d["path"] is None
+    assert d["how"] == "not found"
+    assert {c.name for c in d["candidates"]} >= {"paper-analysis", "paper-conversion"}
+
+
+def test_cli_skip_convert_auto_detects_without_analysis_dir(tmp_path: Path) -> None:
+    """A5/G7 regression: the quick-start default used to fail unless the caller
+    hand-wrote --analysis-dir."""
+    papers = tmp_path / "project"
+    _make_corpus(papers, "paper-analysis")
+    out = tmp_path / "out"
+    proc = subprocess.run([sys.executable, str(SCRIPT), "--papers", str(papers),
+                           "--out", str(out), "--skip-convert"],
+                          capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr + proc.stdout
+    assert (out / "_corpus_summary.json").exists()
+    assert "found" in proc.stdout
+
+
+def test_cli_skip_convert_auto_detects_paper_conversion(tmp_path: Path) -> None:
+    """paper-reader v2 writes paper-conversion/ — no --analysis-dir required."""
+    papers = tmp_path / "project"
+    _make_corpus(papers, "paper-conversion")
+    out = tmp_path / "out"
+    proc = subprocess.run([sys.executable, str(SCRIPT), "--papers", str(papers),
+                           "--out", str(out), "--skip-convert"],
+                          capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr + proc.stdout
+    assert (out / "_corpus_summary.json").exists()
+
+
+def test_cli_skip_convert_missing_corpus_lists_candidates_exit2(tmp_path: Path) -> None:
+    papers = tmp_path / "project"
+    papers.mkdir()
+    proc = subprocess.run([sys.executable, str(SCRIPT), "--papers", str(papers),
+                           "--out", str(tmp_path / "o"), "--skip-convert"],
+                          capture_output=True, text=True)
+    assert proc.returncode == 2
+    err = proc.stderr
+    assert "paper-analysis" in err and "paper-conversion" in err
+    assert "candidates checked" in err
+    assert "--analysis-dir" in err
+    assert "paper_reader.py" not in proc.stdout  # nothing was executed
+
+
+def test_cli_default_dry_run_targets_detected_corpus(tmp_path: Path) -> None:
+    papers = tmp_path / "project"
+    _make_corpus(papers, "paper-conversion")
+    (papers / "a.pdf").write_bytes(b"%PDF")
+    proc = subprocess.run([sys.executable, str(SCRIPT), "--papers", str(papers),
+                           "--out", str(tmp_path / "out"), "--dry-run"],
+                          capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+    assert f"--corpus {papers / 'paper-conversion'}" in proc.stdout
+
+
+def test_find_pdfs_excludes_paper_conversion_intermediates(tmp_path: Path) -> None:
+    """paper-reader v2 output dir must not be mistaken for source PDFs either."""
+    papers = _make_pdfs(tmp_path / "project", names=("real.pdf",))
+    inner = papers / "paper-conversion" / "P1" / "mineru" / "p1" / "auto"
+    inner.mkdir(parents=True)
+    (inner / "p1_origin.pdf").write_bytes(b"%PDF")
+    (inner / "p1.pdf").write_bytes(b"%PDF")
+    assert [p.name for p in rp.find_pdfs(papers)] == ["real.pdf"]
+
+
 def test_cli_dry_run_prints_both_stages_without_executing(tmp_path: Path) -> None:
     papers = _make_pdfs(tmp_path / "papers")
     out = tmp_path / "out"

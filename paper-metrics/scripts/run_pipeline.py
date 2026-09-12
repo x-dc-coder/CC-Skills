@@ -3,14 +3,21 @@
 
 This is a thin orchestrator that chains two skills without duplicating either:
 
-  1. paper-reader   PDF -> <papers>/paper-analysis/<stem>/{marker,mineru,_META.json}
+  1. paper-reader   PDF -> <papers>/paper-conversion/<stem>/{marker,mineru}
+                    + <papers>/paper-merged/<stem>/{_MERGED.md,_META.json}
                     (GPU-bound, minutes per paper, resumable)
-  2. this metric layer   paper-analysis -> the five deterministic metric artifacts
+  2. this metric layer   canonical corpus -> the five deterministic metric artifacts
                     (pure stdlib, seconds per corpus)
+
+The canonical corpus directory is DETECTED, not assumed: the v1 user layout is
+<papers>/paper-analysis/, paper-reader v2 writes <papers>/paper-conversion/
+(see paper_reader.py::_derive_output_dirs), and a third-party conversion can
+live anywhere. Order: --analysis-dir -> <papers>/paper-analysis ->
+<papers>/paper-conversion -> structural scan for <paper>/mineru/**/*_content_list.json.
 
 Why it lives next to the metric layer rather than inside paper-reader: the
 metric layer's input contract is "a canonical corpus directory", not "a PDF".
-Anyone who already has paper-analysis/ (or converted with another tool) can run
+Anyone who already has a converted corpus (any directory layout) can run
 profile_papers.py directly and never touch this file.
 
 Usage:
@@ -40,22 +47,26 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent.parent
 PAPER_READER = REPO_ROOT / "paper-reader" / "scripts" / "paper_reader.py"
 PROFILER = SCRIPT_DIR / "profile_papers.py"
-DEFAULT_ANALYSIS_DIRNAME = "paper-analysis"
-
 
 # Engine-side copies that paper-reader leaves inside the canonical corpus.
 # They are conversion intermediates, not submitted papers.
 _INTERMEDIATE_PDF_SUFFIXES = ("_origin.pdf",)
-_ANALYSIS_DIRNAME = "paper-analysis"
+
+# Canonical-corpus directory names, in detection order:
+#   paper-analysis   — v1 corpus layout (what the reference project on disk uses)
+#   paper-conversion — what paper-reader v2 actually writes (_derive_output_dirs)
+CORPUS_DIRNAMES = ("paper-analysis", "paper-conversion")
+ENGINE_OUTPUT_DIRNAME = "paper-conversion"
 
 
 def find_pdfs(papers_dir: Path, exclude_dir: Path | None = None) -> list[Path]:
     """Source PDFs under papers_dir, in a stable order.
 
     Two exclusions, both learned the hard way:
-      * anything inside the canonical corpus (paper-analysis/...) — those are
-        engine outputs/origin copies, and counting them as "papers" inflates the
-        corpus and re-converts the same document;
+      * anything inside an engine-output tree (paper-analysis/ or
+        paper-conversion/...) — those are engine outputs/origin copies, and
+        counting them as "papers" inflates the corpus and re-converts the same
+        document;
       * engine-intermediate names such as <stem>_origin.pdf.
 
     Pass exclude_dir to exclude an explicit corpus location (e.g. --analysis-dir
@@ -75,7 +86,7 @@ def find_pdfs(papers_dir: Path, exclude_dir: Path | None = None) -> list[Path]:
         if not p.is_file() or p.suffix.lower() != ".pdf":
             continue
         parts = p.relative_to(papers_dir).parts[:-1]
-        if _ANALYSIS_DIRNAME in parts:
+        if any(name in parts for name in CORPUS_DIRNAMES):
             continue
         if excluded_root is not None:
             try:
@@ -87,6 +98,88 @@ def find_pdfs(papers_dir: Path, exclude_dir: Path | None = None) -> list[Path]:
             continue
         out.append(p)
     return sorted(out, key=lambda p: p.relative_to(papers_dir).as_posix())
+
+
+def _scan_for_corpus_dirs(papers_dir: Path) -> list[Path]:
+    """Corpus dirs discovered by structure: a dir holding <paper>/mineru/**/*_content_list.json.
+
+    This is what makes the pipeline layout-agnostic: any directory whose papers
+    carry MinerU content lists is a valid canonical corpus, whatever its name.
+    Shallow paths win (deterministic ordering: depth, then path).
+    """
+    found: list[Path] = []
+    if not papers_dir.is_dir():
+        return found
+    root = papers_dir.resolve()
+    for content_list in sorted(papers_dir.rglob("*_content_list.json")):
+        for ancestor in content_list.parents:
+            if ancestor.name != "mineru":
+                continue
+            # Layout is <corpus>/<paper>/mineru/<id>/... so the corpus root is
+            # two levels above the paper dir that owns the mineru/ tree.
+            corpus = ancestor.parent.parent
+            try:
+                corpus.resolve().relative_to(root)
+            except ValueError:
+                break  # above --papers: not a usable corpus root
+            if corpus.is_dir() and corpus not in found:
+                found.append(corpus)
+            break
+    return sorted(found, key=lambda p: (len(p.parts), str(p)))
+
+
+def detect_analysis_dir(papers_dir: Path, explicit: Path | None = None,
+                        allow_prediction: bool = True) -> dict:
+    """Resolve the canonical corpus directory without assuming its name.
+
+    Detection order:
+      1. --analysis-dir (explicit always wins)
+      2. <papers>/paper-analysis   (v1 corpus layout)
+      3. <papers>/paper-conversion (what paper-reader v2 writes)
+      4. structural scan: any dir containing <paper>/mineru/**/*_content_list.json
+      5. prediction: <papers>/paper-conversion, i.e. the dir the upcoming
+         conversion will create (only when allow_prediction, i.e. not
+         --skip-convert); otherwise None -> caller exits 2 with the candidates.
+
+    Returns {"path": Path|None, "how": str, "candidates": list[Path],
+             "warning": str|None}.
+    """
+    named = [papers_dir / name for name in CORPUS_DIRNAMES]
+    candidates: list[Path] = ([explicit.resolve()] if explicit is not None else []) + named
+
+    if explicit is not None:
+        return {"path": explicit.resolve(), "how": "explicit (--analysis-dir)",
+                "candidates": candidates, "warning": None}
+
+    existing = [c for c in named if c.is_dir()]
+    warning = None
+    if len(existing) > 1:
+        warning = ("both " + " and ".join(str(c) for c in existing)
+                   + f" exist; using {existing[0]} — pass --analysis-dir to choose")
+    if existing:
+        return {"path": existing[0], "how": f"found {existing[0]}",
+                "candidates": candidates, "warning": warning}
+
+    scanned = _scan_for_corpus_dirs(papers_dir)
+    if scanned:
+        return {"path": scanned[0],
+                "how": "structural scan (*/mineru/**/*_content_list.json)",
+                "candidates": candidates + scanned, "warning": None}
+
+    if allow_prediction:
+        predicted = papers_dir / ENGINE_OUTPUT_DIRNAME
+        return {"path": predicted, "how": "predicted (paper-reader will create it)",
+                "candidates": candidates, "warning": None}
+    return {"path": None, "how": "not found", "candidates": candidates,
+            "warning": None}
+
+
+def _print_candidates(detection: dict) -> None:
+    """List every location that was checked, with its existence state."""
+    print("[run_pipeline] candidates checked:", file=sys.stderr)
+    for cand in detection["candidates"]:
+        print(f"[run_pipeline]   - {cand} ({'exists' if cand.is_dir() else 'missing'})",
+              file=sys.stderr)
 
 
 def build_commands(papers_dir: Path, analysis_dir: Path, out_dir: Path,
@@ -119,14 +212,18 @@ def _run(cmd: list[str], dry_run: bool) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser(
-        description="PDF directory -> paper-analysis/ -> writing-feature metrics.",
+        description="PDF directory -> canonical corpus (auto-detected) -> "
+                    "writing-feature metrics.",
     )
     ap.add_argument("--papers", required=True, type=Path,
                     help="directory containing the source PDFs")
     ap.add_argument("--out", "--output", dest="out", required=True, type=Path,
                     help="output directory for the five metric artifacts")
     ap.add_argument("--analysis-dir", type=Path, default=None,
-                    help=f"canonical corpus dir (default: <papers>/{DEFAULT_ANALYSIS_DIRNAME})")
+                    help="canonical corpus dir; overrides auto-detection "
+                         "(default order: <papers>/" + CORPUS_DIRNAMES[0] + ", "
+                         "<papers>/" + CORPUS_DIRNAMES[1] + ", then any directory "
+                         "containing <paper>/mineru/**/*_content_list.json)")
     ap.add_argument("--engines", choices=["both", "marker", "mineru"], default="both",
                     help="paper-reader engines (default: both)")
     ap.add_argument("--no-resume", dest="resume", action="store_false",
@@ -140,9 +237,27 @@ def main() -> int:
     args = ap.parse_args()
 
     papers_dir = args.papers.resolve()
-    analysis_dir = (args.analysis_dir.resolve() if args.analysis_dir
-                    else papers_dir / DEFAULT_ANALYSIS_DIRNAME)
     out_dir = args.out.resolve()
+
+    # Detect the canonical corpus instead of assuming its name. --skip-convert
+    # forbids predicting a directory that does not exist yet (nothing will create
+    # it), so prediction is only allowed on the converting path.
+    detection = detect_analysis_dir(papers_dir, args.analysis_dir,
+                                    allow_prediction=not args.skip_convert)
+    analysis_dir = detection["path"]
+    if detection["warning"]:
+        print(f"[run_pipeline] WARNING: {detection['warning']}", file=sys.stderr)
+    if analysis_dir is None:
+        print("[run_pipeline] ERROR: no canonical corpus directory found and "
+              "--skip-convert forbids predicting one.", file=sys.stderr)
+        _print_candidates(detection)
+        print("[run_pipeline] hint: pass --analysis-dir <DIR> pointing at the corpus "
+              "produced by paper-reader (paper-analysis/ or paper-conversion/).",
+              file=sys.stderr)
+        return 2
+    if detection["how"].startswith("predicted"):
+        print(f"[run_pipeline] canonical  : {analysis_dir} "
+              f"[{detection['how']}]", file=sys.stderr)
 
     if not PROFILER.is_file():
         print(f"[run_pipeline] ERROR: metric layer not found at {PROFILER}", file=sys.stderr)
@@ -158,6 +273,10 @@ def main() -> int:
         if not analysis_dir.is_dir():
             print(f"[run_pipeline] ERROR: --skip-convert needs an existing canonical "
                   f"corpus at {analysis_dir}", file=sys.stderr)
+            _print_candidates(detection)
+            print("[run_pipeline] hint: pass --analysis-dir <DIR> pointing at the corpus "
+                  "produced by paper-reader (paper-analysis/ or paper-conversion/).",
+                  file=sys.stderr)
             return 2
         pdfs = []
         excluded_n = 0
@@ -169,12 +288,13 @@ def main() -> int:
         excluded_n = len(all_pdfs) - len(pdfs)
         if excluded_n:
             print(f"[run_pipeline] excluded {excluded_n} engine/intermediate PDF(s) "
-                  f"(inside {DEFAULT_ANALYSIS_DIRNAME}/ or *_origin.pdf)")
+                  f"(inside {'/ or '.join(CORPUS_DIRNAMES)}/, or *_origin.pdf)")
         if not pdfs:
             print(f"[run_pipeline] ERROR: no source PDFs under {papers_dir}", file=sys.stderr)
             if excluded_n:
                 print(f"[run_pipeline] hint: all {excluded_n} PDF(s) found were engine "
-                      f"intermediates inside {DEFAULT_ANALYSIS_DIRNAME}/ or named *_origin.pdf. "
+                      f"intermediates inside {'/ or '.join(CORPUS_DIRNAMES)}/, "
+                      f"or named *_origin.pdf. "
                       f"The submission PDFs are not in this directory — if the corpus is "
                       f"already converted, re-run with --skip-convert.", file=sys.stderr)
             return 2
@@ -185,7 +305,7 @@ def main() -> int:
 
     if pdfs:
         print(f"[run_pipeline] papers     : {papers_dir} ({len(pdfs)} PDFs)")
-    print(f"[run_pipeline] canonical  : {analysis_dir}")
+    print(f"[run_pipeline] canonical  : {analysis_dir}  [{detection['how']}]")
     print(f"[run_pipeline] metrics out: {out_dir}")
     if args.skip_convert:
         print("[run_pipeline] stage 1 skipped (--skip-convert)")

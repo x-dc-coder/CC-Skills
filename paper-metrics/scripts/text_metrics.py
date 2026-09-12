@@ -48,6 +48,16 @@ Pinned matching rules (a third party reproduces every number from these):
    Re-running the same text with the same lexicon bundle therefore reproduces
    the evidence byte for byte.
 
+6. **Language gate (Round A, honesty rule)**: every metric dict carries
+   language + cjk_ratio.  detect_language() computes
+   cjk_ratio = cjk_chars / (cjk_chars + ascii_alpha_tokens) over the CJK ranges
+   U+3400-U+4DBF, U+4E00-U+9FFF, U+F900-U+FAFF; when
+   cjk_ratio > LANGUAGE_SUPPORT_CJK_THRESHOLD (0.10) the text is outside the
+   validated language (English), and *every* metric is returned as
+   value=None / n=0 / denominator=0 with warnings ["LANGUAGE_NOT_SUPPORTED"]
+   and an empty evidence sample.  A language the module cannot measure is never
+   reported as 0 (that would be a fabricated number) and never raises.
+
 Deliberate, documented readings of the contract:
 
 * _MTLD_MIN_FACTOR (10) is used only as the length guard
@@ -127,6 +137,23 @@ METRIC_IDS = (
     "M-TENSE-28",
 )
 
+#: A text is treated as Chinese (and therefore outside the validated language of
+#: every OBSERVED metric here) when its CJK ratio exceeds this threshold.
+#: Round A frozen contract: supported <=> cjk_ratio <= LANGUAGE_SUPPORT_CJK_THRESHOLD.
+LANGUAGE_SUPPORT_CJK_THRESHOLD = 0.10
+
+#: Languages this module's OBSERVED metrics are validated for.
+SUPPORTED_LANGUAGES = ("en",)
+
+#: Warning code emitted on every metric when the input language is unsupported.
+#: The value is null (never 0) so downstream aggregation counts it as missing.
+LANGUAGE_NOT_SUPPORTED = "LANGUAGE_NOT_SUPPORTED"
+
+#: CJK code-point ranges counted by detect_language: CJK Unified Ideographs
+#: Extension A + the main block + CJK Compatibility Ideographs.
+_CJK_RANGES = ((0x3400, 0x4DBF), (0x4E00, 0x9FFF), (0xF900, 0xFAFF))
+_CJK_CHAR_RE = re.compile("[" + "".join(chr(lo) + "-" + chr(hi) for lo, hi in _CJK_RANGES) + "]")
+
 _ROUND_DIGITS = 6
 _STATE_OBSERVED = "OBSERVED"
 _METHOD_RULE = "rule"
@@ -136,6 +163,24 @@ _UNIT_RATIO = "ratio"
 _UNIT_PER_1000 = "per-1000-words"
 _UNIT_WORDS_PER_SENTENCE = "words/sentence"
 _UNIT_INDEX = "index"
+
+#: unit of every metric id, used when a metric is suppressed (unsupported
+#: language) so the contract field keeps its original value.
+_METRIC_UNITS = {
+    "M-SLEN-01": _UNIT_WORDS_PER_SENTENCE,
+    "M-LSF-16": _UNIT_RATIO,
+    "M-MTLD-02": _UNIT_INDEX,
+    "M-HED-14": _UNIT_RATIO,
+    "M-BOO-15": _UNIT_RATIO,
+    "M-CONN-30": _UNIT_PER_1000,
+    "M-CONN-30c": _UNIT_PER_1000,
+    "M-CONN-30k": _UNIT_PER_1000,
+    "M-CONN-30r": _UNIT_PER_1000,
+    "M-AWR-03": _UNIT_RATIO,
+    "M-PAS-09": _UNIT_RATIO,
+    "M-NOM-10": _UNIT_RATIO,
+    "M-TENSE-28": _UNIT_RATIO,
+}
 
 #: Frozen per-metric evidence sampling rules (see module docstring rule 5).
 #: Injected into every metric dict as the top-level "evidence_rule" field.
@@ -1143,6 +1188,75 @@ def _metric_tense28(text: str, sentences: Sequence[Span],
 # Public entry point
 # ---------------------------------------------------------------------------
 
+def detect_language(text: str) -> dict[str, Any]:
+    """Detect whether the input language is one this module can measure.
+
+    Frozen Round A contract:
+      cjk_ratio  = cjk_chars / (cjk_chars + ascii_alpha_tokens), 0.0 if the
+                   denominator is 0;
+      supported  = cjk_ratio <= LANGUAGE_SUPPORT_CJK_THRESHOLD (0.10);
+      language   = "zh" if cjk_ratio > threshold else ("en" if there is at
+                   least one ASCII alpha token else "unknown").
+
+    CJK characters counted: U+3400-U+4DBF, U+4E00-U+9FFF, U+F900-U+FAFF.
+    ASCII alpha tokens are the module's own frozen tokenization (tokenize()),
+    so the ratio is reproducible with the very same rule as every metric.
+    """
+    if not isinstance(text, str):
+        text = ""
+    cjk_chars = len(_CJK_CHAR_RE.findall(text))
+    ascii_alpha_tokens = len(tokenize(text))
+    denominator = cjk_chars + ascii_alpha_tokens
+    cjk_ratio = (cjk_chars / denominator) if denominator else 0.0
+    supported = cjk_ratio <= LANGUAGE_SUPPORT_CJK_THRESHOLD
+    if cjk_ratio > LANGUAGE_SUPPORT_CJK_THRESHOLD:
+        language = "zh"
+    elif ascii_alpha_tokens > 0:
+        language = "en"
+    else:
+        language = "unknown"
+    reason = None
+    if not supported:
+        reason = (
+            "cjk_ratio=%.6f > LANGUAGE_SUPPORT_CJK_THRESHOLD=%.2f: OBSERVED metrics "
+            "are validated for %s only; all metrics are reported as null with "
+            "warning %s instead of 0"
+            % (cjk_ratio, LANGUAGE_SUPPORT_CJK_THRESHOLD,
+               "/".join(SUPPORTED_LANGUAGES), LANGUAGE_NOT_SUPPORTED)
+        )
+    return {
+        "language": language,
+        "cjk_ratio": round(cjk_ratio, _ROUND_DIGITS),
+        "cjk_chars": cjk_chars,
+        "ascii_alpha_tokens": ascii_alpha_tokens,
+        "supported": bool(supported),
+        "reason": reason,
+    }
+
+
+def _unsupported_metric(metric_spec: str, language: dict[str, Any]) -> dict[str, Any]:
+    """Contract-shaped "not measured" record for an unsupported language.
+
+    Never 0 (0 would be a fake measurement); never an exception.  Every field
+    keeps its original meaning so a downstream consumer can tell "not measured"
+    apart from "measured as zero".
+    """
+    return {
+        "value": None,
+        "n": 0,
+        "denominator": 0,
+        "unit": _METRIC_UNITS.get(metric_spec, _UNIT_RATIO),
+        "state": _STATE_OBSERVED,
+        "method": _METHOD_RULE,
+        "metric_spec": metric_spec,
+        "evidence": {"count": 0, "sample": []},
+        "evidence_rule": _EVIDENCE_RULES.get(metric_spec, _EVIDENCE_RULE_DEFAULT),
+        "warnings": [LANGUAGE_NOT_SUPPORTED],
+        "language": language["language"],
+        "cjk_ratio": language["cjk_ratio"],
+    }
+
+
 def compute_text_metrics(text: str, bundle: Any) -> dict[str, dict[str, Any]]:
     """Compute every frozen metric for one text.
 
@@ -1151,9 +1265,19 @@ def compute_text_metrics(text: str, bundle: Any) -> dict[str, dict[str, Any]]:
     nominalization_suffixes, nominalization_verb_bases, nominalization_denylist,
     academic_words and stopwords, each exposing an entries tuple of lower-case
     strings.  No import of lexicon_loader happens here.
+
+    Language gate (Round A): when detect_language() reports an unsupported
+    language (cjk_ratio > LANGUAGE_SUPPORT_CJK_THRESHOLD), every metric is
+    returned as a null "not measured" record carrying the warning
+    LANGUAGE_NOT_SUPPORTED - the module never emits a fabricated 0 for a
+    language it is not validated for, and it never raises.
     """
     if not isinstance(text, str):
         text = ""
+    language = detect_language(text)
+    if not language["supported"]:
+        return {metric_id: _unsupported_metric(metric_id, language)
+                for metric_id in METRIC_IDS}
     sentences = split_sentences(text)
     sentence_counts = [len(tokenize(span.text)) for span in sentences]
     tokens = tokenize(text)
@@ -1248,12 +1372,22 @@ def compute_text_metrics(text: str, bundle: Any) -> dict[str, dict[str, Any]]:
 
     metrics["M-TENSE-28"] = _metric_tense28(text, sentences, verb_bases)
 
+    # Language facts on EVERY metric dict (supported path), so a consumer can
+    # always tell which language and CJK share produced the number.
+    for record in metrics.values():
+        record["language"] = language["language"]
+        record["cjk_ratio"] = language["cjk_ratio"]
+
     return {metric_id: metrics[metric_id] for metric_id in METRIC_IDS if metric_id in metrics}
 
 
 __all__ = [
     "TEXT_METRICS_VERSION",
     "METRIC_IDS",
+    "LANGUAGE_SUPPORT_CJK_THRESHOLD",
+    "LANGUAGE_NOT_SUPPORTED",
+    "SUPPORTED_LANGUAGES",
+    "detect_language",
     "Span",
     "split_sentences",
     "tokenize",

@@ -557,6 +557,126 @@ def test_nominalization_empty_suffix_lexicon_warns_not_crashes():
 
 
 # ---------------------------------------------------------------------------
+# Language detection and "unsupported means null, never 0" (Round A)
+# ---------------------------------------------------------------------------
+
+CHINESE_TEXT = (
+    "本文提出了一种基于强化学习的车辆路径问题求解方法。"
+    "我们在多个基准算例上验证了该方法的有效性，并与传统启发式算法进行了比较。"
+    "实验结果表明，所提方法在求解质量与计算时间上均具有优势。"
+)
+
+#: Frozen pre-language-gate values for SAMPLE_TEXT + BUNDLE:
+#: metric_id -> [value, n, denominator].  The language gate must not move any
+#: English number by even one unit in the last place.
+ENGLISH_GOLDEN = {
+    "M-AWR-03": [0.074074, 4, 54],
+    "M-BOO-15": [0.037037, 2, 54],
+    "M-CONN-30": [37.037038, 2, 54],
+    "M-CONN-30c": [18.518519, 1, 54],
+    "M-CONN-30k": [0.0, 0, 54],
+    "M-CONN-30r": [18.518519, 1, 54],
+    "M-HED-14": [0.037037, 2, 54],
+    "M-LSF-16": [0.0, 0, 4],
+    "M-MTLD-02": [54.216, 54, 1],
+    "M-NOM-10": [0.055556, 3, 54],
+    "M-PAS-09": [0.25, 1, 4],
+    "M-SLEN-01": [13.5, 4, 54],
+    "M-TENSE-28": [0.428571, 3, 7],
+}
+
+
+def test_language_threshold_constant_is_frozen():
+    assert tm.LANGUAGE_SUPPORT_CJK_THRESHOLD == 0.10
+    assert tm.LANGUAGE_NOT_SUPPORTED == "LANGUAGE_NOT_SUPPORTED"
+
+
+def test_detect_language_english():
+    info = tm.detect_language(SAMPLE_TEXT)
+    assert info["language"] == "en"
+    assert info["supported"] is True
+    assert info["cjk_chars"] == 0
+    assert info["cjk_ratio"] == 0.0
+    assert info["ascii_alpha_tokens"] == len(tm.tokenize(SAMPLE_TEXT))
+    assert info["reason"] is None
+
+
+def test_detect_language_chinese_is_unsupported_and_loud():
+    info = tm.detect_language(CHINESE_TEXT)
+    assert info["language"] == "zh"
+    assert info["supported"] is False
+    assert info["cjk_ratio"] > tm.LANGUAGE_SUPPORT_CJK_THRESHOLD
+    assert info["cjk_chars"] > 0
+    assert info["ascii_alpha_tokens"] == 0
+    assert info["reason"] and "LANGUAGE_NOT_SUPPORTED" in info["reason"]
+
+
+def test_detect_language_empty_and_non_string():
+    empty = tm.detect_language("")
+    assert empty == {
+        "language": "unknown", "cjk_ratio": 0.0, "cjk_chars": 0,
+        "ascii_alpha_tokens": 0, "supported": True, "reason": None,
+    }
+    # documented: an empty/letter-less text has ratio 0.0, so it is "supported"
+    # (nothing is measured anywhere in it) but its language is "unknown"
+    assert tm.detect_language(None)["language"] == "unknown"
+    assert tm.detect_language(None)["supported"] is True
+
+
+def test_unsupported_language_suppresses_every_metric():
+    metrics = tm.compute_text_metrics(CHINESE_TEXT, BUNDLE)
+    assert set(metrics) == set(tm.METRIC_IDS)
+    for metric_id, record in metrics.items():
+        assert record["value"] is None, metric_id
+        assert record["n"] == 0 and record["denominator"] == 0, metric_id
+        assert record["warnings"] == ["LANGUAGE_NOT_SUPPORTED"], metric_id
+        assert record["evidence"] == {"count": 0, "sample": []}, metric_id
+        assert record["state"] == "OBSERVED" and record["method"] == "rule", metric_id
+        assert record["metric_spec"] == metric_id
+        assert record["unit"], metric_id  # unit keeps its original value
+        assert record["evidence_rule"], metric_id
+        assert record["language"] == "zh"
+        assert record["cjk_ratio"] > tm.LANGUAGE_SUPPORT_CJK_THRESHOLD
+    assert "NaN" not in json.dumps(metrics, sort_keys=True)
+
+
+def test_english_values_are_bit_identical_to_pre_language_gate():
+    metrics = tm.compute_text_metrics(SAMPLE_TEXT, BUNDLE)
+    assert set(ENGLISH_GOLDEN) == set(tm.METRIC_IDS)
+    for metric_id, (value, n, denominator) in ENGLISH_GOLDEN.items():
+        record = metrics[metric_id]
+        assert record["value"] == value, metric_id
+        assert record["n"] == n, metric_id
+        assert record["denominator"] == denominator, metric_id
+        assert record["language"] == "en", metric_id
+        assert record["cjk_ratio"] == 0.0, metric_id
+        assert "LANGUAGE_NOT_SUPPORTED" not in record["warnings"], metric_id
+
+
+def test_mixed_language_ratio_boundary():
+    # 11 / (11 + 89) = 0.11 -> unsupported
+    above = tm.detect_language("车" * 11 + " " + "word " * 89)
+    assert (above["cjk_chars"], above["ascii_alpha_tokens"]) == (11, 89)
+    assert above["cjk_ratio"] == pytest.approx(0.11)
+    assert above["supported"] is False and above["language"] == "zh"
+    assert tm.compute_text_metrics("车" * 11 + " " + "word " * 89, BUNDLE)["M-SLEN-01"]["value"] is None
+    # 10 / (10 + 90) = 0.10 exactly -> supported (threshold is inclusive)
+    exact = tm.detect_language("车" * 10 + " " + "word " * 90)
+    assert exact["cjk_ratio"] == pytest.approx(0.10)
+    assert exact["supported"] is True and exact["language"] == "en"
+    assert tm.compute_text_metrics("车" * 10 + " " + "word " * 90, BUNDLE)["M-SLEN-01"]["value"] is not None
+    # 9 / (9 + 91) = 0.09 -> supported
+    below = tm.detect_language("车" * 9 + " " + "word " * 91)
+    assert below["cjk_ratio"] == pytest.approx(0.09)
+    assert below["supported"] is True and below["language"] == "en"
+
+
+def test_unsupported_language_never_raises_on_empty_bundle():
+    metrics = tm.compute_text_metrics(CHINESE_TEXT, None)
+    assert all(record["value"] is None for record in metrics.values())
+
+
+# ---------------------------------------------------------------------------
 # Environment-dependent integration cases
 # ---------------------------------------------------------------------------
 
