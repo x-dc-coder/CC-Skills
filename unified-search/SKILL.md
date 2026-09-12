@@ -1,12 +1,12 @@
 ---
 name: unified-search
 description: >
-  统一网页+学术搜索聚合器（7 源：keenable/tavily/firecrawl/bocha/arxiv/dblp/semantic_scholar），三模式：general（双源+分歧仲裁）、academic（三源并行+论文链接记录）、fetch（单页正文提取），配额感知。任何需要实时信息、学术论文、网页内容搜索（搜一下/查一下/find papers/search the web）都优先使用本技能，取代内置 web 搜索工具；纯代码/本地问题勿用。
+  统一网页+学术搜索聚合器（9 源：keenable/tavily/firecrawl/bocha/arxiv/dblp/semantic_scholar/openalex/ai4scholar），三模式：general（双源+分歧仲裁）、academic（五源并行+论文链接记录）、fetch（单页正文提取），配额感知。内置自愈：NO_PROXY 方括号 IPv6 清洗、arxiv 429 降级 HTML、dblp Anubis PoW 过墙、401/402 熔断、失败源透出。任何需要实时信息、学术论文、网页内容搜索（搜一下/查一下/find papers/search the web）都优先使用本技能，取代内置 web 搜索工具；纯代码/本地问题勿用。
 ---
 
 # Unified Search
 
-A single skill that replaces ALL default web search tools. 7 sources, 3 modes,
+A single skill that replaces ALL default web search tools. 9 sources, 3 modes,
 quota-aware, with retry and dedup. **Always use this skill first** for any
 search need; only fall back to built-in tools if this skill fails entirely.
 
@@ -20,7 +20,12 @@ search need; only fall back to built-in tools if this skill fails entirely.
 | bocha | HTTP | pay-per-call | 中文搜索最强，预充值按量 |
 | arxiv | HTTP | free | Preprint papers (physics/CS/math) |
 | dblp | HTTP | free | CS publication catalog |
-| semantic_scholar | HTTP | free | Citation graph, abstracts, PDF links |
+| semantic_scholar | HTTP | free | Citation graph, abstracts, PDF links（需 S2_API_KEY 才稳） |
+| openalex | HTTP | free | 2.5 亿+ 论文目录，无需 key、无人机墙，学术兜底主力 |
+| ai4scholar | HTTP | credits（按次扣积分） | S2 语料 2 亿+；另有 MCP 通道覆盖 arXiv/PubMed/bioRxiv/medRxiv/Google Scholar |
+
+注：arxiv / dblp / semantic_scholar / openalex 全部免费；付费源为 tavily、firecrawl（各 1000/月）
+与 bocha（按次）。源健康与自愈机制见下文「源健康与自愈」。
 
 ## 环境依赖（本技能并入原 keenable-cli 技能）
 
@@ -93,7 +98,10 @@ the two sources disagree, conserving the 1000/month quota.
 
 ### `academic` (auto-triggered for paper/research queries)
 
-1. **Parallel**: arxiv + dblp + semantic_scholar (all free, no quota)
+1. **Parallel**: arxiv + dblp + semantic_scholar + openalex + ai4scholar（前四个免费；ai4scholar 按积分计费）
+   - arxiv：export API 被限流（429）时自动降级抓 `https://arxiv.org/search/`（结果带 `via: html_fallback`）
+   - dblp：Anubis 人机墙自动过墙（PoW，结果带 `via: anubis_pow`，cookie 缓存 1h）
+   - openalex：免费兜底，不受上述限流影响
 2. **Merge**: dedup by DOI/arxiv-id/normalized-URL, cross-validated bonus
 3. **Record**: all paper links saved to `data/history.db` for later retrieval
 4. Each result includes: title, url, pdf_url, doi, arxiv_id, year, venue, authors
@@ -203,6 +211,94 @@ unified-search/
 │   └── quota.json            # monthly usage tracking
 └── cache/                    # reserved for future result caching
 ```
+
+## Ai4Scholar 开放 API（新增学术源，2026-09-12 接入验收）
+
+| 项 | 值 |
+|---|---|
+| REST 基址 | @@BT@@https://ai4scholar.net/graph/v1@@BT@@（Semantic Scholar 形态） |
+| 认证 | @@BT@@Authorization: Bearer <AI4SCHOLAR_API_KEY>@@BT@@ —— **不支持 @@BT@@x-api-key@@BT@@**（那是 S2 官方用法） |
+| 端点 | @@BT@@paper/search@@BT@@、@@BT@@paper/{id}@@BT@@、@@BT@@paper/{id}/citations@@BT@@、@@BT@@paper/{id}/references@@BT@@、@@BT@@author/search@@BT@@、@@BT@@author/{id}@@BT@@、@@BT@@author/{id}/papers@@BT@@、@@BT@@paper/batch@@BT@@、@@BT@@paper/search/bulk@@BT@@、@@BT@@GET /api/credits@@BT@@（免费） |
+| 计费 | 每次成功调用扣积分（1 分起，batch/bulk 固定 2 分）；失败退还；响应头 @@BT@@x-credits-charged@@BT@@ / @@BT@@x-credits-remaining@@BT@@ 可对账 |
+| 限流 | 免费 10 次/分；专业版 100 次/分；团队版不限 |
+| 密钥 | @@BT@@~/.config/vision-ai/.env@@BT@@ 的 @@BT@@AI4SCHOLAR_API_KEY@@BT@@（不进 config.json） |
+| 验收 | 实测 search / detail / citations / references / author search 全部 200；一次 academic 检索贡献 15 条结果、扣 1 积分 |
+
+### 它能覆盖多少来源
+
+| 通道 | 覆盖范围 |
+|---|---|
+| **REST 开放 API**（本技能接入的就是这条） | **仅 Semantic Scholar**：2 亿+ 篇（计算机/生物医学/物理/数学，每周更新）——实测返回 @@BT@@paperId@@BT@@/@@BT@@externalIds@@BT@@/@@BT@@citationCount@@BT@@，是标准 S2 结构 |
+| **MCP 通道**（托管 SSE 或本地 stdio，29 个工具） | arXiv、PubMed（3500 万+）、Semantic Scholar（2 亿+）、Google Scholar（3.89 亿+）、bioRxiv、medRxiv，外加按 DOI 下载 |
+| **平台网页端**（无 API） | Google Patents（1.2 亿+，100+ 国家/地区）、中文文献（中文核心/CSSCI/CSCD/北大核心、学位论文、会议论文） |
+
+结论：这把 key 的 REST 通道 = S2 2 亿+ 语料；要 arXiv/PubMed/Google Scholar 等更多来源得走 MCP；
+Google Patents 与中文文献目前只在他家网页端，没有 API。
+
+### PDF 下载（本地 stdio MCP，已实测）
+
+托管版 MCP 的 @@BT@@download_*@@BT@@ 会直接返回「该工具仅在本地模式（stdio）下可用」，所以下载必须本机装一次：
+
+@@BT@@@@BT@@@@BT@@bash
+uv venv --python 3.12 ~/.local/share/ai4scholar-mcp/venv
+uv pip install --python ~/.local/share/ai4scholar-mcp/venv/bin/python ai4scholar-mcp "mcp<2"
+@@BT@@@@BT@@@@BT@@
+
+> 必须 @@BT@@mcp<2@@BT@@：ai4scholar-mcp 0.4.0 仍用旧版 @@BT@@mcp.server.fastmcp@@BT@@ API，
+> 装了 mcp 2.x 会直接 @@BT@@ModuleNotFoundError: No module named 'mcp.server.fastmcp'@@BT@@。
+
+用法（脚本会自动找上面的 venv）：
+
+@@BT@@@@BT@@@@BT@@bash
+cd ~/.claude/skills
+uv run python unified-search/scripts/ai4scholar_download.py --doi 10.48550/arXiv.1706.03762
+uv run python unified-search/scripts/ai4scholar_download.py --arxiv 2312.10997 --out ./papers
+uv run python unified-search/scripts/ai4scholar_download.py --semantic <paperId>
+uv run python unified-search/scripts/ai4scholar_download.py --list-tools
+@@BT@@@@BT@@@@BT@@
+
+实测（2026-09-12）：@@BT@@--arxiv 1706.03762@@BT@@ → 2,215,244 B；@@BT@@--arxiv 2312.10997@@BT@@ → 1,662,567 B；
+@@BT@@--semantic@@BT@@ → 885,323 B；三份文件 @@BT@@%PDF-@@BT@@ 魔数全部正确。下载链路为
+Unpaywall → 出版商页面 → 可选 Sci-Hub；在校园网出口可借机构权限拿付费论文。
+
+## 源健康与自愈（2026-09-12 体检 + 修复）
+
+| 现象 | 根因 | 现在的处理 |
+|---|---|---|
+| 所有 HTTP 源报 @@BT@@InvalidURL: Invalid port: ':1]'@@BT@@ | DSH 的 @@BT@@@deepseek-ai/dsh-http-proxy@@BT@@ 会把 loopback 绕过项 @@BT@@[::1]@@BT@@（连同 @@BT@@NODE_USE_ENV_PROXY=1@@BT@@）注入**所有**子进程；httpx 把 @@BT@@[::1]@@BT@@ 当 host:port 解析 | 脚本导入时自动清洗 @@BT@@no_proxy/NO_PROXY@@BT@@：只删方括号条目，保留裸 @@BT@@::1@@BT@@，语义不变 |
+| arxiv 报 @@BT@@429 Rate exceeded@@BT@@ | export API 对当前出口 IP 限流（同一时刻 arxiv.org HTML 页仍 200） | 自动降级抓 HTML 搜索页，超时 60s + 重试 1 次 |
+| dblp 返回 Anubis 挑战页（HTTP 200 + HTML） | dblp.org 位于 Anubis v1.27.0 之后（difficulty=4 的 SHA-256 PoW） | @@BT@@scripts/anubis_dblp.py@@BT@@ 纯 Python 解 PoW 换取 @@BT@@dblp_org-auth-*@@BT@@ cookie（JWT 1h），缓存 @@BT@@data/dblp_cookies.json@@BT@@；代理/直连双通道自动回退 |
+| firecrawl @@BT@@402 Payment Required@@BT@@ | 密钥有效但额度耗尽（本周期 2026-08-14 → **2026-09-14 重置**） | 命中 401/402/403 即在本次进程内熔断，不再重复白打 API；@@BT@@--fetch markdown_body@@BT@@ 自动落到 keenable |
+| semantic_scholar @@BT@@429 Too Many Requests@@BT@@ | 未配置 @@BT@@S2_API_KEY@@BT@@，走匿名共享限流（实测 4 次里 1 次成功） | **需人工申请免费 key**，见下 |
+
+### semantic_scholar API key 申请（免费）
+
+1. 打开官方页 https://www.semanticscholar.org/product/api#api-key-form ，点 **Request an API key** 填表（需登录 Semantic Scholar 账号）
+2. 密钥通过**邮件**发送。官方限流口径：未认证=全站共享且会被额外节流；带 key 起步 1 RPS。**不要外传密钥**
+3. 写入统一密钥文件 @@BT@@~/.config/vision-ai/.env@@BT@@（本脚本自动加载）：
+   @@BT@@S2_API_KEY=<你的key>@@BT@@
+4. 验证：@@BT@@cd ~/.claude/skills && uv run python unified-search/scripts/unified_search.py "retrieval augmented generation" --mode academic@@BT@@ ，
+   输出 JSON 的 @@BT@@sources_failed@@BT@@ 中不再出现 @@BT@@semantic_scholar@@BT@@ 即为生效
+
+### 输出新增字段
+
+- @@BT@@sources_failed@@BT@@：完全失败的源 + 错误原因（区分「没搜到」与「源挂了」）
+- @@BT@@degraded@@BT@@：@@BT@@true@@BT@@ 表示本轮有源失败
+
+### 排查命令
+
+@@BT@@@@BT@@@@BT@@bash
+cd ~/.claude/skills
+
+# 逐源体检（一条命令看各源真实状态与降级通道）
+uv run python ~/.claude/skills-output/unified-search/probe_sources2.py nobracket
+
+# 配额 / 真实额度（tavily、firecrawl 走官方 usage 接口）
+uv run python unified-search/scripts/unified_search.py --quota
+
+# dblp 过墙单独自测
+uv run python unified-search/scripts/anubis_dblp.py "transformer" -n 5
+@@BT@@@@BT@@@@BT@@
 
 ## Troubleshooting
 

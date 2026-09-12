@@ -4,7 +4,7 @@ unified_search.py — Unified web + academic search aggregator.
 
 Modes:
   general  : 2-source parallel (keenable + tavily), arbitration by firecrawl if divergence
-  academic : 3-source parallel (arxiv + dblp + semantic_scholar), paper links recorded
+  academic : 4-source parallel (arxiv + dblp + semantic_scholar + openalex), paper links recorded
   fetch    : single-URL content extraction (firecrawl markdown / keenable / tavily extract)
   history  : query past search cache
 
@@ -55,6 +55,29 @@ def _load_env_file(path: Path) -> None:
 # 自读统一密钥文件（~/.config/vision-ai/.env）
 _load_env_file(Path.home() / ".config" / "vision-ai" / ".env")
 
+
+def _sanitize_no_proxy_env() -> None:
+    """剔除 no_proxy 里的方括号 IPv6 条目。
+
+    DSH（@deepseek-ai/dsh-http-proxy 的 LOOPBACK_NO_PROXY）会把
+    [localhost,127.0.0.1,::1,[::1]] 连同 NODE_USE_ENV_PROXY=1 注入所有子进程。
+    Node/undici 需要方括号写法，但 httpx 解析 no_proxy 时把每个条目丢给 urlparse()，
+    方括号里的 ::1 会被当成 host:port 并抛 InvalidURL: Invalid port: ':1]' —— 于是本脚本
+    所有 HTTP 源在发请求前就全部失败。这里只删带方括号的条目（裸 ::1 保留，语义不变）。
+    """
+    for var in ("NO_PROXY", "no_proxy"):
+        raw = os.environ.get(var)
+        if not raw:
+            continue
+        keep = [t.strip() for t in raw.split(",")
+                if t.strip() and not re.fullmatch(r"\[.*\]", t.strip())]
+        cleaned = ",".join(keep)
+        if cleaned != raw:
+            os.environ[var] = cleaned
+
+
+_sanitize_no_proxy_env()
+
 # ─── Paths ──────────────────────────────────────────────────────────────────
 SKILL_DIR = Path(__file__).resolve().parent.parent          # ~/.claude/skills/unified-search
 SCRIPT_DIR = Path(__file__).resolve().parent                # .../scripts
@@ -93,6 +116,25 @@ def load_quota() -> dict:
 
 def save_quota(quota: dict) -> None:
     QUOTA_PATH.write_text(json.dumps(quota, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+# ─── Source circuit breaker ─────────────────────────────────────────────────
+# 401/402/403（密钥失效 / 额度耗尽 / 无权限）属于重试也没用的错误：命中一次就在本进程内
+# 熔断该源，避免每次搜索都真的再打一次 API（firecrawl 402 就是这种情况）。
+_DEAD_SOURCES: dict[str, str] = {}
+
+
+def disable_source(name: str, reason: str) -> None:
+    _DEAD_SOURCES.setdefault(name, reason)
+
+
+def source_disabled(name: str) -> bool:
+    return name in _DEAD_SOURCES
+
+
+def _disabled_result(name: str) -> list[dict]:
+    return [make_result("", "", "[%s disabled this run: %s]" % (name, _DEAD_SOURCES.get(name, "")),
+                        name, 0.0, error="source_disabled")]
 
 
 def current_month_key() -> str:
@@ -229,6 +271,8 @@ def _load_keenable_yaml(out: str):
 
 def search_tavily(query: str, cfg: dict, advanced: bool = False, topic: str | None = None,
                   time_range: str | None = None) -> list[dict]:
+    if source_disabled("tavily"):
+        return _disabled_result("tavily")
     if not quota_available(cfg, "tavily"):
         return [make_result("", "", "[tavily quota exhausted this month]", "tavily", 0.0, error="quota_exhausted")]
     key = get_api_key(cfg, "tavily")
@@ -245,6 +289,10 @@ def search_tavily(query: str, cfg: dict, advanced: bool = False, topic: str | No
         with httpx.Client(timeout=src["timeout_sec"]) as client:
             resp = client.post(src["endpoint"], json=params,
                                headers={"Authorization": f"Bearer {key}"})
+            if resp.status_code in (401, 402, 403):
+                disable_source("tavily", "http_%d" % resp.status_code)
+                return [make_result("", "", "[tavily %d: %s]" % (resp.status_code, resp.text[:200]),
+                                    "tavily", 0.0, error="http_%d" % resp.status_code)]
             resp.raise_for_status()
             quota_consume("tavily")
         data = resp.json()
@@ -270,6 +318,8 @@ def search_tavily(query: str, cfg: dict, advanced: bool = False, topic: str | No
 
 
 def search_firecrawl(query: str, cfg: dict, limit: int | None = None) -> list[dict]:
+    if source_disabled("firecrawl"):
+        return _disabled_result("firecrawl")
     if not quota_available(cfg, "firecrawl"):
         return [make_result("", "", "[firecrawl quota exhausted this month]", "firecrawl", 0.0, error="quota_exhausted")]
     key = get_api_key(cfg, "firecrawl")
@@ -284,6 +334,10 @@ def search_firecrawl(query: str, cfg: dict, limit: int | None = None) -> list[di
         with httpx.Client(timeout=src["timeout_sec"]) as client:
             resp = client.post(src["endpoint"], json=body,
                                headers={"Authorization": f"Bearer {key}"})
+            if resp.status_code in (401, 402, 403):
+                disable_source("firecrawl", "http_%d" % resp.status_code)
+                return [make_result("", "", "[firecrawl %d: %s]" % (resp.status_code, resp.text[:200]),
+                                    "firecrawl", 0.0, error="http_%d" % resp.status_code)]
             resp.raise_for_status()
             quota_consume("firecrawl")
         data = resp.json()
@@ -343,17 +397,22 @@ def search_arxiv(query: str, cfg: dict, max_results: int = 15) -> list[dict]:
     params["search_query"] = f"all:{query}"
     params["max_results"] = max_results
     # arxiv is strict on rate limits: use httpx directly so we can see 429
+    api_err = None
     try:
         with httpx.Client(timeout=src["timeout_sec"], follow_redirects=True) as client:
             resp = client.get(src["endpoint"], params=params)
         if resp.status_code == 429:
-            return [make_result("", "", "[arxiv: rate limited (429), retry with backoff]",
-                                "arxiv", 0.0, error="429_rate_limited")]
+            api_err = "429_rate_limited"
+            raise RuntimeError("arxiv api rate limited")
         resp.raise_for_status()
         feed = feedparse(resp.text)
         results = []
         for e in feed.entries:
             arxiv_url = e.get("id", "")
+            # 从 http://arxiv.org/abs/2506.06962v3 里取纯 arXiv id（版本号去掉）
+            aid = arxiv_url.rstrip("/").split("/abs/")[-1] if "/abs/" in arxiv_url else ""
+            aid = re.sub(r"v[0-9]+$", "", aid)
+            pdf_link = next((l.href for l in e.get("links", []) if l.rel == "related" and "pdf" in l.href), "")
             results.append(make_result(
                 title=e.get("title", "").strip().replace("\n", " "),
                 url=arxiv_url,
@@ -363,12 +422,256 @@ def search_arxiv(query: str, cfg: dict, max_results: int = 15) -> list[dict]:
                 published=e.get("published"),
                 authors=[a.name for a in e.get("authors", [])],
                 journal_ref=e.get("journal_ref"),
-                pdf_link=next((l.href for l in e.get("links", []) if l.rel == "related" and "pdf" in l.href), ""),
+                arxiv_id=aid,
+                pdf_url=pdf_link or ("https://arxiv.org/pdf/%s" % aid if aid else None),
+                pdf_link=pdf_link,
                 primary_category=getattr(e, "arxiv_primary_category", {}).get("term", "") if hasattr(e, "arxiv_primary_category") else "",
+            ))
+        if results:
+            return results
+        api_err = "api_empty"
+    except Exception as e:
+        api_err = "%s: %s" % (type(e).__name__, e)
+
+    # 降级：官方 export API 被限流（429）时改抓 arxiv.org 的 HTML 搜索结果页。
+    # 两条通道限流互相独立，本机实测 API 持续 429 时 HTML 页稳定返回 200。
+    html_results = search_arxiv_html(query, cfg, max_results=max_results)
+    if any(not r.get("error") for r in html_results):
+        return html_results
+    detail = html_results[0].get("error") if html_results else "n/a"
+    return [make_result("", "", "[arxiv error: api=%s; html_fallback=%s]" % (api_err, detail),
+                        "arxiv", 0.0, error=str(api_err))]
+
+
+ARXIV_HTML_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                 "(KHTML, like Gecko) Chrome/128.0 Safari/537.36")
+
+
+def search_arxiv_html(query: str, cfg: dict, max_results: int = 15) -> list[dict]:
+    """arXiv HTML 搜索页降级通道（API 429 时使用；字段少于官方 export API）。"""
+    src = cfg["sources"]["arxiv"]
+    size = min(max(max_results, 25), 200)
+    params = {"searchtype": "all", "query": query, "start": 0, "size": size}
+    html = None
+    last_err = None
+    for _attempt in range(2):
+        try:
+            with httpx.Client(timeout=max(src["timeout_sec"], 60), follow_redirects=True,
+                              headers={"User-Agent": ARXIV_HTML_UA}) as client:
+                resp = client.get("https://arxiv.org/search/", params=params)
+                resp.raise_for_status()
+            html = resp.text
+            break
+        except Exception as e:
+            last_err = "%s: %s" % (type(e).__name__, e)
+            time.sleep(2)
+    if html is None:
+        return [make_result("", "", "[arxiv html fallback error: %s]" % last_err,
+                            "arxiv", 0.0, error=str(last_err))]
+
+    def clean(raw):
+        return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", raw or "")).strip()
+
+    results = []
+    for block in re.split(r'<li class="arxiv-result">', html)[1:]:
+        m_title = re.search(r'<p class="title is-5 mathjax">(.*?)</p>', block, re.S)
+        m_id = re.search(r"arxiv\.org/abs/([0-9]{4}\.[0-9]{4,5})", block)
+        m_abs = (re.search(r'<span class="abstract-full[^"]*"[^>]*>(.*?)</span>', block, re.S)
+                 or re.search(r'<p class="abstract mathjax">(.*?)</p>', block, re.S))
+        m_auth = re.search(r'<p class="authors">(.*?)</p>', block, re.S)
+        m_date = re.search(r"Submitted\s*<span[^>]*>([^<]+)</span>", block)
+        title = clean(m_title.group(1) if m_title else "")
+        aid = m_id.group(1) if m_id else ""
+        if not title and not aid:
+            continue
+        authors = [clean(a) for a in re.findall(r"<a[^>]*>([^<]+)</a>", m_auth.group(1))] if m_auth else []
+        results.append(make_result(
+            title=title,
+            url="https://arxiv.org/abs/%s" % aid if aid else "",
+            snippet=clean(m_abs.group(1))[:500] if m_abs else "",
+            source="arxiv",
+            score=0.75,
+            arxiv_id=aid,
+            pdf_url="https://arxiv.org/pdf/%s" % aid if aid else "",
+            published=clean(m_date.group(1)) if m_date else None,
+            authors=authors,
+            via="html_fallback",
+        ))
+        if len(results) >= max_results:
+            break
+    if not results:
+        return [make_result("", "", "[arxiv html fallback: no result blocks parsed]",
+                            "arxiv", 0.0, error="html_no_results")]
+    return results
+
+
+def _openalex_abstract(inv, limit: int = 1500) -> str:
+    """OpenAlex 的摘要存成倒排索引，这里还原成顺序文本。"""
+    if not inv:
+        return ""
+    positions = []
+    for word, idxs in inv.items():
+        for i in idxs:
+            positions.append((i, word))
+    positions.sort()
+    return " ".join(w for _, w in positions[:limit])
+
+
+def search_openalex(query: str, cfg: dict, max_results: int = 15) -> list[dict]:
+    """OpenAlex：免费、无需 key、无人机墙，作为 dblp/arxiv 挂掉时的学术检索主力。"""
+    src = cfg["sources"].get("openalex", {})
+    endpoint = src.get("endpoint", "https://api.openalex.org/works")
+    params = {"search": query, "per-page": max_results,
+              "mailto": src.get("mailto", "unified-search@example.com")}
+    try:
+        with httpx.Client(timeout=src.get("timeout_sec", 25)) as client:
+            resp = client.get(endpoint, params=params)
+            resp.raise_for_status()
+        data = resp.json()
+        results = []
+        for w in data.get("results", []):
+            loc = w.get("primary_location") or {}
+            srcinfo = loc.get("source") or {}
+            oa = w.get("best_oa_location") or {}
+            ids = w.get("ids") or {}
+            authors = [(a.get("author") or {}).get("display_name", "")
+                       for a in (w.get("authorships") or [])][:12]
+            doi = (ids.get("doi") or "").replace("https://doi.org/", "")
+            results.append(make_result(
+                title=w.get("display_name") or w.get("title") or "",
+                url=loc.get("landing_page_url") or ids.get("doi") or w.get("id", ""),
+                snippet=_openalex_abstract(w.get("abstract_inverted_index"))[:500],
+                source="openalex",
+                score=0.8,
+                year=w.get("publication_year"),
+                venue=srcinfo.get("display_name"),
+                authors=[a for a in authors if a],
+                citation_count=w.get("cited_by_count"),
+                doi=doi or None,
+                pdf_url=oa.get("pdf_url"),
+                openalex_id=(w.get("id") or "").rsplit("/", 1)[-1],
             ))
         return results
     except Exception as e:
-        return [make_result("", "", f"[arxiv error: {type(e).__name__}: {e}]", "arxiv", 0.0, error=str(e))]
+        return [make_result("", "", "[openalex error: %s: %s]" % (type(e).__name__, e),
+                            "openalex", 0.0, error=str(e))]
+
+
+def _parse_ai4scholar_payload(data: dict, credits_left=None) -> list[dict]:
+    """把 Ai4Scholar /graph/v1（Semantic Scholar 形态）的响应转成统一结果结构。"""
+    results = []
+    for p in data.get("data", []):
+        ids = p.get("externalIds") or {}
+        oa = p.get("openAccessPdf") or {}
+        authors = [a.get("name", "") for a in (p.get("authors") or [])]
+        pid = p.get("paperId")
+        url = p.get("url") or ("https://www.semanticscholar.org/paper/%s" % pid if pid else "")
+        results.append(make_result(
+            title=p.get("title", ""),
+            url=url,
+            snippet=(p.get("abstract") or "")[:500],
+            source="ai4scholar",
+            score=0.84,
+            paper_id=pid,
+            year=p.get("year"),
+            venue=p.get("venue"),
+            authors=authors,
+            citation_count=p.get("citationCount"),
+            doi=ids.get("DOI"),
+            arxiv_id=ids.get("ArXiv"),
+            pdf_url=(oa.get("url") or None),
+            external_ids=ids,
+            credits_remaining=credits_left,
+        ))
+    return results
+
+
+def search_ai4scholar(query: str, cfg: dict, max_results: int = 15) -> list[dict]:
+    """Ai4Scholar 开放 API：REST /graph/v1（Semantic Scholar 2 亿+ 语料）。
+
+    认证只认 Authorization: Bearer <AI4SCHOLAR_API_KEY>（x-api-key 无效）。
+    每次成功调用扣积分（多数 1 分/次），可用 x-credits-charged / x-credits-remaining 对账。
+    密钥放在 ~/.config/vision-ai/.env，不进 config.json。
+    """
+    src = cfg["sources"].get("ai4scholar", {})
+    if source_disabled("ai4scholar"):
+        return _disabled_result("ai4scholar")
+    key = get_api_key(cfg, "ai4scholar")
+    if not key:
+        return [make_result("", "", "[ai4scholar: no API key (AI4SCHOLAR_API_KEY)]",
+                            "ai4scholar", 0.0, error="no_key")]
+    endpoint = src.get("endpoint", "https://ai4scholar.net/graph/v1/paper/search")
+    fields = (src.get("default_params") or {}).get(
+        "fields",
+        "paperId,title,abstract,authors,year,venue,citationCount,externalIds,openAccessPdf,url")
+    params = {"query": query, "limit": int(max_results), "fields": fields}
+    try:
+        with httpx.Client(timeout=src.get("timeout_sec", 25)) as client:
+            resp = client.get(endpoint, params=params, headers={"Authorization": "Bearer " + key})
+            if resp.status_code in (401, 402, 403):
+                disable_source("ai4scholar", "http_%d" % resp.status_code)
+                return [make_result("", "", "[ai4scholar %d: %s]" % (resp.status_code, resp.text[:160]),
+                                    "ai4scholar", 0.0, error="http_%d" % resp.status_code)]
+            resp.raise_for_status()
+        return _parse_ai4scholar_payload(resp.json(), resp.headers.get("x-credits-remaining"))
+    except Exception as e:
+        return [make_result("", "", "[ai4scholar error: %s: %s]" % (type(e).__name__, e),
+                            "ai4scholar", 0.0, error=str(e))]
+
+
+def _parse_dblp_payload(data: dict) -> list[dict]:
+    """把 dblp API 的 JSON 转成统一结果结构（普通通道与过墙通道共用）。"""
+    hits = ((data.get("result") or {}).get("hits") or {}).get("hit", [])
+    results = []
+    for h in hits:
+        info = h.get("info", {})
+        # dblp may nest single author as string or list
+        authors_raw = info.get("authors", {}).get("author", [])
+        if isinstance(authors_raw, dict):
+            authors_raw = [authors_raw]
+        authors = [a.get("text", a) if isinstance(a, dict) else a for a in authors_raw] if authors_raw else []
+        url = info.get("url") or info.get("ee") or ""
+        if url and not url.startswith("http"):
+            url = "https://dblp.org/" + url
+        results.append(make_result(
+            title=info.get("title", ""),
+            url=url,
+            snippet=("%s %s" % (info.get("venue", ""), info.get("year", ""))).strip(),
+            source="dblp",
+            score=0.75,
+            year=info.get("year"),
+            venue=info.get("venue"),
+            type=info.get("type"),
+            authors=authors,
+            doi=info.get("doi"),
+        ))
+    return results
+
+
+def _dblp_via_anubis(query: str, max_results: int) -> list[dict]:
+    """dblp 被 Anubis 人机墙拦截时的过墙通道（纯 Python SHA-256 PoW）。
+
+    实现在 scripts/anubis_dblp.py：解析挑战页 -> 解 PoW -> 换 auth cookie（1h 有效）
+    -> 用 cookie 重新请求。cookie 缓存在 data/dblp_cookies.json。
+    """
+    os.environ.setdefault("DBLP_COOKIE_CACHE", str(DATA_DIR / "dblp_cookies.json"))
+    if str(SCRIPT_DIR) not in sys.path:
+        sys.path.insert(0, str(SCRIPT_DIR))
+    try:
+        import anubis_dblp
+    except Exception as e:
+        return [make_result("", "", "[dblp: Anubis wall; solver unavailable: %s]" % e,
+                            "dblp", 0.0, error="anubis_no_solver")]
+    try:
+        data = anubis_dblp.dblp_search(query, h=int(max_results))
+    except Exception as e:
+        return [make_result("", "", "[dblp: Anubis wall; PoW solver failed: %s: %s]"
+                            % (type(e).__name__, e), "dblp", 0.0, error="anubis_failed")]
+    results = _parse_dblp_payload(data)
+    for r in results:
+        r["via"] = "anubis_pow"
+    return results or [make_result("", "", "[dblp: Anubis solved but 0 hits]",
+                                   "dblp", 0.0, error="anubis_empty")]
 
 
 def search_dblp(query: str, cfg: dict, max_results: int = 15) -> list[dict]:
@@ -380,34 +683,17 @@ def search_dblp(query: str, cfg: dict, max_results: int = 15) -> list[dict]:
         with httpx.Client(timeout=src["timeout_sec"]) as client:
             resp = client.get(src["endpoint"], params=params)
             resp.raise_for_status()
-        data = resp.json()
-        hits = ((data.get("result") or {}).get("hits") or {}).get("hit", [])
-        results = []
-        for h in hits:
-            info = h.get("info", {})
-            # dblp may nest single author as string or list
-            authors_raw = info.get("authors", {}).get("author", [])
-            if isinstance(authors_raw, dict):
-                authors_raw = [authors_raw]
-            authors = [a.get("text", a) if isinstance(a, dict) else a for a in authors_raw] if authors_raw else []
-            url = info.get("url") or info.get("ee") or ""
-            if url and not url.startswith("http"):
-                url = f"https://dblp.org/{url}"
-            results.append(make_result(
-                title=info.get("title", ""),
-                url=url,
-                snippet=f"{info.get('venue','')} {info.get('year','')}".strip(),
-                source="dblp",
-                score=0.75,
-                year=info.get("year"),
-                venue=info.get("venue"),
-                type=info.get("type"),
-                authors=authors,
-                doi=info.get("doi"),
-            ))
-        return results
+            probe = resp.text[:3000].lower()
+            if "html" in (resp.headers.get("content-type") or "").lower() or "anubis" in probe:
+                return _dblp_via_anubis(query, max_results)
+        return _parse_dblp_payload(resp.json())
     except Exception as e:
-        return [make_result("", "", f"[dblp error: {type(e).__name__}: {e}]", "dblp", 0.0, error=str(e))]
+        # 网络层失败（超时/连接）也试一次过墙通道：dblp 的代理/直连链路实测时好时坏
+        fallback = _dblp_via_anubis(query, max_results)
+        if any(not r.get("error") for r in fallback):
+            return fallback
+        return [make_result("", "", "[dblp error: %s: %s]" % (type(e).__name__, e),
+                            "dblp", 0.0, error=str(e))]
 
 
 def search_semantic_scholar(query: str, cfg: dict, limit: int = 15) -> list[dict]:
@@ -489,6 +775,24 @@ def search_with_retry(fn, query: str, cfg: dict, retries: int = 2, base_delay: f
 
 
 # ─── Dedup + rank ───────────────────────────────────────────────────────────
+def _dedup_key(r: dict) -> str:
+    """跨源去重键：优先 DOI / arXiv id，其次规范化 URL，最后回退标题。
+
+    同一篇论文在不同源里的落地页不同（arxiv.org/abs/... vs semanticscholar.org/paper/...），
+    只按 URL 去重会漏掉交叉验证；带上 DOI/arXiv id 才能让多源命中合并并加交叉验证分。
+    """
+    doi = (r.get("doi") or "").strip().lower().replace("https://doi.org/", "")
+    if doi:
+        return "doi:" + doi
+    aid = (r.get("arxiv_id") or "").strip().lower()
+    if aid:
+        return "arxiv:" + aid
+    nurl = normalize_url(r.get("url", ""))
+    if nurl:
+        return nurl
+    return "title:" + r.get("title", "") + "|" + r.get("source", "")
+
+
 def dedup_and_rank(per_source: dict[str, list[dict]], cfg: dict, top_k: int = 20) -> list[dict]:
     seen: dict[str, dict] = {}
     for source, items in per_source.items():
@@ -496,8 +800,7 @@ def dedup_and_rank(per_source: dict[str, list[dict]], cfg: dict, top_k: int = 20
         for r in items:
             if r.get("error"):
                 continue
-            nurl = normalize_url(r.get("url", ""))
-            key = nurl or (r.get("title", "") + "|" + source)
+            key = _dedup_key(r)
             if key in seen:
                 # bump score if multiple sources agree (cross-validation bonus)
                 seen[key]["score"] += 0.15 * weight
@@ -509,6 +812,17 @@ def dedup_and_rank(per_source: dict[str, list[dict]], cfg: dict, top_k: int = 20
             seen[key] = r2
     ranked = sorted(seen.values(), key=lambda x: x.get("score", 0), reverse=True)
     return ranked[:top_k]
+
+
+def sources_failed(per_source: dict) -> list:
+    """列出完全失败的源，让上层能区分 没搜到 和 源挂了。"""
+    out = []
+    for name, items in per_source.items():
+        if not items:
+            out.append({"source": name, "error": "empty"})
+        elif all(r.get("error") for r in items):
+            out.append({"source": name, "error": str(items[0].get("error"))})
+    return out
 
 
 # ─── Agreement metric (Jaccard on URL hosts) ────────────────────────────────
@@ -564,6 +878,8 @@ def mode_general(query: str, cfg: dict, top_k: int = 15, tier: str = "value") ->
         "agreement_score": round(agreement, 3),
         "arbitration_triggered": arbitration_used,
         "total_results": len(merged),
+        "sources_failed": sources_failed(per_source),
+        "degraded": bool(sources_failed(per_source)),
         "results": merged,
     }
 
@@ -574,11 +890,15 @@ def mode_academic(query: str, cfg: dict, top_k: int = 30) -> dict:
     sources_list = mcfg["sources"]
     fn_map = {}
     if "arxiv" in sources_list:
-        fn_map["arxiv"] = lambda q, c: search_with_retry(search_arxiv, q, c, max_results=mcfg["max_results_per_source"])
+        fn_map["arxiv"] = lambda q, c: search_with_retry(search_arxiv, q, c, retries=0, max_results=mcfg["max_results_per_source"])
     if "dblp" in sources_list:
-        fn_map["dblp"] = lambda q, c: search_with_retry(search_dblp, q, c, max_results=mcfg["max_results_per_source"])
+        fn_map["dblp"] = lambda q, c: search_with_retry(search_dblp, q, c, retries=0, max_results=mcfg["max_results_per_source"])
     if "semantic_scholar" in sources_list:
-        fn_map["semantic_scholar"] = lambda q, c: search_with_retry(search_semantic_scholar, q, c, limit=mcfg["max_results_per_source"])
+        fn_map["semantic_scholar"] = lambda q, c: search_with_retry(search_semantic_scholar, q, c, retries=2, base_delay=3.0, limit=mcfg["max_results_per_source"])
+    if "openalex" in sources_list:
+        fn_map["openalex"] = lambda q, c: search_with_retry(search_openalex, q, c, max_results=mcfg["max_results_per_source"])
+    if "ai4scholar" in sources_list:
+        fn_map["ai4scholar"] = lambda q, c: search_with_retry(search_ai4scholar, q, c, retries=1, max_results=mcfg["max_results_per_source"])
 
     per_source = run_sources_parallel(fn_map, query, cfg)
     merged = dedup_and_rank(per_source, cfg, top_k=top_k)
@@ -586,7 +906,7 @@ def mode_academic(query: str, cfg: dict, top_k: int = 30) -> dict:
     # extract paper links for record
     paper_links = []
     for r in merged:
-        if r.get("url") and any(r.get("source") == s for s in ["arxiv", "dblp", "semantic_scholar"]):
+        if r.get("url") and any(r.get("source") == s for s in ["arxiv", "dblp", "semantic_scholar", "openalex", "ai4scholar"]):
             paper_links.append({
                 "title": r.get("title"),
                 "url": r.get("url"),
@@ -610,6 +930,8 @@ def mode_academic(query: str, cfg: dict, top_k: int = 30) -> dict:
         "sources_used": list(per_source.keys()),
         "total_results": len(merged),
         "paper_links_recorded": len(paper_links),
+        "sources_failed": sources_failed(per_source),
+        "degraded": bool(sources_failed(per_source)),
         "results": merged,
         "paper_links": paper_links,
     }
@@ -640,6 +962,9 @@ def mode_auto(query: str, cfg: dict, top_k: int = 20, tier: str = "value") -> di
 
 # ─── Fetch (content extraction) ─────────────────────────────────────────────
 def fetch_with_firecrawl(url: str, cfg: dict) -> dict:
+    if source_disabled("firecrawl"):
+        return {"error": "firecrawl disabled this run (%s)" % _DEAD_SOURCES.get("firecrawl"),
+                "source": "firecrawl"}
     if not quota_available(cfg, "firecrawl"):
         return {"error": "firecrawl quota exhausted", "source": "firecrawl"}
     key = get_api_key(cfg, "firecrawl")
@@ -830,6 +1155,26 @@ def _real_firecrawl_usage(cfg: dict) -> dict | None:
         return None
 
 
+def _real_ai4scholar_credits(cfg: dict) -> dict | None:
+    """Ai4Scholar 积分余额（GET /api/credits 免费，不扣分）。"""
+    key = get_api_key(cfg, "ai4scholar")
+    if not key:
+        return None
+    try:
+        with httpx.Client(timeout=20) as client:
+            resp = client.get("https://ai4scholar.net/api/credits",
+                              headers={"Authorization": "Bearer " + key})
+            resp.raise_for_status()
+        d = resp.json()
+        c = d.get("credits") or {}
+        return {"total_available": c.get("total_available"),
+                "permanent": c.get("permanent"),
+                "member_monthly_remaining": c.get("member_monthly_remaining"),
+                "plan": ((d.get("membership") or {}) or {}).get("plan")}
+    except Exception:
+        return None
+
+
 def report_quota(cfg: dict) -> dict:
     out = {}
     for src_name in ["tavily", "firecrawl"]:
@@ -846,7 +1191,15 @@ def report_quota(cfg: dict) -> dict:
             live = _real_tavily_usage(cfg) if src_name == "tavily" else _real_firecrawl_usage(cfg)
             if live:
                 entry["live"] = live
+            exhausted = entry.get("remaining_local") == 0
+            if isinstance(live, dict) and live.get("remaining") == 0:
+                exhausted = True
+            entry["exhausted"] = bool(exhausted)
             out[src_name] = entry
+    credits = _real_ai4scholar_credits(cfg)
+    if credits is not None:
+        out["ai4scholar"] = {"unit": "credits", "cost_per_call": 1, "live": credits,
+                             "exhausted": (credits.get("total_available") or 0) <= 0}
     return {"mode": "quota", "quota": out}
 
 
@@ -929,7 +1282,7 @@ def export_manifest(paper_links: list[dict], query: str, output_dir: Path) -> Pa
 # ─── CLI ─────────────────────────────────────────────────────────────────────
 def build_argparser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        description="Unified web + academic search aggregator (6 sources)."
+        description="Unified web + academic search aggregator (8 sources)."
     )
     p.add_argument("query", nargs="?", help="search query (or history search term)")
     p.add_argument("--mode", choices=["general", "academic", "auto"], default="auto",

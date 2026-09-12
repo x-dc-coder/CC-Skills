@@ -16,6 +16,10 @@
     "bocha": {
       "env_var": "BOCHA_API_KEY",
       "value": null
+    },
+    "ai4scholar": {
+      "env_var": "AI4SCHOLAR_API_KEY",
+      "value": null
     }
   },
   "quota": {
@@ -33,7 +37,12 @@
       "enabled": true,
       "type": "cli",
       "command": "keenable",
-      "roles": ["general", "news", "technical", "arbitration"],
+      "roles": [
+        "general",
+        "news",
+        "technical",
+        "arbitration"
+      ],
       "weight": 1.0,
       "cost": 0,
       "timeout_sec": 20
@@ -42,7 +51,12 @@
       "enabled": true,
       "type": "http",
       "endpoint": "https://api.tavily.com/search",
-      "roles": ["general", "news", "technical", "arbitration"],
+      "roles": [
+        "general",
+        "news",
+        "technical",
+        "arbitration"
+      ],
       "weight": 1.3,
       "cost": 1,
       "timeout_sec": 30,
@@ -63,14 +77,20 @@
       "enabled": true,
       "type": "http",
       "endpoint": "https://api.firecrawl.dev/v2/search",
-      "roles": ["general", "technical", "content_extraction"],
+      "roles": [
+        "general",
+        "technical",
+        "content_extraction"
+      ],
       "weight": 1.1,
       "cost": 1,
       "timeout_sec": 40,
       "default_params": {
         "limit": 8,
         "scrapeOptions": {
-          "formats": ["markdown"]
+          "formats": [
+            "markdown"
+          ]
         }
       }
     },
@@ -78,7 +98,11 @@
       "enabled": true,
       "type": "http",
       "endpoint": "https://api.bochaai.com/v1/web-search",
-      "roles": ["general", "news", "technical"],
+      "roles": [
+        "general",
+        "news",
+        "technical"
+      ],
       "weight": 1.2,
       "cost": 1,
       "timeout_sec": 30,
@@ -92,7 +116,9 @@
       "enabled": true,
       "type": "http",
       "endpoint": "https://export.arxiv.org/api/query",
-      "roles": ["academic"],
+      "roles": [
+        "academic"
+      ],
       "weight": 1.5,
       "cost": 0,
       "timeout_sec": 25,
@@ -108,7 +134,9 @@
       "enabled": true,
       "type": "http",
       "endpoint": "https://dblp.org/search/publ/api",
-      "roles": ["academic"],
+      "roles": [
+        "academic"
+      ],
       "weight": 1.3,
       "cost": 0,
       "timeout_sec": 20,
@@ -122,7 +150,9 @@
       "enabled": true,
       "type": "http",
       "endpoint": "https://api.semanticscholar.org/graph/v1/paper/search",
-      "roles": ["academic"],
+      "roles": [
+        "academic"
+      ],
       "weight": 1.4,
       "cost": 0,
       "timeout_sec": 25,
@@ -131,16 +161,58 @@
         "offset": 0,
         "fields": "title,authors,year,abstract,openAccessPdf,url,externalIds,venue,citationCount"
       }
+    },
+    "openalex": {
+      "enabled": true,
+      "type": "http",
+      "endpoint": "https://api.openalex.org/works",
+      "roles": [
+        "academic"
+      ],
+      "weight": 1.35,
+      "cost": 0,
+      "timeout_sec": 25,
+      "mailto": "unified-search@example.com",
+      "default_params": {
+        "per-page": 15
+      },
+      "_comment": "免费无需 key；dblp 人机墙 / arxiv API 限流时的学术检索主力替代源"
+    },
+    "ai4scholar": {
+      "enabled": true,
+      "type": "http",
+      "endpoint": "https://ai4scholar.net/graph/v1/paper/search",
+      "roles": [
+        "academic"
+      ],
+      "weight": 1.45,
+      "cost": 1,
+      "timeout_sec": 25,
+      "key_env_var": "AI4SCHOLAR_API_KEY",
+      "credits_endpoint": "https://ai4scholar.net/api/credits",
+      "default_params": {
+        "fields": "paperId,title,abstract,authors,year,venue,citationCount,externalIds,openAccessPdf,url"
+      },
+      "_comment": "Ai4Scholar 开放 API：S2 语料 2 亿+；Bearer 认证；每次成功调用扣积分(1分起)，x-credits-remaining 可对账；PDF 下载需本地 stdio MCP（见 scripts/ai4scholar_download.py）"
     }
   },
   "modes": {
     "general": {
       "_comment": "通用搜索：2 源对比，有出入则启用第 3 源仲裁",
-      "primary_pair": ["keenable", "tavily"],
+      "primary_pair": [
+        "keenable",
+        "tavily"
+      ],
       "tier_sources": {
         "_comment": "性价比 tier 用免费/便宜源，旗舰 tier 用高质量源",
-        "value": ["keenable", "bocha"],
-        "flagship": ["tavily", "bocha"]
+        "value": [
+          "keenable",
+          "bocha"
+        ],
+        "flagship": [
+          "tavily",
+          "bocha"
+        ]
       },
       "arbitrator": "firecrawl",
       "max_results_per_source": 8,
@@ -148,8 +220,14 @@
       "_agreement_threshold_comment": "两源结果重叠率低于此值则触发仲裁"
     },
     "academic": {
-      "_comment": "学术搜索：3 源全并行，论文链接留痕",
-      "sources": ["arxiv", "dblp", "semantic_scholar"],
+      "_comment": "学术搜索：5 源并行（arxiv 官方 API 429 时降级 HTML；dblp 有 Anubis 人机墙时自动过墙；semantic_scholar 建议配 S2_API_KEY；openalex 免费兜底；ai4scholar 覆盖 S2 2 亿+ 语料，按积分计费），论文链接留痕",
+      "sources": [
+        "arxiv",
+        "dblp",
+        "semantic_scholar",
+        "openalex",
+        "ai4scholar"
+      ],
       "max_results_per_source": 15,
       "record_papers": true
     }

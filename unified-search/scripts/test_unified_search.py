@@ -382,3 +382,50 @@ class TestRunSourcesParallel:
 
         out = us.run_sources_parallel({"bad": boom}, "q", cfg)
         assert out["bad"][0]["error"] == "explode"
+
+
+# ── Ai4Scholar（新增学术源）──────────────────────────────────────────────────
+
+class TestAi4ScholarParsing:
+    def test_parse_payload_maps_fields(self):
+        payload = {"total": 1, "data": [{
+            "paperId": "abc123", "title": "RAG", "abstract": "x" * 600,
+            "year": 2020, "venue": "NeurIPS", "citationCount": 18104,
+            "authors": [{"name": "P. Lewis"}, {"name": "E. Perez"}],
+            "externalIds": {"DOI": "10.1/x", "ArXiv": "2005.11401"},
+            "openAccessPdf": {"url": "https://arxiv.org/pdf/2005.11401"},
+            "url": "https://www.semanticscholar.org/paper/abc123",
+        }]}
+        res = us._parse_ai4scholar_payload(payload, credits_left="141")
+        assert len(res) == 1
+        r = res[0]
+        assert r["source"] == "ai4scholar" and r["paper_id"] == "abc123"
+        assert r["arxiv_id"] == "2005.11401" and r["doi"] == "10.1/x"
+        assert r["pdf_url"].endswith("2005.11401") and r["citation_count"] == 18104
+        assert len(r["snippet"]) == 500 and r["credits_remaining"] == "141"
+
+    def test_missing_key_returns_error_entry(self, monkeypatch):
+        monkeypatch.delenv("AI4SCHOLAR_API_KEY", raising=False)
+        cfg = {"sources": {"ai4scholar": {}}, "api_keys": {"ai4scholar": {"env_var": "AI4SCHOLAR_API_KEY"}}}
+        res = us.search_ai4scholar("x", cfg, max_results=1)
+        assert res and res[0]["error"] == "no_key"
+
+
+class TestCrossSourceDedup:
+    def test_dedup_key_prefers_arxiv_id_over_url(self):
+        a = us.make_result("t", "https://arxiv.org/abs/2005.11401", source="arxiv", arxiv_id="2005.11401")
+        b = us.make_result("t", "https://www.semanticscholar.org/paper/abc", source="ai4scholar", arxiv_id="2005.11401")
+        assert us._dedup_key(a) == us._dedup_key(b) == "arxiv:2005.11401"
+
+    def test_dedup_key_prefers_doi(self):
+        r = us.make_result("t", "https://x/y", source="openalex", doi="https://doi.org/10.1/A")
+        assert us._dedup_key(r) == "doi:10.1/a"
+
+    def test_cross_source_merge_bonus(self):
+        per = {"arxiv": [us.make_result("t", "https://arxiv.org/abs/1", source="arxiv", arxiv_id="1", score=0.5)],
+               "ai4scholar": [us.make_result("t", "https://s2/paper/x", source="ai4scholar", arxiv_id="1", score=0.5)]}
+        cfg = {"sources": {"arxiv": {"weight": 1.0}, "ai4scholar": {"weight": 1.0}}}
+        merged = us.dedup_and_rank(per, cfg, top_k=5)
+        assert len(merged) == 1
+        assert set(merged[0]["also_from"]) == {"arxiv", "ai4scholar"}
+        assert merged[0]["score"] > 0.5
