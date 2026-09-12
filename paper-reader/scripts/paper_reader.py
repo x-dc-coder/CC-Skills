@@ -5,12 +5,14 @@ v2    -
 
 : paper_reader.py <pdf_path_or_dir> [--engines both|marker|mineru]
                   [--pages 0-9] [--batch] [--init] [--status] [--resume] [--force]
+                  [--backfill-meta]
                   [--from-manifest PATH] [--import-urls PATH] [--max-pages N]
 """
 
 from __future__ import annotations
 
 import argparse
+import base64
 import difflib
 import enum
 import hashlib
@@ -20,6 +22,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
@@ -50,6 +53,215 @@ _GPU_WAIT_TIMEOUT: float = 600.0
 # ──    ─────────────────────────────────────────────────
 _PIPELINE_VERSION = "2.0"
 _DEFAULT_MAX_PAGES = 200
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#   Engine / source provenance (→ _META.json)
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Upper-layer metrics must be able to attribute drift to a concrete engine build
+# (which marker/MinerU/torch/CUDA/python produced this content_list.json).
+# We probe each engine venv's interpreter once per process (memoized) and record
+# the result in _META.json.
+#
+# Hard constraints:
+#   * never raises  — any failure degrades to null + engine_versions_note
+#   * never blocks  — bounded subprocess timeouts, at most one probe per batch
+#   * works through the WSL→Windows bridge (E:\venvs\<engine>\Scripts\python.exe)
+
+_ENGINE_PROBE_TIMEOUT = 45.0
+_ENGINE_VENV_NAMES = ("marker", "mineru")
+# Frozen _META.json contract (agreed with the metrics layer): exactly these keys,
+# always present, null when the probe could not determine a value.
+_ENGINE_CONTRACT_KEYS = ("marker", "mineru", "torch", "cuda", "python")
+_ENGINE_VERSIONS_CACHE: dict | None = None
+_ENGINE_VERSIONS_LOCK = threading.Lock()
+
+# Executed inside the target interpreter. The fast line is flushed before the
+# (slow) torch import, so a timeout still leaves us with usable data.
+_ENGINE_VERSION_PROBE_CODE = r"""
+import json, sys
+out = {"python": sys.version.split()[0]}
+try:
+    import importlib.metadata as md
+except Exception:
+    md = None
+for key, pkg in (("marker", "marker-pdf"), ("mineru", "mineru"), ("torch", "torch")):
+    if md is None:
+        out[key] = None
+        continue
+    try:
+        out[key] = md.version(pkg)
+    except Exception:
+        out[key] = None
+sys.stdout.write("<<<FAST>>>" + json.dumps(out) + "\n")
+sys.stdout.flush()
+try:
+    import torch
+    cuda = getattr(getattr(torch, "version", None), "cuda", None)
+except Exception:
+    cuda = None
+sys.stdout.write("<<<CUDA>>>" + json.dumps({"cuda": cuda}) + "\n")
+sys.stdout.flush()
+"""
+
+_FAST_MARK = "<<<FAST>>>"
+_CUDA_MARK = "<<<CUDA>>>"
+
+
+def _sha256_of_file(path: Path, chunk_size: int = 1 << 20) -> tuple[str | None, str | None]:
+    """Streaming SHA-256 of a file → (hex_digest|None, note|None). Never raises."""
+    try:
+        digest = hashlib.sha256()
+        with open(path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(chunk_size), b""):
+                digest.update(chunk)
+        return digest.hexdigest(), None
+    except Exception as e:
+        return None, f"pdf_sha256 unavailable: {type(e).__name__}: {e}"
+
+
+def _engine_probe_command(engine: str) -> list[str]:
+    """Build the argv that runs the version probe in *engine*'s interpreter."""
+    payload = base64.b64encode(_ENGINE_VERSION_PROBE_CODE.encode("utf-8")).decode("ascii")
+    launcher = "import base64;exec(base64.b64decode('%s').decode('utf-8'))" % payload
+    if _WSL:
+        win_py = _WSL_MARKER_PY if engine == "marker" else _WSL_MINERU_PY
+        return ["cmd.exe", "/c", win_py, "-c", launcher]
+    return [str(SKILL_ROOT / "venvs" / engine / "bin" / "python"), "-c", launcher]
+
+
+def _run_probe_command(cmd: list[str], timeout: float) -> tuple[str, str | None]:
+    """Run a probe command → (stdout, error_note|None). Never raises."""
+    try:
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=timeout,
+        )
+        if proc.returncode != 0:
+            tail = (proc.stderr or "").strip().splitlines()[-1:]
+            return proc.stdout or "", f"exit {proc.returncode}: {tail[0][:200] if tail else ''}"
+        return proc.stdout or "", None
+    except subprocess.TimeoutExpired as e:
+        out = e.stdout.decode("utf-8", "replace") if isinstance(e.stdout, bytes) else (e.stdout or "")
+        return out, f"timeout after {timeout:.0f}s"
+    except Exception as e:  # defensive: a broken bridge must not break a conversion
+        return "", f"{type(e).__name__}: {e}"
+
+
+def _parse_probe_stdout(stdout: str) -> dict:
+    """Extract the <<<FAST>>> / <<<CUDA>>> JSON payloads from probe stdout."""
+    payload: dict = {}
+    for line in stdout.splitlines():
+        for mark in (_FAST_MARK, _CUDA_MARK):
+            if line.startswith(mark):
+                try:
+                    payload.update(json.loads(line[len(mark):]))
+                except json.JSONDecodeError:
+                    pass
+    return payload
+
+
+def _probe_one_env(engine: str) -> dict:
+    """Probe one engine venv. Returns a dict; failure → {"_error": ...}. Never raises."""
+    cmd = _engine_probe_command(engine)
+    if not _WSL and not Path(cmd[0]).exists():
+        return {"_error": f"interpreter not found: {cmd[0]}"}
+    stdout, err = _run_probe_command(cmd, _ENGINE_PROBE_TIMEOUT)
+    data = _parse_probe_stdout(stdout)
+    if err:
+        data["_error"] = err
+    if not data:
+        data["_error"] = "no probe output"
+    return data
+
+
+def _reset_engine_version_cache() -> None:
+    """Test hook: drop the memoized engine-version probe result."""
+    global _ENGINE_VERSIONS_CACHE
+    _ENGINE_VERSIONS_CACHE = None
+
+
+def _collect_engine_version_provenance() -> dict:
+    """Uncached probe pass over both engine venvs. Never raises."""
+    per_env: dict[str, dict] = {}
+    errors: list[str] = []
+    for engine in _ENGINE_VENV_NAMES:
+        try:
+            data = _probe_one_env(engine)
+        except Exception as e:  # defensive: probe bugs must not abort a run
+            data = {"_error": f"{type(e).__name__}: {e}"}
+        per_env[engine] = data
+        if data.get("_error"):
+            errors.append(f"{engine}: {data['_error']}")
+
+    def _first(key: str) -> str | None:
+        for engine in _ENGINE_VENV_NAMES:
+            value = (per_env.get(engine) or {}).get(key)
+            if value:
+                return str(value)
+        return None
+
+    # No host-interpreter fallback: the 'python' field must describe the *engine*
+    # venv. Reporting the runner's python when the probe failed would silently
+    # misattribute the environment, so a failed probe leaves it null + a note.
+    versions = {
+        "python": _first("python"),
+        "marker": _first("marker"),
+        "mineru": _first("mineru"),
+        "torch": _first("torch"),
+        "cuda": _first("cuda"),
+    }
+    missing = [k for k, v in versions.items() if not v]
+    if missing:
+        errors.append("missing fields: " + ",".join(missing))
+    mode = "wsl-bridge" if _WSL else "native"
+    note = None
+    if errors:
+        note = (
+            f"engine version probe degraded (mode={mode}): "
+            + "; ".join(errors)
+            + "; per_env=" + json.dumps(per_env, ensure_ascii=False)
+        )
+    return {"versions": versions, "note": note, "mode": mode}
+
+
+def _engine_version_snapshot() -> dict:
+    """Frozen _META.json provenance contract — memoized, never raises.
+
+    Returns exactly:
+      {
+        "engine_versions": {"marker": …, "mineru": …, "torch": …, "cuda": …, "python": …},
+        "engine_versions_source": "conversion_time" | "unavailable",
+        "engine_versions_note": str | None
+      }
+
+    The five keys are always present (null when unknown) so the metrics layer can
+    read them without .get() gymnastics. The probe runs at most once per process,
+    so an N-paper batch pays for it exactly once; failures degrade to null + note.
+    """
+    global _ENGINE_VERSIONS_CACHE
+    if _ENGINE_VERSIONS_CACHE is not None:
+        return _ENGINE_VERSIONS_CACHE
+    with _ENGINE_VERSIONS_LOCK:
+        if _ENGINE_VERSIONS_CACHE is None:
+            try:
+                snap = _collect_engine_version_provenance()
+            except Exception as e:  # last-resort guard: never abort a conversion
+                snap = {
+                    "versions": {},
+                    "note": f"engine version probe crashed: {type(e).__name__}: {e}",
+                    "mode": "wsl-bridge" if _WSL else "native",
+                }
+            versions = {k: snap.get("versions", {}).get(k) for k in _ENGINE_CONTRACT_KEYS}
+            _ENGINE_VERSIONS_CACHE = {
+                "engine_versions": versions,
+                "engine_versions_source": (
+                    "conversion_time" if any(versions.values()) else "unavailable"
+                ),
+                "engine_versions_note": snap.get("note"),
+            }
+    return _ENGINE_VERSIONS_CACHE
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -170,15 +382,20 @@ class PrecheckResult:
     detail: str = ""
     page_count: int = 0
     pdf_hash: str = ""
+    pdf_sha256: str = ""             # full source-PDF SHA-256 (provenance)
     scan_warning: bool = False       # True =
 
     @classmethod
-    def failed(cls, reason: ErrorType, detail: str = "") -> "PrecheckResult":
-        return cls(ok=False, status="failed", reason=reason.value, detail=detail)
+    def failed(cls, reason: ErrorType, detail: str = "",
+               pdf_sha256: str = "") -> "PrecheckResult":
+        return cls(ok=False, status="failed", reason=reason.value, detail=detail,
+                   pdf_sha256=pdf_sha256)
 
     @classmethod
-    def skipped(cls, reason: ErrorType, detail: str = "") -> "PrecheckResult":
-        return cls(ok=False, status="skipped", reason=reason.value, detail=detail)
+    def skipped(cls, reason: ErrorType, detail: str = "",
+                pdf_sha256: str = "") -> "PrecheckResult":
+        return cls(ok=False, status="skipped", reason=reason.value, detail=detail,
+                   pdf_sha256=pdf_sha256)
 
     def to_record(self) -> dict:
         return {
@@ -187,6 +404,7 @@ class PrecheckResult:
             "detail": self.detail,
             "page_count": self.page_count,
             "pdf_hash": self.pdf_hash,
+            "pdf_sha256": self.pdf_sha256,
             "scan_warning": self.scan_warning,
         }
 
@@ -218,30 +436,38 @@ def run_precheck(pdf: Path, max_pages: int = _DEFAULT_MAX_PAGES) -> PrecheckResu
             detail=f"magic bytes: {header[:10]!r}",
         )
 
+    # Source-PDF SHA-256 (provenance for _META.json). One streaming pass replaces
+    # the previous full read_bytes(); failure is non-fatal (field stays empty).
+    pdf_sha256, _sha_note = _sha256_of_file(pdf)
+    pdf_hash = (pdf_sha256 or "")[:16]
+
     # pypdf
     try:
         from pypdf import PdfReader
     except ImportError:
         # pypdf   →   +
-        pdf_hash = hashlib.sha256(pdf.read_bytes()).hexdigest()[:16]
         return PrecheckResult(
             ok=True, status="passed", page_count=-1, pdf_hash=pdf_hash,
+            pdf_sha256=pdf_sha256 or "",
             reason="", detail="pypdf not installed, skipped deep check",
         )
 
     try:
         reader = PdfReader(str(pdf))
     except Exception as e:
-        return PrecheckResult.skipped(ErrorType.CORRUPTED, str(e)[:500])
+        return PrecheckResult.skipped(ErrorType.CORRUPTED, str(e)[:500],
+                                      pdf_sha256=pdf_sha256 or "")
 
     if reader.is_encrypted:
-        return PrecheckResult.skipped(ErrorType.ENCRYPTED, "PDF is password-protected")
+        return PrecheckResult.skipped(ErrorType.ENCRYPTED, "PDF is password-protected",
+                                      pdf_sha256=pdf_sha256 or "")
 
     page_count = len(reader.pages)
     if page_count > max_pages:
         return PrecheckResult.skipped(
             ErrorType.TOO_LARGE,
             detail=f"{page_count} pages > max {max_pages}",
+            pdf_sha256=pdf_sha256 or "",
         )
 
     #   :  10  text
@@ -255,11 +481,10 @@ def run_precheck(pdf: Path, max_pages: int = _DEFAULT_MAX_PAGES) -> PrecheckResu
             pass
     scan_warning = text_pages < 2
 
-    pdf_hash = hashlib.sha256(pdf.read_bytes()).hexdigest()[:16]
-
     return PrecheckResult(
         ok=True, status="passed",
         page_count=page_count, pdf_hash=pdf_hash,
+        pdf_sha256=pdf_sha256 or "",
         scan_warning=scan_warning,
         detail="",
     )
@@ -318,6 +543,7 @@ class PipelineState:
             papers[stem] = {
                 "source": {},
                 "pdf_hash": None,
+                "pdf_sha256": None,
                 "precheck": {"status": "pending"},
                 "phase1_converted": {"status": "pending"},
                 "phase2_merged": {"status": "pending"},
@@ -330,7 +556,18 @@ class PipelineState:
         entry = self.ensure_entry(stem)
         entry["precheck"] = result.to_record()
         entry["pdf_hash"] = result.pdf_hash
+        if result.pdf_sha256:
+            entry["pdf_sha256"] = result.pdf_sha256
         self._dirty = True
+
+    def set_pdf_sha256(self, stem: str, digest: str) -> None:
+        """Persist the full source-PDF SHA-256 (provenance for _META.json)."""
+        if not digest:
+            return
+        entry = self.ensure_entry(stem)
+        if entry.get("pdf_sha256") != digest:
+            entry["pdf_sha256"] = digest
+            self._dirty = True
 
     def set_source(self, stem: str, source_info: dict) -> None:
         entry = self.ensure_entry(stem)
@@ -1342,6 +1579,267 @@ def _derive_output_dirs(papers_dir: Path) -> dict[str, Path]:
     }
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#   _META.json — provenance payload + backfill
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def build_meta_record(
+    result: PaperResult,
+    *,
+    engines: str,
+    pages: str | None,
+    images_copied: int,
+    pdf_sha256: str | None,
+    pdf_sha256_note: str | None,
+    engine_provenance: dict,
+) -> dict:
+    """Assemble the _META.json payload (pure function → unit-testable, no IO).
+
+    Frozen contract consumed by the metrics layer:
+      pdf_sha256               full source-PDF SHA-256, or null
+      engine_versions          {marker, mineru, torch, cuda, python} — all five keys
+      engine_versions_source   "conversion_time" | "current_env_estimate" | "unavailable"
+      engine_versions_note     optional explanation (failure / estimate caveat)
+    """
+    prov_versions = engine_provenance.get("engine_versions") or {}
+    meta = {
+        "pdf_path": result.pdf_path,
+        "stem": result.stem,
+        "pdf_sha256": pdf_sha256 or None,
+        "pdf_sha256_note": pdf_sha256_note,
+        "engine_versions": {k: prov_versions.get(k) for k in _ENGINE_CONTRACT_KEYS},
+        "engine_versions_source": engine_provenance.get("engine_versions_source"),
+        "engine_versions_note": engine_provenance.get("engine_versions_note"),
+        "engines": engines,
+        "pages": pages,
+        "marker": asdict(result.marker) if result.marker else None,
+        "mineru": asdict(result.mineru) if result.mineru else None,
+        "diff_path": result.diff_path,
+        "diff_line_count": result.diff_line_count,
+        "merged_path": result.merged_path,
+        "merged_supplement_count": result.merged_supplement_count,
+        "images_copied": images_copied,
+        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    if result.precheck:
+        meta["precheck"] = result.precheck.to_record()
+    return meta
+
+
+def _write_meta_json(meta_path: Path, meta: dict) -> str | None:
+    """Write _META.json; return an error note instead of raising."""
+    try:
+        meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2),
+                             encoding="utf-8")
+        return None
+    except OSError as e:
+        return f"{type(e).__name__}: {e}"
+
+
+_BACKFILL_HONESTY = (
+    "backfilled after conversion (not measured then): engine_versions are "
+    "current-environment estimates, not a conversion-time measurement"
+)
+
+
+def _meta_candidates(papers_dir: Path) -> list[Path]:
+    """Existing _META.json files to backfill.
+
+    Covers both on-disk layouts: v1 corpus (<papers_dir>/paper-analysis/<paper>/)
+    and v2 pipeline output (<papers_dir>/paper-merged/<stem>/), plus the case
+    where papers_dir *is* the paper-analysis directory.
+    """
+    found: list[Path] = []
+    for pattern in ("paper-analysis/*/_META.json",
+                    "paper-merged/*/_META.json",
+                    "*/_META.json"):
+        found.extend(sorted(papers_dir.glob(pattern)))
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for path in found:
+        key = str(path.resolve())
+        if key in seen or not path.is_file():
+            continue
+        seen.add(key)
+        unique.append(path)
+    return unique
+
+
+def _resolve_source_pdf_sha256(
+    meta: dict, meta_path: Path, papers_dir: Path,
+) -> tuple[str | None, str | None]:
+    """Locate the source PDF for an existing _META.json and hash it.
+
+    Returns (digest|None, note|None). Never raises. Preference order:
+      1. meta["pdf_path"] (absolute, or relative to paper dir / papers_dir)
+      2. <papers_dir>/papers/<stem>.pdf, <papers_dir>/<stem>.pdf, <paper_dir>/<stem>.pdf
+      3. first <stem>.pdf found under papers_dir
+      4. engine-side copy (<paper_dir>/mineru/**/*_origin.pdf) — explicitly labelled
+    """
+    stem = str(meta.get("stem") or meta_path.parent.name)
+    candidates: list[Path] = []
+
+    raw = meta.get("pdf_path")
+    if isinstance(raw, str) and raw.strip():
+        p = Path(raw)
+        candidates.append(p)
+        if not p.is_absolute():
+            candidates.extend([meta_path.parent / p, papers_dir / p,
+                               papers_dir / "papers" / p])
+    for base in (papers_dir / "papers", papers_dir, meta_path.parent,
+                 meta_path.parent.parent):
+        candidates.append(base / f"{stem}.pdf")
+
+    for cand in candidates:
+        try:
+            if cand.is_file():
+                digest, _ = _sha256_of_file(cand)
+                if digest:
+                    return digest, f"pdf_sha256 computed from source PDF: {cand}"
+        except Exception:
+            continue
+
+    try:
+        hits = sorted(p for p in papers_dir.rglob(f"{stem}.pdf") if p.is_file())
+    except Exception:
+        hits = []
+    for cand in hits:
+        digest, _ = _sha256_of_file(cand)
+        if digest:
+            return digest, f"pdf_sha256 computed from source PDF: {cand}"
+
+    for cand in sorted(meta_path.parent.rglob("*_origin.pdf")):
+        if not cand.is_file():
+            continue
+        digest, _ = _sha256_of_file(cand)
+        if digest:
+            return digest, (
+                "pdf_sha256 computed from an engine-side copy, not the original "
+                f"source PDF (may differ in bytes): {cand}"
+            )
+
+    return None, f"pdf_sha256 unavailable: no source PDF found for stem '{stem}'"
+
+
+def _backfill_one(
+    meta: dict, meta_path: Path, papers_dir: Path, snapshot: dict,
+) -> tuple[bool, str]:
+    """Fill missing provenance fields in-place → (changed, sha_state).
+
+    Only *missing* fields are written; existing measured values are preserved.
+    All derived text is deterministic (no timestamps), so a second run is a no-op.
+    """
+    changed = False
+    existing_note = meta.get("engine_versions_note")
+
+    # --- pdf_sha256: fill only when missing; never overwrite an existing digest ---
+    sha_state = "present" if meta.get("pdf_sha256") else "missing"
+    if not meta.get("pdf_sha256"):
+        resolved, sha_note = _resolve_source_pdf_sha256(meta, meta_path, papers_dir)
+        sha_state = "filled" if resolved else "null"
+        if "pdf_sha256" not in meta or resolved != meta.get("pdf_sha256"):
+            meta["pdf_sha256"] = resolved
+            changed = True
+        if sha_note and meta.get("pdf_sha256_note") != sha_note:
+            meta["pdf_sha256_note"] = sha_note
+            changed = True
+    elif "pdf_sha256_note" not in meta:
+        meta["pdf_sha256_note"] = None
+        changed = True
+
+    # --- engine_versions: keep measured values, fill only the nulls ---
+    versions = meta.get("engine_versions")
+    merged = dict(versions) if isinstance(versions, dict) else {}
+    for key in _ENGINE_CONTRACT_KEYS:
+        if not merged.get(key):
+            value = (snapshot.get("engine_versions") or {}).get(key)
+            if value:
+                merged[key] = value
+        if key not in merged:
+            merged[key] = None
+    if merged != versions:
+        meta["engine_versions"] = merged
+        changed = True
+
+    source = ("current_env_estimate"
+              if any(merged.get(k) for k in _ENGINE_CONTRACT_KEYS) else "unavailable")
+    if meta.get("engine_versions_source") != source:
+        meta["engine_versions_source"] = source
+        changed = True
+
+    # Deterministic note (no timestamps → repeated runs stay byte-identical).
+    # The PDF path/derivation detail lives in pdf_sha256_note, not here, so that
+    # a record whose digest already exists produces exactly the same note.
+    parts = [_BACKFILL_HONESTY]
+    if (isinstance(existing_note, str) and existing_note.strip()
+            and _BACKFILL_HONESTY not in existing_note):
+        parts.append(f"original conversion note: {existing_note}")
+    stale = snapshot.get("engine_versions_note")
+    if source == "unavailable" and stale:
+        parts.append(stale)
+    desired_note = "; ".join(parts)
+    if meta.get("engine_versions_note") != desired_note:
+        meta["engine_versions_note"] = desired_note
+        changed = True
+
+    return changed, sha_state
+
+
+def backfill_meta(papers_dir: Path) -> dict:
+    """Fill provenance fields into existing _META.json files WITHOUT re-converting.
+
+    Idempotent by construction:
+      * records already carrying engine_versions_source == "conversion_time" are
+        never touched;
+      * only missing/null fields are filled;
+      * a record whose desired content equals its current content is not rewritten
+        (the note text is deterministic — no timestamps).
+
+    Honesty: versions detected now are stamped "current_env_estimate", never
+    "conversion_time", because the paper was converted before this backfill.
+    """
+    metas = _meta_candidates(papers_dir)
+    stats = {
+        "scanned": len(metas), "updated": 0, "unchanged": 0,
+        "skipped_conversion_time": 0, "pdf_sha256_filled": 0,
+        "pdf_sha256_null": 0, "unreadable": 0,
+    }
+    if not metas:
+        return stats
+    snapshot = _engine_version_snapshot()
+    for meta_path in metas:
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as e:
+            print(f"[backfill-meta] WARN: unreadable {meta_path}: {e}", file=sys.stderr)
+            stats["unreadable"] += 1
+            continue
+        if not isinstance(meta, dict):
+            print(f"[backfill-meta] WARN: not a JSON object: {meta_path}", file=sys.stderr)
+            stats["unreadable"] += 1
+            continue
+        if meta.get("engine_versions_source") == "conversion_time":
+            stats["skipped_conversion_time"] += 1
+            continue
+
+        changed, sha_state = _backfill_one(meta, meta_path, papers_dir, snapshot)
+        if changed:
+            error = _write_meta_json(meta_path, meta)
+            if error:
+                print(f"[backfill-meta] ERROR: cannot write {meta_path}: {error}",
+                      file=sys.stderr)
+                stats["unreadable"] += 1
+                continue
+            stats["updated"] += 1
+        else:
+            stats["unchanged"] += 1
+        if sha_state == "filled":
+            stats["pdf_sha256_filled"] += 1
+        if not meta.get("pdf_sha256"):
+            stats["pdf_sha256_null"] += 1
+    return stats
+
+
 def process_one(
     pdf: Path,
     papers_dir: Path,
@@ -1390,6 +1888,7 @@ def process_one(
         result.precheck = PrecheckResult(
             ok=True, status="passed",
             pdf_hash=state.get(stem).get("pdf_hash", ""),
+            pdf_sha256=state.get(stem).get("pdf_sha256", "") or "",
         )
 
     # ── Phase 1:   ────────────────────────────────────────────────
@@ -1455,14 +1954,21 @@ def process_one(
         return result
 
     phase1_status = "degraded" if not (marker_ok and mineru_ok) else "done"
+    # Single-engine runs leave the other EngineResult as None, so every field must
+    # be guarded on the result itself (previously "--engines marker" crashed here
+    # with AttributeError: 'NoneType' object has no attribute 'error').
     phase1_record = {
         "status": phase1_status,
-        "marker_ok": marker_ok,
-        "mineru_ok": mineru_ok,
-        "marker_error": result.marker.error if not marker_ok else None,
-        "mineru_error": result.mineru.error if not mineru_ok else None,
-        "marker_error_type": result.marker.error_type if not marker_ok else None,
-        "mineru_error_type": result.mineru.error_type if not mineru_ok else None,
+        "marker_ok": marker_ok if engines in ("both", "marker") else None,
+        "mineru_ok": mineru_ok if engines in ("both", "mineru") else None,
+        "marker_error": (result.marker.error
+                         if result.marker and not result.marker.ok else None),
+        "mineru_error": (result.mineru.error
+                         if result.mineru and not result.mineru.ok else None),
+        "marker_error_type": (result.marker.error_type
+                              if result.marker and not result.marker.ok else None),
+        "mineru_error_type": (result.mineru.error_type
+                              if result.mineru and not result.mineru.ok else None),
         "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
     }
     if state:
@@ -1536,28 +2042,36 @@ def process_one(
             state.set_phase_from_error(stem, "phase2_merged", ErrorType.NORMALIZE_CRASH, str(e))
         return result
 
-    # ──    _META.json ────────────────────────────────────────────
-    meta = {
-        "pdf_path": result.pdf_path,
-        "stem": result.stem,
-        "engines": engines,
-        "pages": pages,
-        "marker": asdict(result.marker) if result.marker else None,
-        "mineru": asdict(result.mineru) if result.mineru else None,
-        "diff_path": result.diff_path,
-        "diff_line_count": result.diff_line_count,
-        "merged_path": result.merged_path,
-        "merged_supplement_count": result.merged_supplement_count,
-        "images_copied": images_copied if 'images_copied' in dir() else 0,
-        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-    }
-    if precheck := result.precheck:
-        meta["precheck"] = precheck.to_record()
-    try:
-        meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
-    except OSError as e:
+    # ──    _META.json （   +   ） ──────────────────────
+    # Source-PDF hash: reuse the precheck pass when available (no extra full
+    # read); otherwise fall back to the pipeline state, then to a streaming read.
+    pdf_sha256 = ""
+    pdf_sha256_note = None
+    if result.precheck and result.precheck.pdf_sha256:
+        pdf_sha256 = result.precheck.pdf_sha256
+    else:
+        cached = state.get(stem).get("pdf_sha256", "") if state else ""
+        if cached:
+            pdf_sha256 = cached
+        else:
+            digest, pdf_sha256_note = _sha256_of_file(pdf)
+            pdf_sha256 = digest or ""
+    if pdf_sha256 and state:
+        state.set_pdf_sha256(stem, pdf_sha256)
+
+    meta = build_meta_record(
+        result,
+        engines=engines,
+        pages=pages,
+        images_copied=images_copied if 'images_copied' in dir() else 0,
+        pdf_sha256=pdf_sha256,
+        pdf_sha256_note=pdf_sha256_note,
+        engine_provenance=_engine_version_snapshot(),
+    )
+    meta_error = _write_meta_json(meta_path, meta)
+    if meta_error:
         #   → FATAL?
-        print(f"  [{stem}] 💥    _META.json: {e}", file=sys.stderr)
+        print(f"  [{stem}] 💥    _META.json: {meta_error}", file=sys.stderr)
 
     #   Phase 3
     if state:
@@ -1706,6 +2220,9 @@ def main() -> int:
                     help="   _pipeline_state.json（ PDF  ）")
     ap.add_argument("--status", action="store_true",
                     help="     ")
+    ap.add_argument("--backfill-meta", action="store_true",
+                    help="backfill provenance (pdf_sha256 + engine_versions) into "
+                         "existing _META.json without re-converting")
     ap.add_argument("--resume", action="store_true",
                     help="       （  --batch  ）")
     ap.add_argument("--force", action="store_true",
@@ -1739,6 +2256,28 @@ def main() -> int:
                     help="   GPU         （   600=10 ）")
 
     args = ap.parse_args()
+
+    # ── --backfill-meta ──────────────────────────────────────────────
+    # Provenance-only pass over already-converted corpora: no engines are run and
+    # no GPU budget is touched, so this returns before GPU governor setup.
+    # Versions detected now are stamped "current_env_estimate" (never
+    # "conversion_time"); idempotent and limited to missing fields.
+    if args.backfill_meta:
+        target = args.pdf.resolve()
+        backfill_root = target if target.is_dir() else target.parent
+        stats = backfill_meta(backfill_root)
+        if stats["scanned"] == 0:
+            print(f"ERROR: no _META.json found under {backfill_root}", file=sys.stderr)
+            print("  expected <papers_dir>/paper-analysis/*/_META.json or "
+                  "<papers_dir>/paper-merged/*/_META.json", file=sys.stderr)
+            return 1
+        print(
+            "[backfill-meta] scanned={scanned} updated={updated} "
+            "unchanged={unchanged} skipped_conversion_time={skipped_conversion_time} "
+            "pdf_sha256_filled={pdf_sha256_filled} pdf_sha256_null={pdf_sha256_null} "
+            "unreadable={unreadable}".format(**stats)
+        )
+        return 0
 
     # ── GPU    ──────────────────────────────────────────────────────
     global _GPU_FRACTION, _CPU_THREADS, _GPU_GOVERNOR, _GPU_WAIT_TIMEOUT

@@ -1,0 +1,1266 @@
+#!/usr/bin/env python3
+"""Rule-based text metrics layer for the paper-metrics profiler (I4/I5).
+
+Frozen API: INTERFACES.md section 3 (implementation interface spec v1).
+Pure stdlib, zero LLM calls (OBSERVED red line), deterministic.
+
+Pinned matching rules (a third party reproduces every number from these):
+
+1. **Token** = the regex [A-Za-z][A-Za-z'-]* (ASCII letter, then letters,
+   apostrophes or hyphens) matched on the raw text and lowercased.  Digits,
+   punctuation and CJK never form tokens; internal apostrophes and hyphens are
+   kept ("state-of-the-art" is one token).
+2. **Multi-word lexicon entries**: the entry is tokenized with the very same
+   rule, then matched against the token stream of each sentence, greedily and
+   longest-first, without overlap; one matched span counts exactly once no
+   matter how many tokens it spans.  Matching is case-insensitive and never
+   crosses a sentence boundary.  Characters *between* the matched tokens
+   (punctuation, extra spaces) are ignored, so "on the other hand" also matches
+   "on  the other hand" and the recorded span covers the whole phrase.
+3. **Numbers**: every float is round(x, 6); a zero denominator or an undefined
+   statistic yields value = None plus a warning, because JSON must never
+   contain NaN/Infinity.
+4. **Contract fields**: every metric carries
+   value / n / denominator / unit / state / method / metric_spec / evidence /
+   warnings.  evidence.sample has at most 5 entries and follows the frozen
+   evidence convention (INTERFACES.md): each entry is
+   {"span": [start, end], "excerpt": ...} where span holds [start, end] char
+   offsets into the exact input text and excerpt == text[start:end][:80]
+   (characters, not words; no whitespace collapsing), so every sample slices
+   back to the original characters without loss.  Evidence builders accept
+   both 2-tuples and the 3-tuples emitted by _match_entries and always use the
+   first two fields.
+5. **Evidence sampling rule (frozen, reproducible)**: every metric emits an
+   evidence_rule field that pins exactly which items are sampled:
+   - candidates are collected in strict document order (sentence index, then
+     token index / span start) and never from set or dict iteration;
+   - the first 5 candidates are emitted, in that order, as
+     sample = [{"span": [start, end], "excerpt": text[start:end][:80]}, ...];
+   - evidence.count is the full number of hits (n of the metric or the number
+     of sentences/tokens in scope), independent of the sample cap;
+   - phrase hits are the greedy longest-match, non-overlapping spans within a
+     sentence; one matched span counts once regardless of its token length;
+   - M-LSF-16 samples only sentences with >= 40 words, M-PAS-09 only the
+     matched passive verb phrase span (aux + <= 2 adverbs + past participle,
+     optionally preceded by one perfect/modal auxiliary; the enclosing sentence
+     only defines the denominator), M-TENSE-28 only present-tense tokens,
+     M-MTLD-02 the first tokens of the text, M-SLEN-01 the first sentences.
+   Re-running the same text with the same lexicon bundle therefore reproduces
+   the evidence byte for byte.
+
+Deliberate, documented readings of the contract:
+
+* _MTLD_MIN_FACTOR (10) is used only as the length guard
+  (len(tokens) < 2 * 10 -> nan).  Factors themselves close as soon as the
+  running TTR drops to <= 0.720 (McCarthy & Jarvis 2010); the trailing partial
+  factor is scored (1 - TTR) / (1 - threshold), and the reported MTLD is the
+  mean of the forward and the reversed pass (bidirectional).
+* M-TENSE-28 accepts third-person -s / -es / -ies forms only when the singular
+  base is a known verb base (module-frozen _COMMON_VERB_BASES union the
+  bundle's nominalization_verb_bases, minus _AMBIGUOUS_NOUN_VERBS).  Without
+  that gate every plural noun ("results", "methods", "models") would be
+  counted as a present-tense verb and the ratio would be meaningless.  -ed
+  forms count as past unless they appear in the frozen participial-adjective
+  denylist.  Everything verb-like but tense-ambiguous (modals, be/been/being)
+  is reported as n_unresolved.
+* M-PAS-09 counts a sentence as passive when a passive auxiliary
+  (be/am/is/are/was/were/been/being/get/gets/got/become/becomes/became) is
+  followed, after at most two adverbs, by a past participle (irregular table
+  >= 100 entries, or an -ed form of at least 4 chars).  A frozen denylist of
+  adjectival participles removes the copular false positives ("the problem is
+  complicated", "we were tired"), which are then counted as n_unresolved
+  instead.  Auxiliaries that do not resolve are reported as n_unresolved.
+* M-NOM-10 applies the contract rule (ends with a frozen suffix AND the base is
+  a frozen verb base AND the whole token is not in the denylist) with an
+  explicit, frozen candidate set for the stem -> verb restoration:
+  stem, stem+e, stem+y, stem+te, stem+ate, stem+de, stem+t; for a stem ending
+  in a vowel additionally stem[:-1], stem[:-1]+e, stem[:-1]+y; for a stem
+  ending in "ica" additionally stem[:-3]+"y"; for a stem ending in p/b
+  additionally stem[:-1]+"be"; for a stem ending in "i" additionally stem+"ze"
+  (so creation -> crea -> create, computation -> computa -> compute,
+  information -> informa -> inform, description -> descrip -> describe,
+  recognition -> recogni -> recognize, application -> applica -> apply,
+  specification -> specifica -> specify, decision -> deci -> decide).  Plural
+  forms are normalised first
+  (-s / -es / -ies -> y).  Candidates are only ever tested against the frozen
+  verb-base set, never against a fuzzy match, so the rule stays reproducible.
+
+Bundles are duck-typed: this module never imports lexicon_loader at import
+time (it may legitimately not exist yet, and the metrics unit tests use a
+minimal fake bundle).  Only the TYPE_CHECKING import below documents the
+expected shape.
+"""
+
+from __future__ import annotations
+
+import math
+import re
+import statistics
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Iterable, Mapping, Sequence
+
+if TYPE_CHECKING:  # pragma: no cover - typing only, never executed
+    from lexicon_loader import LexiconBundle
+
+TEXT_METRICS_VERSION = "1.0"
+
+_LONG_SENTENCE_WORDS = 40
+_MTLD_TTR_THRESHOLD = 0.720
+_MTLD_MIN_FACTOR = 10
+_ALPHA_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z'\-]*")
+
+#: metric_id order as frozen in INTERFACES.md section 3 (12 table rows; the
+#: connector row expands into three component ids).
+METRIC_IDS = (
+    "M-SLEN-01",
+    "M-LSF-16",
+    "M-MTLD-02",
+    "M-HED-14",
+    "M-BOO-15",
+    "M-CONN-30",
+    "M-CONN-30c",
+    "M-CONN-30k",
+    "M-CONN-30r",
+    "M-AWR-03",
+    "M-PAS-09",
+    "M-NOM-10",
+    "M-TENSE-28",
+)
+
+_ROUND_DIGITS = 6
+_STATE_OBSERVED = "OBSERVED"
+_METHOD_RULE = "rule"
+_EVIDENCE_SAMPLE_MAX = 5
+_EXCERPT_MAX = 80
+_UNIT_RATIO = "ratio"
+_UNIT_PER_1000 = "per-1000-words"
+_UNIT_WORDS_PER_SENTENCE = "words/sentence"
+_UNIT_INDEX = "index"
+
+#: Frozen per-metric evidence sampling rules (see module docstring rule 5).
+#: Injected into every metric dict as the top-level "evidence_rule" field.
+_EVIDENCE_SUFFIX = "|order=document|sample=first_5|excerpt=text[start:end][:80]"
+_EVIDENCE_RULES = {
+    "M-SLEN-01": "unit=sentence_span|filter=all_sentences" + _EVIDENCE_SUFFIX,
+    "M-LSF-16": "unit=sentence_span|filter=words>=40" + _EVIDENCE_SUFFIX,
+    "M-MTLD-02": "unit=token_span|filter=all_alpha_tokens" + _EVIDENCE_SUFFIX,
+    "M-HED-14": "unit=phrase_span|match=longest_nonoverlapping" + _EVIDENCE_SUFFIX,
+    "M-BOO-15": "unit=phrase_span|match=longest_nonoverlapping" + _EVIDENCE_SUFFIX,
+    "M-CONN-30": "unit=phrase_span|match=longest_nonoverlapping|union=all_three_groups" + _EVIDENCE_SUFFIX,
+    "M-CONN-30c": "unit=phrase_span|match=longest_nonoverlapping" + _EVIDENCE_SUFFIX,
+    "M-CONN-30k": "unit=phrase_span|match=longest_nonoverlapping" + _EVIDENCE_SUFFIX,
+    "M-CONN-30r": "unit=phrase_span|match=longest_nonoverlapping" + _EVIDENCE_SUFFIX,
+    "M-AWR-03": "unit=phrase_span|match=longest_nonoverlapping" + _EVIDENCE_SUFFIX,
+    "M-PAS-09": "unit=passive_phrase_span|filter=aux(+adverb<=2)+past_participle|lead=perfect_or_modal" + _EVIDENCE_SUFFIX,
+    "M-NOM-10": "unit=token_span|filter=suffix_and_verb_base_and_not_denylisted" + _EVIDENCE_SUFFIX,
+    "M-TENSE-28": "unit=token_span|filter=present_tense" + _EVIDENCE_SUFFIX,
+}
+_EVIDENCE_RULE_DEFAULT = "unit=span" + _EVIDENCE_SUFFIX
+
+# ---------------------------------------------------------------------------
+# Sentence splitting
+# ---------------------------------------------------------------------------
+
+_TERMINATORS = ".!?"
+_TRAILING_CLOSERS = frozenset("\"')]}\u00bb\u201d\u2019")
+#: Horizontal whitespace only: a line break is a hard sentence-boundary
+#: candidate and is never skipped while probing for an abbreviation continuation.
+_HORIZONTAL_WS = " \t\f\v"
+_LOCAL_WINDOW = 96
+
+#: Abbreviations whose full stop never ends a sentence.  Compared lower-cased
+#: against the token immediately left of the stop ("i.e." -> "i.e").
+_ABBREVIATIONS = frozenset(
+    """
+    al etc fig figs eq eqs vs cf cmp approx no nos sec secs ref refs
+    i.e e.g u.s u.k e.u ph.d m.s b.s dr prof mr mrs ms st jr sr
+    inc ltd co corp dept univ vol vols pp p ch chap app appendix
+    min max avg est resp ibid viz seq alii
+    jan feb mar apr jun jul aug sep sept oct nov dec
+    mon tue wed thu fri sat sun
+    """.split()
+)
+
+_WORD_ENDING_RE = re.compile(r"[A-Za-z]+(?:\.[A-Za-z]+)*$")
+#: Right-side initial rule: a single capital letter plus full stop is an initial
+#: when the next token starts with a capital letter ("J. Smith", "R. Kumar",
+#: "A. Smith", a line-leading "A. Method" and the "J. R." chain).  A following
+#: digit, bracket or lowercase word does not protect, so "X. 25 runs",
+#: "X. [12]" and "X. however" still split.
+_INITIAL_FOLLOW_RE = re.compile(r"[ \t]+[A-Z](?:[A-Za-z]|\.)")
+_LINE_NUMBER_RE = re.compile(r"\s*(?:\d{1,3}|\[\d{1,3}\]|\(\d{1,3}\))")
+
+
+@dataclass(frozen=True)
+class Span:
+    """A character span relative to the text passed in (start, end, slice)."""
+
+    start: int
+    end: int
+    text: str
+
+
+def _word_ending_at(text: str, index: int) -> str:
+    """Alpha token (dotted words kept, e.g. i.e) ending at text[index]."""
+    match = _WORD_ENDING_RE.search(text[max(0, index - _LOCAL_WINDOW):index])
+    return match.group(0) if match else ""
+
+
+def _is_line_start_numbering(text: str, index: int) -> bool:
+    """True when the token just left of the stop is a line-leading numbering.
+
+    Covers "1." / "[12]." / "(3)." at the start of a line (list numbering),
+    which must not split a sentence.  Numbering appearing mid-line is a normal
+    sentence end.
+    """
+    line_start = text.rfind("\n", max(0, index - _LOCAL_WINDOW), index)
+    if line_start < 0:
+        line_start = max(0, index - _LOCAL_WINDOW)
+    else:
+        line_start += 1
+    return bool(_LINE_NUMBER_RE.fullmatch(text[line_start:index]))
+
+
+def _single_letter_protected(text: str, index: int) -> bool:
+    """Protect a single capital letter + full stop that starts an initial.
+
+    Frozen right-side rule, independent of the word on the left: the stop is an
+    initial when the next token starts with a capital letter, which covers
+    "by J. Smith", "and R. Kumar", "A. Smith, B. Jones and C. Lee", a
+    line-leading "A. Method" and the "J. R." chain.
+    Known, accepted cost: a one-letter symbol that genuinely ends a sentence and
+    is followed by a capitalised word ("denoted as X. We then ...") is not
+    split.  Followers that are digits, brackets or lowercase words never
+    protect, so "X. 25 runs", "X. [12]" and "X. however" still split.
+    """
+    return bool(_INITIAL_FOLLOW_RE.match(text[index + 1:index + 1 + 24]))
+
+
+def _is_sentence_end(text: str, index: int) -> bool:
+    length = len(text)
+    char = text[index]
+    cursor = index + 1
+    while cursor < length and text[cursor] in _TRAILING_CLOSERS:
+        cursor += 1
+    if cursor < length and not text[cursor].isspace():
+        return False
+    if char != ".":
+        return True
+    # Decimal number "3.14": neither side of the stop splits.
+    if index > 0 and text[index - 1].isdigit() and index + 1 < length and text[index + 1].isdigit():
+        return False
+    if _is_line_start_numbering(text, index):
+        return False
+    token = _word_ending_at(text, index)
+    if token.lower() in _ABBREVIATIONS:
+        return False
+    if len(token) == 1 and token.isupper() and _single_letter_protected(text, index):
+        return False
+    # Unknown-abbreviation heuristic ("Smith et al. reported", "Sect. 3").
+    # The probe must NOT cross a line break and must stop at the first
+    # non-space character (digits, brackets, math symbols): scientific prose
+    # frequently starts a sentence with a number, "[12]" or a formula, and
+    # probing past it would silently merge two sentences and deflate every
+    # sentence-count denominator (M-SLEN-01 / M-LSF-16 / M-PAS-09).
+    probe = cursor
+    while probe < length and text[probe] in _HORIZONTAL_WS:
+        probe += 1
+    if probe < length and text[probe].isalpha() and text[probe].islower():
+        return False
+    return True
+
+
+def split_sentences(text: str) -> list[Span]:
+    """Split the text into sentence spans (rule-based, deterministic).
+
+    A sentence ends at . / ! / ? followed by whitespace or the end of the text.
+    A line break is a hard boundary candidate: the abbreviation probe never
+    crosses it, so a following sentence that starts with a number, "[12]" or a
+    formula is still split correctly.  Abbreviations, decimals, line-leading
+    numbering and initials chains are protected (see the module docstring).
+    Fragments without a single letter are dropped.  Span.text is always
+    text[span.start:span.end] and never has leading or trailing whitespace.
+    """
+    if not isinstance(text, str) or not text:
+        return []
+    raw: list[tuple[int, int]] = []
+    start = 0
+    length = len(text)
+    for index in range(length):
+        if text[index] in _TERMINATORS and _is_sentence_end(text, index):
+            raw.append((start, index + 1))
+            start = index + 1
+    raw.append((start, length))
+
+    spans: list[Span] = []
+    for begin, end in raw:
+        chunk = text[begin:end]
+        stripped = chunk.strip()
+        if not stripped:
+            continue
+        lead = len(chunk) - len(chunk.lstrip())
+        tail = len(chunk) - len(chunk.rstrip())
+        s = begin + lead
+        e = end - tail
+        piece = text[s:e]
+        if _ALPHA_TOKEN_RE.search(piece) is None:
+            continue  # letter-less fragment ("3.", "---", "[]")
+        spans.append(Span(s, e, piece))
+    return spans
+
+
+# ---------------------------------------------------------------------------
+# Tokenization
+# ---------------------------------------------------------------------------
+
+def tokenize(text: str) -> list[str]:
+    """Lower-cased alpha tokens, keeping internal apostrophes and hyphens."""
+    if not isinstance(text, str) or not text:
+        return []
+    return [match.group(0).lower() for match in _ALPHA_TOKEN_RE.finditer(text)]
+
+
+def _tokens_with_spans(text: str, start: int = 0, end: int | None = None) -> list[tuple[str, int, int]]:
+    segment = text[start:end]
+    return [
+        (match.group(0).lower(), start + match.start(), start + match.end())
+        for match in _ALPHA_TOKEN_RE.finditer(segment)
+    ]
+
+
+# ---------------------------------------------------------------------------
+# MTLD (McCarthy & Jarvis 2010)
+# ---------------------------------------------------------------------------
+
+def _mtld_direction(tokens: Sequence[str]) -> float:
+    factors = 0.0
+    seen: set[str] = set()
+    count = 0
+    threshold = _MTLD_TTR_THRESHOLD
+    for token in tokens:
+        seen.add(token)
+        count += 1
+        if len(seen) / count <= threshold:
+            factors += 1.0
+            seen = set()
+            count = 0
+    if count:
+        ttr = len(seen) / count
+        if ttr > threshold:
+            factors += (1.0 - ttr) / (1.0 - threshold)
+    if factors <= 0.0:
+        return float("nan")
+    return len(tokens) / factors
+
+
+def mtld(tokens: Sequence[str]) -> float:
+    """Bidirectional MTLD over the token sequence.
+
+    Returns nan when len(tokens) < 2 * _MTLD_MIN_FACTOR (fewer than two stable
+    factors, so the index is not defined).  Pinned parameters: ttr_threshold =
+    0.720, min_factor = 10, bidirectional = True, trailing partial factor =
+    (1 - TTR) / (1 - threshold).
+    """
+    normalised = [str(token).lower() for token in tokens if str(token).strip()]
+    if len(normalised) < 2 * _MTLD_MIN_FACTOR:
+        return float("nan")
+    forward = _mtld_direction(normalised)
+    backward = _mtld_direction(list(reversed(normalised)))
+    if math.isnan(forward) or math.isnan(backward):
+        return float("nan")
+    return (forward + backward) / 2.0
+
+# ---------------------------------------------------------------------------
+# Frozen lexical tables (embedded: no import-time dependency on lexicon data)
+# ---------------------------------------------------------------------------
+
+#: base -> (simple past, past participle).  137 entries; >= 80 present forms
+#: and >= 80 past forms, as required by INTERFACES.md section 3.  The simple
+#: past column doubles as the past-tense lookup of M-TENSE-28 and the past
+#: participle column as the passive lookup of M-PAS-09.
+_IRREGULAR_VERBS: dict[str, tuple[str, str]] = {
+    "arise": ("arose", "arisen"),
+    "awake": ("awoke", "awoken"),
+    "be": ("was", "been"),
+    "bear": ("bore", "borne"),
+    "beat": ("beat", "beaten"),
+    "become": ("became", "become"),
+    "begin": ("began", "begun"),
+    "bend": ("bent", "bent"),
+    "bet": ("bet", "bet"),
+    "bind": ("bound", "bound"),
+    "bite": ("bit", "bitten"),
+    "bleed": ("bled", "bled"),
+    "blow": ("blew", "blown"),
+    "break": ("broke", "broken"),
+    "breed": ("bred", "bred"),
+    "bring": ("brought", "brought"),
+    "build": ("built", "built"),
+    "buy": ("bought", "bought"),
+    "cast": ("cast", "cast"),
+    "catch": ("caught", "caught"),
+    "choose": ("chose", "chosen"),
+    "cling": ("clung", "clung"),
+    "come": ("came", "come"),
+    "cost": ("cost", "cost"),
+    "creep": ("crept", "crept"),
+    "cut": ("cut", "cut"),
+    "deal": ("dealt", "dealt"),
+    "dig": ("dug", "dug"),
+    "dive": ("dove", "dived"),
+    "do": ("did", "done"),
+    "draw": ("drew", "drawn"),
+    "dream": ("dreamt", "dreamt"),
+    "drink": ("drank", "drunk"),
+    "drive": ("drove", "driven"),
+    "eat": ("ate", "eaten"),
+    "fall": ("fell", "fallen"),
+    "feed": ("fed", "fed"),
+    "feel": ("felt", "felt"),
+    "fight": ("fought", "fought"),
+    "find": ("found", "found"),
+    "fit": ("fit", "fit"),
+    "flee": ("fled", "fled"),
+    "fling": ("flung", "flung"),
+    "fly": ("flew", "flown"),
+    "forbid": ("forbade", "forbidden"),
+    "forget": ("forgot", "forgotten"),
+    "forgive": ("forgave", "forgiven"),
+    "freeze": ("froze", "frozen"),
+    "get": ("got", "gotten"),
+    "give": ("gave", "given"),
+    "go": ("went", "gone"),
+    "grow": ("grew", "grown"),
+    "hang": ("hung", "hung"),
+    "have": ("had", "had"),
+    "hear": ("heard", "heard"),
+    "hide": ("hid", "hidden"),
+    "hit": ("hit", "hit"),
+    "hold": ("held", "held"),
+    "hurt": ("hurt", "hurt"),
+    "keep": ("kept", "kept"),
+    "know": ("knew", "known"),
+    "lay": ("laid", "laid"),
+    "lead": ("led", "led"),
+    "leave": ("left", "left"),
+    "lend": ("lent", "lent"),
+    "let": ("let", "let"),
+    "lie": ("lay", "lain"),
+    "light": ("lit", "lit"),
+    "lose": ("lost", "lost"),
+    "make": ("made", "made"),
+    "mean": ("meant", "meant"),
+    "meet": ("met", "met"),
+    "mistake": ("mistook", "mistaken"),
+    "overcome": ("overcame", "overcome"),
+    "pay": ("paid", "paid"),
+    "prove": ("proved", "proven"),
+    "put": ("put", "put"),
+    "quit": ("quit", "quit"),
+    "read": ("read", "read"),
+    "ride": ("rode", "ridden"),
+    "ring": ("rang", "rung"),
+    "rise": ("rose", "risen"),
+    "run": ("ran", "run"),
+    "say": ("said", "said"),
+    "see": ("saw", "seen"),
+    "seek": ("sought", "sought"),
+    "sell": ("sold", "sold"),
+    "send": ("sent", "sent"),
+    "set": ("set", "set"),
+    "shake": ("shook", "shaken"),
+    "shed": ("shed", "shed"),
+    "shine": ("shone", "shone"),
+    "shoot": ("shot", "shot"),
+    "show": ("showed", "shown"),
+    "shrink": ("shrank", "shrunk"),
+    "shut": ("shut", "shut"),
+    "sing": ("sang", "sung"),
+    "sink": ("sank", "sunk"),
+    "sit": ("sat", "sat"),
+    "sleep": ("slept", "slept"),
+    "slide": ("slid", "slid"),
+    "speak": ("spoke", "spoken"),
+    "speed": ("sped", "sped"),
+    "spend": ("spent", "spent"),
+    "spin": ("spun", "spun"),
+    "spit": ("spat", "spat"),
+    "split": ("split", "split"),
+    "spread": ("spread", "spread"),
+    "spring": ("sprang", "sprung"),
+    "stand": ("stood", "stood"),
+    "steal": ("stole", "stolen"),
+    "stick": ("stuck", "stuck"),
+    "sting": ("stung", "stung"),
+    "strike": ("struck", "struck"),
+    "strive": ("strove", "striven"),
+    "swear": ("swore", "sworn"),
+    "sweep": ("swept", "swept"),
+    "swim": ("swam", "swum"),
+    "swing": ("swung", "swung"),
+    "take": ("took", "taken"),
+    "teach": ("taught", "taught"),
+    "tear": ("tore", "torn"),
+    "tell": ("told", "told"),
+    "think": ("thought", "thought"),
+    "throw": ("threw", "thrown"),
+    "tread": ("trod", "trodden"),
+    "understand": ("understood", "understood"),
+    "undertake": ("undertook", "undertaken"),
+    "upset": ("upset", "upset"),
+    "wake": ("woke", "woken"),
+    "wear": ("wore", "worn"),
+    "weep": ("wept", "wept"),
+    "win": ("won", "won"),
+    "wind": ("wound", "wound"),
+    "withdraw": ("withdrew", "withdrawn"),
+    "withstand": ("withstood", "withstood"),
+    "write": ("wrote", "written"),
+}
+
+_IRREGULAR_PAST = frozenset(past for past, _ in _IRREGULAR_VERBS.values()) | {"were"}
+_IRREGULAR_PARTICIPLE = frozenset(participle for _, participle in _IRREGULAR_VERBS.values())
+_IRREGULAR_PRESENT = frozenset(_IRREGULAR_VERBS)
+
+_PASSIVE_AUXILIARIES = frozenset(
+    {"be", "am", "is", "are", "was", "were", "been", "being",
+     "get", "gets", "got", "gotten", "become", "becomes", "became"}
+)
+
+_PASSIVE_ADVERBS = frozenset(
+    """
+    not never also often already widely commonly frequently generally usually
+    typically currently recently then further finally only still just well
+    fully partially directly indirectly explicitly implicitly successfully
+    effectively automatically manually carefully quickly gradually subsequently
+    previously systematically empirically theoretically statistically
+    significantly substantially largely mainly primarily closely highly deeply
+    rapidly slowly exactly precisely almost nearly always sometimes rarely
+    merely simply thus hence therefore first second now soon later easily
+    routinely safely reliably consistently correctly jointly simultaneously
+    """.split()
+)
+
+#: Tokens that may directly precede the passive auxiliary and belong to the same
+#: verb phrase: perfect auxiliaries ("has been adopted") and modals
+#: ("can be mapped").  They are included in the M-PAS-09 evidence span only;
+#: they never trigger a passive by themselves (detection is unchanged).
+_PASSIVE_PHRASE_LEAD = frozenset(
+    {"have", "has", "had", "can", "could", "may", "might", "must", "shall",
+     "should", "will", "would"}
+)
+
+_PRESENT_AUXILIARIES = frozenset({"is", "are", "am", "do", "does", "has", "have"})
+_PAST_AUXILIARIES = frozenset({"was", "were", "did", "had"})
+_MODALS = frozenset({"can", "could", "may", "might", "must", "shall", "should",
+                     "will", "would", "cannot", "ought"})
+_TENSELESS_BE = frozenset({"be", "been", "being"})
+
+#: Participial adjectives that look like -ed verbs.  Frozen denylist: they are
+#: not counted as past-tense verbs (documented precision/recall trade-off).
+_ED_ADJECTIVE_DENYLIST = frozenset(
+    """
+    related limited based detailed advanced complicated sophisticated dedicated
+    biased aforementioned unbiased nested left right oriented sized
+    """.split()
+)
+
+#: Adjectival past participles for M-PAS-09 (B2 fix): "the problem is
+#: complicated" / "we were tired" are copular (主系表), not passive.  Kept
+#: deliberately narrow ("宁缺毋滥"): high-frequency dynamic participles that
+#: carry genuine agentless passives in this corpus (used 161, defined 89,
+#: applied 58, based-like constructions notwithstanding) and irregular past
+#: forms with a genuine passive reading (known, left, given, made) are NOT
+#: denied.  Measured on the 34-paper VRP corpus: the copula + -ed collocations
+#: are dominated by real passives, so denying this adjective set removes false
+#: positives without erasing the construction.
+_PARTICIPIAL_ADJECTIVE_DENYLIST = frozenset(
+    """
+    related limited based detailed advanced complicated sophisticated dedicated
+    biased unbiased aforementioned nested oriented sized
+    tired interested excited involved concerned satisfied surprised pleased
+    worried committed equipped skilled crowded damaged unexpected
+    """.split()
+)
+
+#: Verb bases frozen in this module.  Used to gate third-person -s forms of
+#: M-TENSE-28 (the bundle's nominalization verb bases are unioned in at call
+#: time).  Alphabetical, no duplicates.
+_COMMON_VERB_BASES = tuple(
+    """
+    accept access accommodate account achieve acquire adapt add address adjust
+    administer adopt advance affect afford aim align allow alter analyse analyze
+    annotate anticipate appear apply appoint appreciate approach approximate
+    argue arise arrange articulate assess assign assist associate assure
+    attain attempt attend attract attribute augment automate avoid balance base
+    become believe benefit build calculate capture carry categorize cause
+    challenge change characterize choose cite clarify classify cluster collect
+    combine compare compensate compete compile complement complete compose
+    compute conceive concentrate conclude conduct configure confirm conflict
+    confuse connect consider consist constitute constrain construct consume
+    contain continue contract contrast contribute control convert convey
+    convince coordinate correlate correspond cover create critique decide
+    decompose decrease define degrade delay deliver demonstrate denote depend
+    derive describe design detect determine develop deviate devise differentiate
+    discover discuss distinguish distribute diverge divide document dominate
+    double draw drive drop ease elaborate eliminate embed emphasize employ
+    enable encode encounter encourage enhance ensure entail establish estimate
+    evaluate evolve examine exceed exclude execute exemplify exhibit exist
+    expand expect experiment explain explore expose express extend extract
+    facilitate fail favor feature figure fit focus forecast formulate frame
+    fulfill function gain gather generalize generate govern grant group grow
+    guarantee guide handle highlight identify illustrate implement imply import
+    impose improve include incorporate increase incur indicate induce infer
+    influence inform initialize inject innovate insert inspect install
+    instantiate integrate interpret introduce investigate involve isolate issue
+    iterate justify keep label lack launch learn leave lend leverage limit link
+    list locate maintain manage manipulate map mark match maximize measure meet
+    merge minimize mirror mitigate model modify monitor motivate move multiply
+    narrow neglect normalise normalize note obtain occur offer operate optimize
+    order organize outline overcome overlap overlook outweigh parallel
+    parameterize participate partition pass perform permit persist place plan
+    point populate possess postulate predict prefer prepare present preserve
+    prevent prioritize process produce prohibit project promote propose prove
+    provide publish quantify query rank reach realize reason recall recognize
+    recommend reconstruct record recover reduce refine reflect regard regulate
+    reinforce reject relate relax release rely remain remove render repeat
+    replace replicate report represent reproduce request require research
+    resolve respect respond restrict result retain retrieve reveal reverse
+    review revise reward run sample satisfy scale schedule score search secure
+    seek select separate sequence serve set settle shape share shift show signal
+    simplify simulate solve specify split spread stabilize standardize state
+    stimulate store streamline strengthen stress strive structure study submit
+    substitute succeed suffer suggest suit summarize supervise supply support
+    suppose suppress surpass survey sustain switch symbolize tackle tailor
+    target teach terminate test theorize think tolerate trace track trade train
+    transfer transform translate treat trigger tune turn underestimate underlie
+    understand undertake unify unite update upgrade use utilize validate vary
+    verify view violate visualize weight widen yield
+    """.split()
+)
+
+#: Noun/verb homographs excluded from the third-person -s gate: their plural
+#: form dominates in academic prose ("models", "results"), so counting them as
+#: present-tense verbs would inflate the metric.
+_AMBIGUOUS_NOUN_VERBS = frozenset(
+    """
+    model result process design project report survey study review test sample
+    feature function control measure mean approach method change increase
+    decrease use limit target level balance focus score rate scale state
+    structure order schedule contrast record request access address account
+    support influence impact group form figure map link point mark object
+    """.split()
+)
+
+_THIRD_PERSON_SPECIAL = {"be": "is", "do": "does", "have": "has", "go": "goes"}
+
+
+def _third_person(base: str) -> str | None:
+    if base in _THIRD_PERSON_SPECIAL:
+        return _THIRD_PERSON_SPECIAL[base]
+    if not base or not base.isalpha():
+        return None
+    if base.endswith(("s", "x", "z", "ch", "sh")):
+        return base + "es"
+    if base.endswith("y") and len(base) > 1 and base[-2] not in "aeiou":
+        return base[:-1] + "ies"
+    return base + "s"
+
+
+def _build_third_person_index(extra_bases: Iterable[str]) -> dict[str, str]:
+    bases = set(_COMMON_VERB_BASES)
+    bases.update(_IRREGULAR_VERBS)
+    for base in extra_bases:
+        base = str(base).strip().lower()
+        if base:
+            bases.add(base)
+    index: dict[str, str] = {}
+    for base in sorted(bases):
+        form = _third_person(base)
+        if form:
+            index[form] = base
+    return index
+
+
+# ---------------------------------------------------------------------------
+# Bundle access (duck-typed)
+# ---------------------------------------------------------------------------
+
+def _entries(bundle: Any, name: str) -> tuple[str, ...]:
+    lexicon = getattr(bundle, name, None)
+    if lexicon is None:
+        return ()
+    raw = getattr(lexicon, "entries", None)
+    if raw is None:
+        return ()
+    return tuple(str(entry) for entry in raw)
+
+
+def _connector_entries(bundle: Any, group: str) -> tuple[str, ...]:
+    connectors = getattr(bundle, "connectors", None)
+    if connectors is None:
+        return ()
+    lexicon: Any = None
+    if isinstance(connectors, Mapping):
+        lexicon = connectors.get(group)
+    if lexicon is None:
+        try:
+            lexicon = connectors[group]
+        except Exception:  # pragma: no cover - exotic mapping
+            lexicon = getattr(connectors, group, None)
+    if lexicon is None:
+        return ()
+    raw = getattr(lexicon, "entries", None)
+    if raw is None:
+        return ()
+    return tuple(str(entry) for entry in raw)
+
+
+# ---------------------------------------------------------------------------
+# Contract-carrying records
+# ---------------------------------------------------------------------------
+
+def _excerpt(text: str, start: int, end: int) -> str:
+    return text[start:end][:_EXCERPT_MAX]
+
+
+def _evidence(spans: Sequence[Sequence[int]], text: str, count: int,
+              limit: int = _EVIDENCE_SAMPLE_MAX) -> dict[str, Any]:
+    """Build the evidence block from (start, end[, ...]) records.
+
+    Accepts both 2-tuples (sentence / token spans) and the 3-tuples returned by
+    _match_entries ((start, end, sentence_index)); only the first two fields are
+    used, the rest is ignored.
+    """
+    sample = [
+        {"span": [int(hit[0]), int(hit[1])], "excerpt": _excerpt(text, int(hit[0]), int(hit[1]))}
+        for hit in list(spans)[:limit]
+    ]
+    return {"count": int(count), "sample": sample}
+
+
+def _metric(metric_spec: str, *, value: Any, n: int, denominator: int, unit: str,
+            evidence: dict[str, Any], warnings: Sequence[str] = (),
+            **extra: Any) -> dict[str, Any]:
+    note = [str(w) for w in warnings]
+    normalised: float | None
+    if value is None:
+        normalised = None
+    else:
+        number = float(value)
+        if not math.isfinite(number):
+            normalised = None
+            note.append("value was not finite (NaN/Infinity) and is reported as null")
+        else:
+            normalised = round(number, _ROUND_DIGITS)
+    record: dict[str, Any] = {
+        "value": normalised,
+        "n": int(n),
+        "denominator": int(denominator),
+        "unit": unit,
+        "state": _STATE_OBSERVED,
+        "method": _METHOD_RULE,
+        "metric_spec": metric_spec,
+        "evidence": evidence,
+        "warnings": note,
+    }
+    record.update(extra)
+    record.setdefault("evidence_rule", _EVIDENCE_RULES.get(metric_spec, _EVIDENCE_RULE_DEFAULT))
+    return record
+
+
+def _rate(metric_spec: str, numerator: int, denominator: int, unit: str,
+          evidence: dict[str, Any], warnings: Sequence[str] = (),
+          scale: float = 1.0, **extra: Any) -> dict[str, Any]:
+    note = list(warnings)
+    if denominator <= 0:
+        note.append(
+            f"{metric_spec}: denominator is 0 (no alpha token in the input); value is undefined"
+        )
+        return _metric(metric_spec, value=None, n=numerator, denominator=denominator,
+                       unit=unit, evidence=evidence, warnings=note, **extra)
+    return _metric(metric_spec, value=numerator * scale / denominator, n=numerator,
+                   denominator=denominator, unit=unit, evidence=evidence,
+                   warnings=note, **extra)
+
+# ---------------------------------------------------------------------------
+# Phrase matching (longest first, non-overlapping, per sentence)
+# ---------------------------------------------------------------------------
+
+def _phrase_index(entries: Iterable[str]) -> dict[int, set[tuple[str, ...]]]:
+    index: dict[int, set[tuple[str, ...]]] = {}
+    for entry in entries:
+        tokens = tuple(tokenize(str(entry)))
+        if not tokens:
+            continue
+        index.setdefault(len(tokens), set()).add(tokens)
+    return index
+
+
+def _match_entries(text: str, sentences: Sequence[Span],
+                   entries: Iterable[str]) -> list[tuple[int, int, int]]:
+    """Return (start, end, sentence_index) hits, in document order."""
+    index = _phrase_index(entries)
+    if not index:
+        return []
+    max_len = max(index)
+    hits: list[tuple[int, int, int]] = []
+    for sentence_index, span in enumerate(sentences):
+        tokens = _tokens_with_spans(text, span.start, span.end)
+        words = [token for token, _, _ in tokens]
+        position = 0
+        total = len(words)
+        while position < total:
+            matched = 0
+            for length in range(min(max_len, total - position), 0, -1):
+                group = index.get(length)
+                if group is not None and tuple(words[position:position + length]) in group:
+                    matched = length
+                    hits.append((tokens[position][1], tokens[position + length - 1][2],
+                                 sentence_index))
+                    break
+            position += matched if matched else 1
+    return hits
+
+
+# ---------------------------------------------------------------------------
+# Statistics helpers
+# ---------------------------------------------------------------------------
+
+def _percentile(ordered: Sequence[int], quantile: float) -> float:
+    """Linear-interpolation percentile (identical to numpy's default)."""
+    length = len(ordered)
+    if length == 0:
+        return float("nan")
+    if length == 1:
+        return float(ordered[0])
+    position = quantile * (length - 1)
+    lower = int(math.floor(position))
+    upper = int(math.ceil(position))
+    if lower == upper:
+        return float(ordered[lower])
+    fraction = position - lower
+    return float(ordered[lower]) * (1.0 - fraction) + float(ordered[upper]) * fraction
+
+
+# ---------------------------------------------------------------------------
+# Individual metrics
+# ---------------------------------------------------------------------------
+
+def _metric_slen01(text: str, sentences: Sequence[Span],
+                   counts: Sequence[int]) -> dict[str, Any]:
+    n_sentences = len(sentences)
+    n_words = sum(counts)
+    warnings: list[str] = []
+    if n_sentences == 0:
+        warnings.append("M-SLEN-01: no sentence containing a letter was detected; value is undefined")
+        value = None
+        distribution = {"median": None, "p25": None, "p75": None, "std": None}
+    elif n_words == 0:
+        warnings.append("M-SLEN-01: no alpha token was detected; value is undefined")
+        value = None
+        distribution = {"median": None, "p25": None, "p75": None, "std": None}
+    else:
+        ordered = sorted(counts)
+        value = n_words / n_sentences
+        distribution = {
+            "median": round(_percentile(ordered, 0.5), _ROUND_DIGITS),
+            "p25": round(_percentile(ordered, 0.25), _ROUND_DIGITS),
+            "p75": round(_percentile(ordered, 0.75), _ROUND_DIGITS),
+            "std": round(statistics.pstdev(ordered), _ROUND_DIGITS),
+        }
+    evidence = _evidence([(span.start, span.end) for span in sentences], text, n_sentences)
+    return _metric("M-SLEN-01", value=value, n=n_sentences, denominator=n_words,
+                   unit=_UNIT_WORDS_PER_SENTENCE, evidence=evidence, warnings=warnings,
+                   distribution=distribution)
+
+
+def _metric_lsf16(text: str, sentences: Sequence[Span],
+                  counts: Sequence[int]) -> dict[str, Any]:
+    n_sentences = len(sentences)
+    long_spans = [
+        (span.start, span.end)
+        for span, count in zip(sentences, counts)
+        if count >= _LONG_SENTENCE_WORDS
+    ]
+    warnings: list[str] = []
+    if n_sentences == 0:
+        warnings.append("M-LSF-16: no sentence containing a letter was detected; value is undefined")
+        value = None
+    else:
+        value = len(long_spans) / n_sentences
+    evidence = _evidence(long_spans, text, len(long_spans))
+    return _metric("M-LSF-16", value=value, n=len(long_spans), denominator=n_sentences,
+                   unit=_UNIT_RATIO, evidence=evidence, warnings=warnings,
+                   long_sentence_threshold=_LONG_SENTENCE_WORDS)
+
+
+def _metric_mtld02(text: str, tokens: Sequence[str],
+                   token_spans: Sequence[tuple[int, int]]) -> dict[str, Any]:
+    value = mtld(tokens)
+    warnings: list[str] = []
+    if math.isnan(value):
+        warnings.append(
+            "M-MTLD-02: token count %d < 2 * _MTLD_MIN_FACTOR (%d); MTLD is undefined"
+            % (len(tokens), 2 * _MTLD_MIN_FACTOR)
+        )
+        value = None
+    evidence = _evidence(token_spans, text, len(tokens))
+    return _metric(
+        "M-MTLD-02", value=value, n=len(tokens), denominator=1, unit=_UNIT_INDEX,
+        evidence=evidence, warnings=warnings,
+        params={
+            "ttr_threshold": _MTLD_TTR_THRESHOLD,
+            "min_factor": _MTLD_MIN_FACTOR,
+            "bidirectional": True,
+            "partial_factor": "(1 - ttr) / (1 - ttr_threshold)",
+        },
+    )
+
+
+def _is_past_participle(token: str) -> bool:
+    """True for a past participle usable in a passive reading.
+
+    Adjectival participles (see _PARTICIPIAL_ADJECTIVE_DENYLIST) are rejected
+    first, so "is complicated" / "were tired" stay copular; irregular forms with
+    a genuine passive reading ("was built", "is known", "was given") are kept.
+    """
+    if token in _PARTICIPIAL_ADJECTIVE_DENYLIST:
+        return False
+    if token in _IRREGULAR_PARTICIPLE:
+        return True
+    return len(token) >= 4 and token.endswith("ed")
+
+
+@dataclass(frozen=True)
+class PassiveHit:
+    """One detected passive verb phrase (the M-PAS-09 evidence unit).
+
+    sentence   -- the enclosing sentence span (denominator scope)
+    phrase_*   -- char offsets of the passive verb phrase: optional
+                  perfect/modal lead + auxiliary (+ up to two adverbs) +
+                  past participle, e.g. "has been adopted", "can be mapped",
+                  "were carefully collected"
+    participle -- the past participle token that triggered the match
+    """
+
+    sentence: Span
+    phrase_start: int
+    phrase_end: int
+    phrase: str
+    participle: str
+
+
+def _detect_passive(text: str, sentences: Sequence[Span]) -> tuple[list[PassiveHit], int]:
+    """Return one PassiveHit per passive sentence (first phrase wins) and the
+    number of auxiliaries that did not resolve to a past participle."""
+    hits: list[PassiveHit] = []
+    unresolved = 0
+    for span in sentences:
+        tokens = _tokens_with_spans(text, span.start, span.end)
+        for position in range(len(tokens)):
+            token = tokens[position][0]
+            if token not in _PASSIVE_AUXILIARIES:
+                continue
+            cursor = position + 1
+            skipped = 0
+            while cursor < len(tokens) and skipped < 2 and tokens[cursor][0] in _PASSIVE_ADVERBS:
+                cursor += 1
+                skipped += 1
+            if cursor < len(tokens) and _is_past_participle(tokens[cursor][0]):
+                first = position
+                if position > 0 and tokens[position - 1][0] in _PASSIVE_PHRASE_LEAD:
+                    first = position - 1  # "has been adopted" / "can be mapped"
+                phrase_start = tokens[first][1]
+                phrase_end = tokens[cursor][2]
+                hits.append(PassiveHit(
+                    sentence=span,
+                    phrase_start=phrase_start,
+                    phrase_end=phrase_end,
+                    phrase=text[phrase_start:phrase_end],
+                    participle=tokens[cursor][0],
+                ))
+                break
+            unresolved += 1
+    return hits, unresolved
+
+
+def detect_passive_spans(text: str) -> tuple[list[PassiveHit], int]:
+    """Public helper: passive hits of a whole text plus the unresolved count.
+
+    Kept in sync with the metric by construction - M-PAS-09 calls this very
+    function, and pas_spotcheck.py uses it to draw its samples, so the sampled
+    universe is exactly what the metric counts.
+    """
+    return _detect_passive(text, split_sentences(text))
+
+
+def _metric_pas09(text: str, sentences: Sequence[Span]) -> dict[str, Any]:
+    """M-PAS-09: passive SENTENCE ratio, with PHRASE-level evidence.
+
+    value / n / denominator are computed exactly as before (one passive
+    sentence per sentence, however many phrases it contains); the evidence
+    sample points at the passive verb phrase, not at the whole sentence, so a
+    third party can judge whether the match itself is correct.
+    """
+    hits, unresolved = _detect_passive(text, sentences)
+    n_sentences = len(sentences)
+    warnings: list[str] = []
+    if n_sentences == 0:
+        warnings.append("M-PAS-09: no sentence containing a letter was detected; value is undefined")
+        value = None
+    else:
+        value = len(hits) / n_sentences
+    if unresolved:
+        warnings.append(
+            "M-PAS-09: %d auxiliary occurrence(s) were not resolved to a past participle "
+            "(copula or adjective reading) and are reported as n_unresolved" % unresolved
+        )
+    evidence = _evidence([(hit.phrase_start, hit.phrase_end) for hit in hits], text, len(hits))
+    return _metric("M-PAS-09", value=value, n=len(hits), denominator=n_sentences,
+                   unit=_UNIT_RATIO, evidence=evidence, warnings=warnings,
+                   n_unresolved=unresolved, evidence_target="passive_phrase_span",
+                   n_phrases=sum(1 for _ in hits))
+
+
+def _nominalization_bases(token: str) -> list[str]:
+    """Candidate base spellings for a token (plural normalisation)."""
+    variants: list[str] = [token]
+    if token.endswith("ies") and len(token) > 4:
+        variants.append(token[:-3] + "y")
+    elif token.endswith("es") and len(token) > 3:
+        variants.append(token[:-2])
+    elif token.endswith("s") and len(token) > 3:
+        variants.append(token[:-1])
+    return variants
+
+
+def _stem_to_verb_candidates(stem: str) -> set[str]:
+    """Frozen stem -> verb-base restoration candidates (see the module docstring)."""
+    candidates = {stem, stem + "e", stem + "y", stem + "te", stem + "ate",
+                  stem + "de", stem + "t"}
+    if stem and stem[-1] in "aeiou":
+        candidates.add(stem[:-1])
+        candidates.add(stem[:-1] + "e")
+        candidates.add(stem[:-1] + "y")
+    if stem.endswith("ica") and len(stem) > 3:
+        candidates.add(stem[:-3] + "y")
+    if stem.endswith(("p", "b")) and len(stem) > 1:
+        candidates.add(stem[:-1] + "be")  # description -> descrip -> describe
+    if stem.endswith("i"):
+        candidates.add(stem + "ze")  # recognition -> recogni -> recognize
+    return candidates
+
+
+def _nominalization_match(token: str, suffixes: Sequence[str],
+                          verb_bases: frozenset[str],
+                          denylist: frozenset[str]) -> tuple[bool, str]:
+    for variant in _nominalization_bases(token):
+        if variant in denylist:
+            return False, ""
+        for suffix in suffixes:
+            if not variant.endswith(suffix) or len(variant) <= len(suffix):
+                continue
+            stem = variant[: -len(suffix)]
+            if _stem_to_verb_candidates(stem) & verb_bases:
+                return True, stem
+    return False, ""
+
+
+def _metric_nom10(text: str, sentences: Sequence[Span], suffixes: tuple[str, ...],
+                  verb_bases: tuple[str, ...], denylist: tuple[str, ...]) -> dict[str, Any]:
+    suffix_set = tuple(sorted({str(entry).strip().lower() for entry in suffixes if str(entry).strip()}))
+    base_set = frozenset(
+        str(entry).strip().lower() for entry in verb_bases if str(entry).strip()
+    )
+    deny_set = frozenset(
+        str(entry).strip().lower() for entry in denylist if str(entry).strip()
+    )
+    hits: list[tuple[int, int]] = []
+    if suffix_set and base_set:
+        for span in sentences:
+            for token, start, end in _tokens_with_spans(text, span.start, span.end):
+                matched, _ = _nominalization_match(token, suffix_set, base_set, deny_set)
+                if matched:
+                    hits.append((start, end))
+    warnings: list[str] = []
+    if not suffix_set:
+        warnings.append("M-NOM-10: nominalization_suffixes lexicon is empty; the metric is 0 by construction")
+    if not base_set:
+        warnings.append("M-NOM-10: nominalization_verb_bases lexicon is empty; the metric is 0 by construction")
+    if not deny_set:
+        warnings.append("M-NOM-10: nominalization_denylist lexicon is empty; pseudo-nominalizations are not filtered")
+    return _rate("M-NOM-10", len(hits), len(tokenize(text)), _UNIT_RATIO,
+                 _evidence(hits, text, len(hits)), warnings,
+                 suffixes=suffix_set, n_denylist=len(deny_set))
+
+
+def _tense_counts(text: str, sentences: Sequence[Span],
+                  verb_bases: Iterable[str]) -> tuple[list[tuple[int, int]], int, int, int]:
+    third_person = _build_third_person_index(verb_bases)
+    present_hits: list[tuple[int, int]] = []
+    present = 0
+    past = 0
+    unresolved = 0
+    for span in sentences:
+        for token, start, end in _tokens_with_spans(text, span.start, span.end):
+            if token in _MODALS or token in _TENSELESS_BE:
+                unresolved += 1
+            elif token in _PRESENT_AUXILIARIES:
+                present += 1
+                present_hits.append((start, end))
+            elif token in _PAST_AUXILIARIES or token in _IRREGULAR_PAST:
+                past += 1
+            elif len(token) >= 4 and token.endswith("ed") and token not in _ED_ADJECTIVE_DENYLIST:
+                past += 1
+            elif token in _IRREGULAR_PRESENT:
+                present += 1
+                present_hits.append((start, end))
+            else:
+                base = third_person.get(token)
+                if base and base not in _AMBIGUOUS_NOUN_VERBS:
+                    present += 1
+                    present_hits.append((start, end))
+    return present_hits, present, past, unresolved
+
+
+def _metric_tense28(text: str, sentences: Sequence[Span],
+                    verb_bases: Iterable[str]) -> dict[str, Any]:
+    present_hits, present, past, unresolved = _tense_counts(text, sentences, verb_bases)
+    denominator = present + past
+    warnings: list[str] = []
+    if unresolved:
+        warnings.append(
+            "M-TENSE-28: %d verb-like token(s) are tense-ambiguous (modal or be/been/being) "
+            "and are reported as n_unresolved; they are excluded from the denominator" % unresolved
+        )
+    return _rate("M-TENSE-28", present, denominator, _UNIT_RATIO,
+                 _evidence(present_hits, text, present), warnings,
+                 n_unresolved=unresolved, n_present=present, n_past=past)
+
+
+# ---------------------------------------------------------------------------
+# Public entry point
+# ---------------------------------------------------------------------------
+
+def compute_text_metrics(text: str, bundle: Any) -> dict[str, dict[str, Any]]:
+    """Compute every frozen metric for one text.
+
+    The bundle is duck-typed: it needs the attributes hedge, booster,
+    connectors (mapping with keys contrastive / causal / result),
+    nominalization_suffixes, nominalization_verb_bases, nominalization_denylist,
+    academic_words and stopwords, each exposing an entries tuple of lower-case
+    strings.  No import of lexicon_loader happens here.
+    """
+    if not isinstance(text, str):
+        text = ""
+    sentences = split_sentences(text)
+    sentence_counts = [len(tokenize(span.text)) for span in sentences]
+    tokens = tokenize(text)
+    token_spans = [(start, end) for _, start, end in _tokens_with_spans(text)]
+    n_tokens = len(tokens)
+
+    hedge_entries = _entries(bundle, "hedge")
+    booster_entries = _entries(bundle, "booster")
+    contrastive_entries = _connector_entries(bundle, "contrastive")
+    causal_entries = _connector_entries(bundle, "causal")
+    result_entries = _connector_entries(bundle, "result")
+    academic_entries = _entries(bundle, "academic_words")
+    verb_bases = _entries(bundle, "nominalization_verb_bases")
+
+    metrics: dict[str, dict[str, Any]] = {}
+    metrics["M-SLEN-01"] = _metric_slen01(text, sentences, sentence_counts)
+    metrics["M-LSF-16"] = _metric_lsf16(text, sentences, sentence_counts)
+    metrics["M-MTLD-02"] = _metric_mtld02(text, tokens, token_spans)
+
+    hedge_hits = _match_entries(text, sentences, hedge_entries)
+    hedge_warnings = []
+    if not hedge_entries:
+        hedge_warnings.append("M-HED-14: hedge lexicon is empty; the metric is 0 by construction")
+    metrics["M-HED-14"] = _rate("M-HED-14", len(hedge_hits), n_tokens, _UNIT_RATIO,
+                                _evidence(hedge_hits, text, len(hedge_hits)),
+                                hedge_warnings, n_lexicon_entries=len(hedge_entries))
+
+    booster_hits = _match_entries(text, sentences, booster_entries)
+    booster_warnings = []
+    if not booster_entries:
+        booster_warnings.append("M-BOO-15: booster lexicon is empty; the metric is 0 by construction")
+    metrics["M-BOO-15"] = _rate("M-BOO-15", len(booster_hits), n_tokens, _UNIT_RATIO,
+                                _evidence(booster_hits, text, len(booster_hits)),
+                                booster_warnings, n_lexicon_entries=len(booster_entries))
+
+    components: list[tuple[str, list[tuple[int, int, int]], tuple[str, ...]]] = [
+        ("M-CONN-30c", _match_entries(text, sentences, contrastive_entries), contrastive_entries),
+        ("M-CONN-30k", _match_entries(text, sentences, causal_entries), causal_entries),
+        ("M-CONN-30r", _match_entries(text, sentences, result_entries), result_entries),
+    ]
+    component_records: dict[str, dict[str, Any]] = {}
+    for spec, hits, entries in components:
+        warnings: list[str] = []
+        if not entries:
+            warnings.append(f"{spec}: connector lexicon group is empty; the metric is 0 by construction")
+        component_records[spec] = _rate(spec, len(hits), n_tokens, _UNIT_PER_1000,
+                                        _evidence(hits, text, len(hits)), warnings,
+                                        scale=1000.0, n_lexicon_entries=len(entries))
+    for spec, _, _ in components:
+        metrics[spec] = component_records[spec]
+
+    all_connector_hits = sorted(hit for _, hits, _ in components for hit in hits)
+    component_values = [component_records[spec]["value"] for spec, _, _ in components]
+    total_n = sum(len(hits) for _, hits, _ in components)
+    total_warnings: list[str] = []
+    if n_tokens <= 0:
+        total_warnings.append(
+            "M-CONN-30: denominator is 0 (no alpha token in the input); value is undefined"
+        )
+        total_value = None
+    else:
+        component_defined = all(value is not None for value in component_values)
+        total_value = round(sum(component_values), _ROUND_DIGITS) if component_defined else None
+        if total_value is None:
+            total_warnings.append("M-CONN-30: at least one component is undefined; value is undefined")
+    metrics["M-CONN-30"] = _metric(
+        "M-CONN-30", value=total_value, n=total_n, denominator=n_tokens, unit=_UNIT_PER_1000,
+        evidence=_evidence(all_connector_hits, text, total_n),
+        warnings=total_warnings,
+        components={
+            spec: {"value": component_records[spec]["value"], "n": component_records[spec]["n"]}
+            for spec, _, _ in components
+        },
+    )
+
+    academic_hits = _match_entries(text, sentences, academic_entries)
+    academic_warnings = []
+    if not academic_entries:
+        academic_warnings.append("M-AWR-03: academic_words lexicon is empty; the metric is 0 by construction")
+    metrics["M-AWR-03"] = _rate("M-AWR-03", len(academic_hits), n_tokens, _UNIT_RATIO,
+                                _evidence(academic_hits, text, len(academic_hits)),
+                                academic_warnings, n_lexicon_entries=len(academic_entries))
+
+    metrics["M-PAS-09"] = _metric_pas09(text, sentences)
+
+    metrics["M-NOM-10"] = _metric_nom10(
+        text, sentences,
+        _entries(bundle, "nominalization_suffixes"),
+        verb_bases,
+        _entries(bundle, "nominalization_denylist"),
+    )
+
+    metrics["M-TENSE-28"] = _metric_tense28(text, sentences, verb_bases)
+
+    return {metric_id: metrics[metric_id] for metric_id in METRIC_IDS if metric_id in metrics}
+
+
+__all__ = [
+    "TEXT_METRICS_VERSION",
+    "METRIC_IDS",
+    "Span",
+    "split_sentences",
+    "tokenize",
+    "mtld",
+    "compute_text_metrics",
+    "PassiveHit",
+    "detect_passive_spans",
+]
+
+

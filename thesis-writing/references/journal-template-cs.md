@@ -1,6 +1,6 @@
 # 期刊/会议论文章节骨架模板（CS / 工程类）
 
-本文件**不是固定模板**，而是骨架选择器。`profile_papers.py` 生成的 `_domain_profile.json` 中的 `section_skeleton` 字段会指出该领域最常用的骨架；写作时应优先采纳频次最高的骨架，再根据本文贡献微调。
+本文件**不是固定模板**，而是骨架选择器。`paper-metrics` 技能的 `profile_papers.py` 生成的 `_domain_profile.json` 中的 `section_skeleton` 字段会指出该领域最常用的骨架；写作时应优先采纳频次最高的骨架，再根据本文贡献微调。
 
 ## 三种常见 CS 骨架
 

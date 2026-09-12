@@ -49,7 +49,7 @@ papers/              paper-conversion/         paper-merged/           paper-sum
 │       ├── images/                    # 从两引擎复制的 Figure 图片（自包含）
 │       ├── _MERGED.md                 # 合并版 Markdown
 │       ├── _DIFF.md                   # 差异对照
-│       └── _META.json                 # 转换元数据
+│       └── _META.json                 # 转换元数据（含 pdf_sha256 + engine_versions 溯源）
 └── paper-summaries/                   # 阶段3: 文献总结 → git 跟踪
     └── <stem>.md                      # 结构化总结（含期刊等级）
 ```
@@ -101,6 +101,9 @@ paper_reader.py papers/2605.05208.pdf --pages 0-4
 
 # 资源限制
 paper_reader.py papers/ --batch --resume --max-workers 1 --gpu-fraction 0.5
+
+# 给"已转换过"的语料回填溯源信息（不重跑任何引擎）
+paper_reader.py papers/ --backfill-meta
 ```
 
 ## 流水线状态文件
@@ -159,6 +162,36 @@ paper_reader.py papers/ --batch --resume --max-workers 1 --gpu-fraction 0.5
 | | `skipped` | 因上游失败而跳过 |
 | | `failed` | 本阶段执行失败 |
 | | `interrupted` | 被 Ctrl+C 中断 |
+
+## 溯源字段（_META.json）
+
+每篇转换完成时写入 `_META.json`，供上层（如 `thesis-writing` 领域画像器）判断**漂移来自哪一版引擎**——缺这些字段时上层只能报"引擎版本未记录"。
+
+| 字段 | 含义 |
+|---|---|
+| `pdf_sha256` | 源 PDF 完整 SHA-256；算不出写 `null`（原因见 `pdf_sha256_note`） |
+| `engine_versions` | 固定含 `marker` / `mineru` / `torch` / `cuda` / `python` 五个键，取不到写 `null`（**不省略键**） |
+| `engine_versions_source` | `conversion_time`（转换时实测）\| `current_env_estimate`（回填估计）\| `unavailable`（探测失败） |
+| `engine_versions_note` | 失败原因或回填说明；成功为 `null` |
+| `pdf_sha256_note` | 源 PDF 定位/失败说明；正常为 `null` |
+
+约束：
+
+- 版本探测**每批只做一次并缓存**（探测各引擎 venv 的解释器；WSL 下经桥接取 Windows 侧解释器）。
+- 单项失败只留 `null` + note，**绝不抛异常、绝不阻塞转换**（探测有超时上限，超时保留已产出的部分结果）。
+- `pdf_sha256` 复用预检阶段的读取，不额外全量读盘。
+
+### 回填既有语料（`--backfill-meta`）
+
+已转换过的语料重新转换代价过高（约 6 分钟/篇）。`--backfill-meta` 只补写缺失的溯源字段，**不重跑引擎**：
+
+```bash
+paper_reader.py <papers_dir> --backfill-meta
+```
+
+- 扫描 `<papers_dir>/paper-analysis/*/_META.json`（v1 语料）与 `<papers_dir>/paper-merged/*/_META.json`（v2 产物）。
+- **幂等**：只补缺失字段；已有 `conversion_time` 实测记录一律不动；内容无变化则不重写文件。
+- **诚实标注**：回填的版本写 `engine_versions_source = "current_env_estimate"`，note 明说"该论文转换于回填之前，版本为当前环境估计值，非转换时实测"；算不出源 PDF 时 `pdf_sha256 = null` 并在 note 说明。
 
 ## 预检（Phase 0：秒级，不启动 GPU）
 

@@ -157,7 +157,7 @@ def resolve_output_path(input_file, skill_name, default_name):
 
 **规则 D2**：新增功能（如合并单元格、新参数）**必须**同时新增测试，不可后补。
 
-**规则 D3**：测试**必须**纳入 `pyproject.toml` 的 `testpaths`。当前：`["word-extractor/scripts", "paper-reader/scripts", "thesis-writing/scripts"]`。
+**规则 D3**：测试**必须**纳入 `pyproject.toml` 的 `testpaths`。当前：`["word-extractor/scripts", "paper-reader/scripts", "paper-metrics/scripts", "thesis-writing/scripts", "unified-search/scripts"]`。
 
 ### 4.2 死代码与重复
 

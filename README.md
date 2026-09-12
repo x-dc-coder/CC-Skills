@@ -47,6 +47,7 @@
 ├── kimi-webbridge/        # 真实浏览器控制（daemon）
 ├── vision-workflow/       # 视觉任务编排（Vision MCP）
 ├── thesis-writing/  thesis-ref-check/  md-to-thesis-latex/   # 论文写作族
+├── paper-metrics/         # 论文写作特征指标层（纯 stdlib 确定性测量；Mode B 上游）
 │
 ├── paper-reader/          # ⚠️ 例外：持有独立重型 venvs
 │   └── venvs/             # marker ~5.1GB / mineru ~613MB（GPU 模型权重，不共享）
@@ -57,7 +58,7 @@
 
 | 类别 | 环境 | 适合的 Skill | 说明 |
 |------|------|-------------|------|
-| **A. 统一共享** | `.venv/` 符号链接 | diagram 聚合的脚本目录（diagram-er/ers/module/sequence/usecase）、db-skill、word-extractor、unified-search、github-workflow、thesis-writing | 依赖轻量（Pillow/sqlglot/psycopg2/pytest 等），共享一份 venv |
+| **A. 统一共享** | `.venv/` 符号链接 | diagram 聚合的脚本目录（diagram-er/ers/module/sequence/usecase）、db-skill、word-extractor、unified-search、github-workflow、thesis-writing、paper-metrics | 依赖轻量（Pillow/sqlglot/psycopg2/pytest 等），共享一份 venv |
 | **B. 独立重型** | skill 内 `venvs/` | paper-reader | 含 GPU 模型权重（5GB+），不可合并，`.gitignore` 已忽略 |
 | **C. 无统一 venv** | 系统/Windows Python 或二进制 | diagram-draft/flow、design-ui/diagram/dataviz（纯文档）、lark-cli（Node）、drawio-xml（npx）、officecli（二进制）、kimi-webbridge、md-to-thesis-latex、thesis-ref-check、wsl-windows-bridge | 无统一 venv（系统/Windows Python 或自带运行时） |
 

@@ -1,0 +1,105 @@
+{
+  "name": "connectors",
+  "version": "1.1",
+  "source": "PDTB 2.0 Annotation Manual (Prasad, Dinesh, Lee, Miltsakaki, Robaldo, Joshi & Webber, 2007; University of Pennsylvania), Appendix A - explicit connectives (selected subset, one primary sense class per entry). https://www.seas.upenn.edu/~pdtb/PDTBAPI/pdtb-annotation-manual.pdf",
+  "change": {
+    "from_version": "1.0",
+    "to_version": "1.1",
+    "scope": "connectors.json",
+    "reason": "precision: bare single-word connectives could not be disambiguated lexically, so the causal component was effectively a frequency count of 'as'",
+    "removed": {
+      "contrastive": [
+        "still",
+        "while",
+        "whilst",
+        "yet"
+      ],
+      "causal": [
+        "as",
+        "since",
+        "through"
+      ],
+      "result": [
+        "as such",
+        "so"
+      ]
+    },
+    "entry_count_before": {
+      "contrastive": 25,
+      "causal": 21,
+      "result": 20
+    },
+    "entry_count_after": {
+      "contrastive": 21,
+      "causal": 18,
+      "result": 18
+    },
+    "unchanged_other_files": true
+  },
+  "notes": "Release 1.1 curation policy: the bare single-word connectives still, while, whilst, yet (contrastive), as, since, through (causal) and so, as such (result) were REMOVED because their temporal / degree / spatial / prepositional senses dominate in research prose and they cannot be disambiguated lexically (measured on the 36-paper VRP-GPU corpus: bare 'as' alone produced 73.5% of the causal component, almost all of it 'such as' / 'as shown' / 'as well as'). Every multiword PDTB explicit variant (as a result of, as a consequence of, as a result, as a consequence, so that, because of, due to, owing to, ...) is retained and matched longest-first, non-overlapping. Only entries whose primary reading is the connectives sense remain, so the density is interpretable as explicit-connective density, not word frequency.",
+  "groups": {
+    "contrastive": [
+      "albeit",
+      "although",
+      "as opposed to",
+      "but",
+      "by contrast",
+      "conversely",
+      "despite",
+      "even if",
+      "even though",
+      "however",
+      "in comparison",
+      "in contrast",
+      "in spite of",
+      "instead",
+      "nevertheless",
+      "nonetheless",
+      "notwithstanding",
+      "on the contrary",
+      "on the other hand",
+      "though",
+      "whereas"
+    ],
+    "causal": [
+      "as a consequence of",
+      "as a result of",
+      "because",
+      "because of",
+      "by reason of",
+      "by virtue of",
+      "considering that",
+      "due to",
+      "given that",
+      "in that",
+      "in view of",
+      "insofar as",
+      "now that",
+      "on account of",
+      "on the grounds that",
+      "owing to",
+      "seeing that",
+      "thanks to"
+    ],
+    "result": [
+      "accordingly",
+      "as a consequence",
+      "as a result",
+      "consequently",
+      "for that reason",
+      "for these reasons",
+      "for this reason",
+      "hence",
+      "in consequence",
+      "it follows that",
+      "on this basis",
+      "resulting in",
+      "so that",
+      "that is why",
+      "thereby",
+      "therefore",
+      "thus",
+      "which is why"
+    ]
+  }
+}

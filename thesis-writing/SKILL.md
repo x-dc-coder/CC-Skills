@@ -103,23 +103,54 @@ description: >
 - 校验目录结构：每篇论文应有 `mineru/<id>/auto/<id>_content_list.json`（由 paper-reader 生成）
 - 若用户尚未转换 PDF，**提示用户先调用 paper-reader skill**；不要自行重跑
 
-#### A.2 运行 profiler
+#### A.2 运行 paper-metrics profiler（确定性 OBSERVED 层）
 ```bash
-cd ~/.claude/skills && uv run python thesis-writing/scripts/profile_papers.py \
+cd ~/.claude/skills && uv run python paper-metrics/scripts/profile_papers.py \
   --corpus "<user_paper_dir>/paper-analysis/" \
-  --out "<output_dir>/"
+  --out "<output_dir>/" [--verify]
 ```
-生成：
-- `<output_dir>/_domain_profile.json` — 机器可读（供阶段 C 消费）
-- `<output_dir>/_domain_profile.md` — 人类可读（供用户审阅）
+生成 **5 个产物**：
 
-profiler 是纯 Python 脚本（stdlib 实现），毫秒级处理数十篇论文，零 LLM token 成本。
+| 产物 | 用途 | 是否参与指纹 |
+|------|------|------------|
+| `_domain_profile.json` | 机器可读（供阶段 C 消费） | ✅ |
+| `_domain_profile.md` | 人类可读（由 JSON 确定性渲染，两者永不冲突） | ✅ |
+| `_per_paper_metrics.jsonl` | 每篇一行的审计轨迹（含输入 sha256） | ✅ |
+| `_corpus_summary.json` | 语料级聚合（可由 jsonl 机械重算） | ✅ |
+| `_run_meta.json` | 时间戳/主机/路径/耗时（**不参与指纹**） | ❌ |
 
-#### A.3 LLM 辅助精炼（唯一读正文的步骤）
+profiler 是纯 Python 脚本（stdlib 实现，**零第三方依赖、零 LLM token**），数十篇论文秒级完成。
+
+**可复现契约（必须遵守，不得绕过）**：
+- bit 级复现的范围是 `Canonical Document → OBSERVED 指标`；PDF → Canonical 由 paper-reader 负责，其漂移单独计量。
+- 同一语料同一路径连跑两次，上表 ✅ 的三个文件**逐字节相同**。用 `--verify` 自检（会重跑到临时目录逐字节比对，失败退出码 1）。
+- `_domain_profile.json` 的 `corpus.profiled[].inputs[].sha256` 是第三方复核数值的入口：给定同一输入产物即可复算。
+- `corpus.skipped` 显式记录被跳过的论文与原因（不再只打到 stderr）。
+
+#### A.2b 阅读指标与告警
+- `_corpus_summary.json → metrics` 每条含 `unit / n_valid / n_missing / median / p25 / p75 / iqr / ci95_*`，以及 `by_section`（分层，禁止跨章节混算）。
+- `corpus_warnings` 至少覆盖 `N_LT_5`（有效论文 <5）、`N_VALID_LT_3`、`IQR_ZERO`、`HIGH_MISSING`、`LENGTH_CORR`（指标与篇长 |ρ|>0.3）、`SECTION_SKEW`。
+- **`n_valid < 5` 时禁止向用户断言"该期刊偏好 X"**；只能呈现单篇表并说明样本不足。
+- 指标定义、公式、分母与"不能推断什么"见 `paper-metrics/references/metric-definitions.md`。
+
+#### A.3 LLM 辅助精炼（唯一读正文的步骤；**只出解释，不出数字**）
 读取 `_domain_profile.md` + 语料中**被引最多的 Top-N 篇论文**的 Abstract + Introduction（marker 路径，cap 在 ~15k tokens 内），补充：
 - 贡献声明句式（"Our main contributions are..." vs "In this paper, we..."）
 - 该领域的术语规范形式（如 VRP/CVRP/MDVRP/HCVRP 的使用习惯）
 - 必详写 vs 必略写的判断
+
+**红线**：本步骤的所有产出都属于 RECOMMENDED 层——**不得覆写、不得补充任何 `_corpus_summary.json` 里的 OBSERVED 数值**，也不得给出小数形式的"置信度"。OBSERVED 层唯一来源是 profiler 程序。
+
+#### A.3b 已知边界与未覆盖项（必须向用户如实说明，不得含糊）
+
+| 边界 | 现状 | 对结论的影响 |
+|------|------|------------|
+| 上游引擎版本未钉死 | MinerU/Marker 版本不在本 profile 内（记在 paper-reader 侧）；本 profile 只承诺 `Canonical Document → 指标` 逐字节可复现 | 换引擎版本可能改变数值 → 引用数值时必须同时给出 `corpus.id` 与输入 sha256 |
+| Unicode 规范化 | 输入文本按原字节使用，不做 NFC/NFD 归一 | 不同规范化形式视为**不同输入**（sha256 不同），不是不可复现 |
+| 契约的基准泄漏 | `_writing_contract.yaml` 的区间由**同一语料**分位生成；若评测文本与该语料同分布，属同源评估 | 不要把 gate 通过当作外部效度证明；需要留出时用 `--holdout`（见 E.2b） |
+| 长度混杂 | M-BOO-15 / M-CONN-30r 与篇长相关（\|ρ\|>0.3 触发 LENGTH_CORR） | 比较这两项时必须控制篇长，或改用 M-BOO-15 的按节分层值 |
+| 无 POS 层 | M-NOM-10 用「后缀∩冻结词基表∩denylist」，非词性标注，分母是 alpha token | 与文献中「内容词为分母」的数值**不可比**（paper-metrics/references/metric-definitions.md §7 已列） |
+| 语料级不可加 | 中位数不可加：median(total) ≠ Σ median(分量) | 只能逐篇求和后再取分位；禁止由分量中位数推总分位数 |
 
 #### A.4 用户确认门
 将 `_domain_profile.md` 呈现给用户："这份领域写作规范摘要是否准确？有无遗漏？" **这是关键的人工校验点**——后续整个初稿都依赖它。用户修改后重新生成 profile。
@@ -148,6 +179,8 @@ profiler 是纯 Python 脚本（stdlib 实现），毫秒级处理数十篇论�
 | 公式清单（objective-function / constraint / loss / attention / state-transition / complexity-bound） | `_domain_profile.json` → `equation_placement_patterns` |
 | 引文风格 | `_domain_profile.json` → `citation_style.detected` |
 | 参考文献数量目标 | `_domain_profile.json` → `reference_count.median ± 20%` |
+| **写作特征目标区间**（句长/段落长度/被动语态/hedge/booster/连接词/名词化/时态） | `_corpus_summary.json` → `metrics[].p25/p75`（**区间必须来自语料分位，禁止拍脑袋**；无 `evidence` 的指标不得进入规划书） |
+| 指标可信度与告警 | `_corpus_summary.json` → `corpus_warnings`（含 `N_LT_5` 时，规划书必须显式写明"样本不足，仅为参考"） |
 
 #### C.1 用户确认门（必须）
 用户可编辑规划书；编辑后回到此处再生成，确认后才进入阶段 D。
@@ -183,6 +216,25 @@ cd ~/.claude/skills && uv run python thesis-writing/scripts/check_markdown_spec.
 - **新增引用密度检查**：任一超过 500 词的章节若零引用，触发 `CITATION_DENSITY_LOW` WARN（期刊论文应密集引用前人工作）
 - 不强制 GB/T 7714 引文风格（由 profiler 决定）
 - 不强制 15000 字硬下限
+
+#### E.2b 写作契约生成与草稿校验（无 LLM，可复算）
+
+```bash
+# 1) 由语料分位生成写作契约（区间 = p25/p75，而非人工设定）
+cd ~/.claude/skills && uv run python paper-metrics/scripts/build_contract.py \
+  --summary <output_dir>/_corpus_summary.json --out <output_dir>/_writing_contract.yaml
+
+# 2) 用同一套指标计算校验草稿（输出 实际值 / 目标区间 / 偏差 / 行号）
+cd ~/.claude/skills && uv run python paper-metrics/scripts/validate_draft.py \
+  --contract <output_dir>/_writing_contract.yaml \
+  --draft <output_dir>/full-paper.md \
+  --json <output_dir>/_draft_validation.json
+```
+
+- 条款分 `gate`（数值型硬条款）与 `warn`；`iqr == 0` 的指标自动降级为 `warn` 且区间置空——**没有离散度就不该当硬标准**。
+- **禁止百分制总分**：只输出逐指标实际值、目标区间与偏差，任何"87/100"式综合分都不得出现（见审查报告 §3.6 的反例）。
+- 退出码：任一 `gate` 失败 → 1，便于接进 CI 或二次修订循环。
+- 校验器与 profiler（均在 `paper-metrics` 技能内）共用 `text_metrics.py`，因此草稿侧与语料侧的口径**不可能漂移**。
 
 #### E.3 补充确认
 - 占位符残留检查（同 Mode A）

@@ -1,0 +1,527 @@
+# paper-metrics 指标定义文档（I7）
+
+> **地位**：本文件是 OBSERVED 层指标的**人读定义事实源**；机器读事实源是 `paper-metrics/scripts/text_metrics.py` 的常量与 `data/lexicons/v1/*.json` 的词表（含 `sha256`）。
+> **唯一规范**：`/mnt/e/Google_Download/Paper-Reader_设计审查/_impl/INTERFACES.md`（冻结版 v1）。与之冲突时以 INTERFACES.md 为准，并在此文件的 §7 记录差异。
+> **设计依据**：`00-审查报告.md` §7-§8（I1-I9 + I12）；文献依据见同目录 `03-工具与依据.md`。
+> **版本**：文档随 `metric_spec_version` 冻结。改定义必须同时改 `metric_spec_version`；只改阈值/词表必须同时更新词表 `sha256`。
+
+---
+
+## 0. 适用范围与不适用边界（E5）
+
+| 维度 | 本指标体系成立 | 不成立 / 禁止使用 |
+|---|---|---|
+| 语言 | **英文**论文（token 规则 `_ALPHA_TOKEN_RE` 只吃 ASCII 字母） | 中文学位论文：中文汉字不被匹配，分母塌缩为 0，所有 ratio 类指标为 `None` 或 0；**不得**把该结果读作「中文写作 hedge 为 0」 |
+| 输入 | MinerU `*_content_list.json`（Canonical Document，冻结 + sha256） | PDF 直读；`marker/*.md` 只参与 `M-CITSTYLE-50` / `M-CONTRIB-52` 两条，不参与句/词级指标 |
+| 层 | **仅 OBSERVED**（确定性程序产出） | 本文件不定义任何 INFERRED / RECOMMENDED 指标；语步（move）、引用功能（citation function）、论证图一律不在本层，本期不实现 |
+| 依赖 | 纯 stdlib（json/re/pathlib/statistics/collections），无模型、无 NLP 库、零 LLM 调用 | 引入 spaCy/torch/numpy 后本文件的确定性承诺失效，必须重新立项并记录模型 `sha256` |
+| 可复现承诺边界 | **Canonical Document 到 OBSERVED 指标**（逐字节可重放） | 「PDF 到 Canonical」是上游引擎漂移，单独计量，不混进本承诺 |
+| 比较域 | 同一 `metric_spec_version` + 同一词表 `fingerprint()` 的产物之间 | 跨词表版本、跨 `metric_spec_version`、跨 01-指标契约.md 的原始示例数（0.18/0.21/0.094/0.109 等）**一律不可比**，见 §7 |
+| V7 引擎漂移对照 | — | **未实现**：profile 主链不含任何 drift 数值；marker_markdown 的 sha256 虽被记录但**无任何指标读取它**；仅有 `ENGINE_VERSION_NOT_RECORDED` 告警（漂移可发现、不可归因）。可选加分项见 §5.2 |
+| **M-PAS-09 短语级精确率** | — | **已完成（N=40，agent 裁决）**：evidence span 已改为**被动短语 span**（助动词+可选副词+过去分词，含 has been / can be 前置），抽检**精确率 20/20 = 100%，95% Wilson CI 下限 0.839**；负例半边（10 条"有助动词但未判定"边界句 + 10 条无助动词句）漏报 **0/20**。**限制：agent 裁决非专家金标准，结论只覆盖这 40 条**，见 impl-baseline/_pas_spotcheck.md |
+| **正文块内关键词行 / 行内数学式** | — | **本轮未修（已知边界）**：落在正文块内的关键词行与行内 LaTeX 仍参与分句，从而进入 M-SLEN-01 / M-LSF-16 / M-PAS-09 的分母。复现锚点（reslice 已逐字符核对）：① `2020 - PSO Hyper-heuristic for Dynamic VRP [Okulewicz-Mandziuk]` span [901, 1091]（Keywords 行）；② `2023 - Approximation Algorithms for CVRP - Survey [Chen]` span [323, 469]（行内公式）。真实语料 M-PAS-09 的 170 条证据抽样中含 **10 条**此类污染 |
+| 统计效力 | `n_valid >= 5` 才允许讨论分布 | `n_valid < 5` 时 `_corpus_summary.json` 记 `N_LT_5` 告警；`n_valid == 0` 时统计置 `null`，**禁止**输出期刊级结论 |
+
+### 0.1 V7（PDF→Canonical 引擎漂移）现状：**未实现**
+
+本轮**没有**实现 Marker 与 MinerU 的双链指标漂移对照。profile 侧只有两件事：① 每篇输入产物的 sha256（可寻址）；② `ENGINE_VERSION_NOT_RECORDED` 语料告警（暴露 paper-reader 的 `_META.json` 未记引擎版本）。因此「PDF→Canonical」的漂移**既没有数值、也无法归因到引擎版本**——§0 第 5 行的确定性承诺边界依然只覆盖 Canonical→指标。
+
+**可选加分项**：`baseline_eval.py --drift-probe N`（默认关闭）提供文本层三项指标的探针，实测与局限见 §5.2。**未做部分**：结构类指标（章节骨架/图表公式落位）在 Marker 侧无对应物；按引擎版本分层的漂移；PDF 原点到 Canonical 的端到端漂移。
+
+---
+
+## 1. 读法：每个 OBSERVED 数值的固定契约
+
+text_metrics.compute_text_metrics(text, bundle) 的返回值为 {metric_id: metric_dict}，metric_dict **必须**含下列字段（缺一即契约违规）：
+
+```json
+{
+  "value": 0.0184,
+  "n": 14,
+  "denominator": 761,
+  "unit": "ratio",
+  "state": "OBSERVED",
+  "method": "rule",
+  "metric_spec": "M-HED-14",
+  "evidence": {
+    "count": 14,
+    "sample": [{"span": [1024, 1031], "excerpt": "suggests"}]
+  },
+  "warnings": []
+}
+```
+
+- `value`：唯一数值。为 NaN 时必须输出 `null` 并在 `warnings` 写明原因（JSON 中不得出现 NaN）。浮点统一 `round(x, 6)`。
+- `n`：分子的原始计数（整数）。`denominator`：分母的原始计数（整数）。
+- `state` 恒为 `"OBSERVED"`；`method` 恒为 `"rule"`（本阶段无统计/模型路径）。
+- `evidence.count`：命中总数，**等于** `n`（ratio/密度类）。`evidence.sample` 最多 5 条；`excerpt` 最多 80 字符。
+- **span 坐标系**：`[start, end]` 是相对**本次入参 text**（单篇论文全文拼接串）的 char 偏移，不是文件偏移、不是块内偏移。第三方回指原文的方法：把该篇 `_per_paper_metrics.jsonl` 对应行的 `inputs[].artifact` 原文按同一条拼接规则（按块序、块间以换行连接）重建字符串，再按下面的截断规则切片比对。
+- `warnings`：例如 `mtld_short_text`、`no_evidence`、`unresolved_tense`。告警**不改变** `value`，只声明解释边界。
+
+### 1.1 证据抽样与复现规则（冻结，v1.1）
+
+- **抽样规则**：单篇论文内**按文档序取前 5 个命中 span**（`_EVIDENCE_SAMPLE_MAX = 5`）；基线核验器（`baseline_eval.py`）再从中**每指标最多取 3 条**（`MAX_EVIDENCE_PER_METRIC = 3`）做回指。抽样只依赖内容，**不含随机数、不含时间**，故同一输入必得同一 Evidence 列表。
+- **匹配规则**：多词词条**最长匹配、不重叠**，单个 span 记 1 次；全部小写匹配；同一 span 不被重复计数（hedge/booster 交集为空、connectors 三组互斥，均由 `load_lexicons` 硬校验）。
+- **截断规则（易错点）**：`excerpt == text[start:end][:80]`，即**先切片、后截断 80 字符**。**不得**用 `text[start:end] == excerpt` 全切片比较——长 span 会被合法截断，全切片比较会把正确数据判成错误（曾导致回指率被误报为 0.769）。
+- **块索引型证据**（`M-PCNT-25`）：形态为 `{block_index, section, words, excerpt}`，**没有 span**；核验方式 = 该论文 content_list.json 的 `blocks[block_index]` 存在且其文本以 `excerpt` 开头。两种形态**合并**计算回指率。
+- **证据本身必须可复现**：`evidence.count == n`，且每条证据必须能由原文逐字符重放（span 型用上面的截断规则，块索引型用块文本前缀）。**无法回指的数值不得通过 OBSERVED 层验收**：基线报告以回指率为 gate（目标 >= 0.95，真实语料实测 1.000）。
+- **第三方复算命令**：
+  `cd ~/.claude/skills && uv run python paper-metrics/scripts/baseline_eval.py --corpus <corpus> --out <out>`
+  报告 `_baseline_report.json` 的 `evidence_samples[]` 逐条给出 `span` / `block_index`、`source_slice`（实测切片）与 `verified` 布尔值。
+
+### 1.2 Canonical 文本重建规则（完整、可执行 —— 回指的前置条件）
+
+**为什么必须写死**：evidence 的 `span` 是相对 `canonical_text()` 的 char 偏移。若第三方按更朴素的规则重建（例如「所有 text 块按块序用换行拼接」），坐标系会整体错位——同一篇论文官方 **5831** token，朴素重建得 **6115** token（+284），回指必然全错。**回指率只有在重建规则完全一致时才有意义。**
+
+**规则（逐条，按此顺序）**
+
+1. 读该篇 `mineru/**/*_content_list.json`（排除文件名含 `_v2` 者；有多份时取排序后第一份），**按文件顺序**遍历块。
+2. **标题块**：`type == "text"` 且 `text_level` 为整数且 >= 1 ⇒ 该块是标题，**永不计入正文**；其中 `text_level == 2` 的标题会**切换当前章节**。
+3. **running head**：`type == "header"` 的块也**永不计入正文**；仅当其标题解析为 references / bibliography 时，把当前章节切到 references（MinerU 会用 header 型块输出参考文献标题）。
+4. **正文块**：`type == "text"`，且 `text.strip()` 非空。
+5. **章节归属**：当前章节 = 最近的前置 level-2 标题解析出的 canonical 标签；第一个 level-2 标题**之前**的所有块归属 `front_matter`。
+6. **排除非正文章节**：canonical 标签属于 {references, appendix, acknowledgments, keywords, front_matter} 的块**一律丢弃**。`front_matter` 在排除集内 ⇒ 标题页、作者行、未打标题的摘要都**不进入**正文。
+7. **canonical 标签解析顺序（关键）**：① 精确匹配表（`_CANONICAL_MAP`）→ ② **有序**关键词表（`_SECTION_KEYWORD_PATTERNS`）取**首个**命中 → ③ 否则保留归一化标题本身。**正文类关键词一律排在非正文关键词之前**，所以标题同时含两类词时按**正文**处理：例如 "Related Work and References" 解析为 `related_work`（正文），**不得**因为含 "reference" 就把整节丢掉。
+8. **标题归一化**：剥掉编号前缀（`1` / `1.2` / `Section 4:` / `I.` / `第X章` / `(1)`）与尾部标点，然后转小写。
+9. **拼接**：保留下来的块用**两个换行符**（LF x 2）连接。
+10. **NFC 归一**：对拼接**之后**的整串做 `unicodedata.normalize("NFC", ...)`，恰好一次（拼接前归一化会得到不同结果）。
+11. **分词**：取全部匹配 `[A-Za-z][A-Za-z'-]*` 的子串并转小写；其个数即 `M-SLEN-01.denominator`。
+
+**最小示例**：见随交付附带的独立实现 `impl-baseline/_rebuild_check.py` 的 `rebuild()` —— 概括即「遍历块 → level-2 标题切章节 → 跳过标题块与非正文块 → 两个换行符连接 → NFC」。
+
+**独立可执行核对**（该脚本**不 import 仓库任何模块**，故为真正的第二条路径）：
+
+    cd ~/.claude/skills && uv run python '<交付目录>/_rebuild_check.py' --corpus '/mnt/e/AllProjects202601/M-PCA/VRP-GPU课题分析/paper-analysis' --jsonl /tmp/prof/_per_paper_metrics.jsonl
+
+**自检点（冻结值，终检实测）**
+
+- 全语料 **34/34 篇 token 数逐篇精确相等**（脚本 exit 0）。
+- 单篇锚点：`2018 - GPU Ising Computing for CO [Cook et al]` → 重建 token 数 **5831**，等于官方 `M-SLEN-01.denominator`；重建文本 **35,867** 字符。
+- **反例警戒**：漏掉第 6 条（不排除 `front_matter`）时该篇重建得 **6115** token（+284）—— 这正是「按文档复算却对不上」的成因。
+- 一处必须照抄的实现细节：某篇的标题 "6 Acknowledge" 解析为标签 `acknowledge`（**不在**排除集内），故该节**被计入正文**。独立重建器若不照此处理，就会出现 -47 token 的偏差。
+
+---
+
+## 2. 冻结常量与版本总表
+
+| 常量 / 文件 | 冻结值 | 版本 | 依据 |
+|---|---|---|---|
+| `TEXT_METRICS_VERSION` | `"1.0"` | - | INTERFACES.md §3 |
+| `LEXICON_VERSION` | `"1.0"` → 现行 **1.1**（connectors 去歧义：剔除 as / so / still / since） | 词表 8 文件 | INTERFACES.md §2 |
+| connectors.json sha256 | `c12461c58d0f75ab523c410547e90affb2a6553bc198343682767cc7b735b19b` | v1.1 | 终锁实测 |
+| `schema_version`（profile 契约） | `"2.0"` | - | INTERFACES.md §4.1 |
+| `_LONG_SENTENCE_WORDS` | `40` | - | 01-指标契约 M-LSF-16 |
+| `_MTLD_TTR_THRESHOLD` | `0.720` | - | McCarthy & Jarvis 2010；TAALED 源码硬编码 |
+| `_MTLD_MIN_FACTOR` | `10` | - | 同上 |
+| `_ALPHA_TOKEN_RE` | `[A-Za-z][A-Za-z'-]*`（小写化后匹配） | - | INTERFACES.md §3 |
+| CI95 临界值 | `n-1=1..30` 内置 t 表；`n>=30` 用 `1.96` | - | INTERFACES.md §4.4 |
+| **语料级分位口径** | **nearest-rank，`idx = round(p*(n-1))`，不插值**；偶数 n 的 median 取两个中间观测的**较小者**（n=34、p=0.5 时 `round(16.5)=16` → v[16]） | 随 `schema_version 2.0`（顶层字段 `quantile_method = nearest_rank_no_interpolation`） | 冻结实现 `profile_papers._percentile`；**与 statistics.median / numpy 默认线性插值不可互换**，引用 median 必须注明口径 |
+| 词表 hedge / booster | 各 >= 40 条，**交集必须为空** | v1 | Hyland 1998 / 2005 |
+| 词表 connectors | contrastive / causal / result 三组各 >= 15 条，**两两交集为空** | v1 | PDTB 2.0 Annotation Manual Appendix A |
+| `nominalization_suffixes` | `tion sion ment ness ity ance ence ancy ency ism ist`（11 个，不带连字符） | v1 | INTERFACES.md §2 |
+| `nominalization_verb_bases` | >= 150 条动词词基 | v1 | Biber & Gray 2011 |
+| `nominalization_denylist` | >= 60 条伪派生名词（section/station/mention/action/position/condition/mission/version/question/function 等） | v1 | 03-工具与依据.md §3.2 |
+| `academic_words` | >= 300 条（AWL 代表性子集） | v1 | Coxhead 2000 |
+| `stopwords` | >= 120 条英文功能词 | v1 | 通用 |
+
+**词表指纹**：`LexiconBundle.fingerprint()` = 对全部 `(name, sha256)` 排序后拼接再取 sha256；写入 `_domain_profile.json#/lexicons`。**指纹变化则全部词表类数值不可与旧产物比较**。
+
+---
+
+## 3. §3 表内 11 个 metric_id 的逐条定义
+
+每条固定 9 项：定义 / 公式 / 分子-分母-单位 / 依赖与版本 / 反映什么写作行为 / 不能推断什么 / 已知失效场景 / 复算路径 / 依据文献。
+
+> **语料级分位口径（全节适用）**：本节各指标的语料级 p25 / median / p75 一律采用 **nearest-rank、不插值**（见 §2 总表对应行）。第三方若用 `statistics.median` 或 numpy 默认线性插值重算，**14/14 的 median 都会对不上**（均值不受影响）。引用 median 必须注明此口径。
+
+### 3.1 `M-SLEN-01` 句长均值
+
+- **定义**：以规则分句 `split_sentences()` 切出的合格句为单位，统计句内 alpha token 数的均值；同时输出分布 `{median, p25, p75, std}`（均 round 6）。
+- **公式**：value = 词数 / 句数 = denominator / n
+- **分子 / 分母 / 单位**：分子 = 词数（记为字段 `denominator`）；分母 = 合格句数（记为字段 `n`）；单位 `words/sentence`。
+- **分位口径**：语料级 p25 / median / p75 用 nearest-rank、不插值（§2 总表）；n=34 时 median = v[16]（下中位数），**不是** `statistics.median` 的插值结果。
+- **口径陷阱（必读）**：本条是本契约中**唯一** value 不等于 n/denominator 的指标——字段语义被冻结为 n = 句数、denominator = 词数，故复算必须用 denominator/n。第三方若按「分子除以分母」的直觉读 n/denominator，会得到句/词（约 0.02 而非约 50）。这是 INTERFACES.md §3 表列的既定语义，不在实现层纠正，只在此显式声明。
+- **依赖与版本**：`split_sentences()`（缩写保护表：et al. / Fig. / Eq. / i.e. / e.g. / vs. / cf. / approx. / no. / Sec. / Ref.、方括号编号、小数、单字母缩写）+ `tokenize()`；二者随 `TEXT_METRICS_VERSION` 冻结。丢弃无字母 token 的碎片。
+- **反映什么写作行为**：句子平均信息打包量，以及长短交替的节奏（配合 std 与 p75-p25 的离散度一起看）。
+- **不能推断什么**：不能推断句子更难/更易读（句长与难度非线性）；不能推断作者水平；不能跨语言或跨领域直接比较（术语长度天然不同）。
+- **已知失效场景**：① 公式块/化学式被误分句会人为拉长句；② 双栏 PDF 阅读顺序错乱导致跨栏拼接成超长「句」；③ 表格题注被当正文句；④ Sec. 未进缩写保护表时会把「Sec. 4 shows」切成两句。
+- **复算路径**：对 evidence 抽样句人工数词数，与 value x n 一致；或对同一拼接串数总词数后除以 n。
+- **依据文献**：01-指标契约 M-SLEN-01（设计案行121-127）；句长属描述性计量，无独立效度主张；其解释边界受 Gibson 1998（DOI `10.1016/s0010-0277(98)00034-1`）关于句法加工负荷的限定。
+
+### 3.2 `M-LSF-16` 长句占比（>= 40 词）
+
+- **定义**：词数 >= `_LONG_SENTENCE_WORDS`（=40）的合格句占合格句总数的比例。
+- **公式**：value = 长句数 / 句数 = n / denominator
+- **分子 / 分母 / 单位**：分子 = 长句数（n）；分母 = 合格句总数（denominator，与 M-SLEN-01 同一集合）；单位 `ratio`。
+- **依赖与版本**：与 M-SLEN-01 **共用同一分句/分词实现**（禁止两套代码，否则两条指标会自相矛盾）；阈值 40 随 `TEXT_METRICS_VERSION` 冻结，改动必须 bump 版本。
+- **反映什么写作行为**：超长句的占比，即「一句塞入过多信息」的倾向；与句长均值互补（均值相同、长尾可不同）。
+- **不能推断什么**：不能推断可读性变差（长句可以是精确的条件句）；不能推断句法复杂度（本指标只看长度，不看嵌套）。
+- **已知失效场景**：① 阈值漂移（改成 35/45 会显著改变数值）；② M-SLEN-01 与 M-LSF-16 分句口径不一致时会出现「均值很小但长句很多」的矛盾产物，属契约违规；③ 参考文献条目被误当句子时会产生大量伪长句（由章节切分规避）。
+- **分位口径**：语料级 median 用 nearest-rank、不插值（§2 总表）；n=34 时取 v[16]。
+- **复算路径**：从逐句 token 数序列直接过滤 >= 40 再除以句数，无需任何词表；抽检 20 句。
+- **依据文献**：01-指标契约 M-LSF-16（设计案行989）。
+
+### 3.3 `M-MTLD-02` MTLD 词汇多样性
+
+- **定义**：Measure of Textual Lexical Diversity：按 token 顺序扫描，类型-形符比（TTR）降到阈值 0.720 以下即记一个「因子」；末尾不足一个因子的残余按比例计分。取**正向与反向的均值**（双向平均）。
+- **公式**：value = (正向 MTLD + 反向 MTLD) / 2，其中单向 MTLD = 总 token 数 / (完整因子数 + 尾因子比例)
+- **分子 / 分母 / 单位**：分子 = token 数（n）；分母 = 1（denominator = 1 为**非比率占位**，不表示分母为 1）；单位 `index`（无量纲）。
+- **依赖与版本**：`_MTLD_TTR_THRESHOLD = 0.720`、`_MTLD_MIN_FACTOR = 10`；bidirectional = True；分词用 `tokenize()`（小写 surface form，**不做 lemma**）。三者随 `TEXT_METRICS_VERSION` 冻结。
+- **短文本规则**：token 数 < 2 x `_MTLD_MIN_FACTOR` = 20 时 value = null 并附 warning（不得照报数值）。
+- **反映什么写作行为**：用词复用程度与术语重复策略——同一长度下，类型分布越慢饱和，值越高。
+- **不能推断什么**：**不能**把高 MTLD 读作「词汇丰富 = 写作好」（它只测类型分布，不测用词恰当性）；不能跨文本长度直接比较（MTLD 对长度敏感）；不能反映句法复杂度。
+- **已知失效场景**：① 未剔引文标记/图表题注则虚高；② 大小写与连字符口径不同则出现百分之几量级的漂移（本实现固定小写 + 保留内部连字符与撇号）；③ 只跑单向时值系统性偏高；④ 短于 20 token 的 section 不得输出数值。
+- **复算路径**：第三方用 `lexicalrichness`（pin 版本）或 R `mtldr` 复算，差异应为 0 或可归因于双向/单向与阈值定义；抽检 3 篇手工重算因子数。
+- **依据文献**：**McCarthy & Jarvis 2010**, *Behavior Research Methods* 42(2):381-392, DOI `10.3758/brm.42.2.381`（一手实现证据：TAALED 源码硬编码 0.720 / min=10 / 双向均值）。
+
+### 3.4 `M-HED-14` hedge（模糊限制语）span 占比
+
+- **定义**：命中**冻结 hedge 清单**的 span 数占 alpha token 数的比例。多词短语**最长匹配、不重叠、单 span 记 1 次**；全部小写匹配。
+- **公式**：value = hedge span 数 / alpha token 数 = n / denominator（**ratio，不乘 1000**）
+- **分子 / 分母 / 单位**：分子 = hedge span 数（n）；分母 = alpha token 数（denominator）；单位 **ratio**（与 INTERFACES §3 表一致；实测产物即此口径，例如某篇 value 0.007031 = n 41 / denominator 5831）。
+- **依赖与版本**：`data/lexicons/v1/hedge.json`（>= 40 条，source 必填、记 Hyland 出处与 sha256）；匹配规则随 `TEXT_METRICS_VERSION`。**清单不得由 LLM 扩充**。
+- **反映什么写作行为**：作者对断言强度与不确定性的**显性标示策略**——即「把话说满还是留余地」在词面上的痕迹。
+- **不能推断什么**：不能推断作者性格谨慎与否；不能推断研究可信度；不能把「hedge 少」读作「作者自信」（这是写作教学的流行误说）；本实现是 per-token ratio，与文献报告的 0.021 **同口径、可直接比较量级**（但仍不可跨词表比较）。
+- **已知失效场景**：① may 的「五月/人名」歧义、about 的介词义产生少量假阳性（本实现不做 POS 消歧，该风险由精确率抽检暴露）；② 多词 hedge 漏匹配导致漏计；③ 词表版本不明时数值不可复核（本实现强制 sha256 入产物）；④ hedge 与 booster 清单若重叠会双计（由 `load_lexicons` 的交集为空校验兜住）。
+- **复算路径**：仅凭 `evidence.sample[].span` 切片原文即可核对每一次命中；另可用 grep -o -i 逐词表条目复算；抽检 50 span 计算精确率（要求 >= 0.9，否则调词表并 bump 版本）。
+- **依据文献**：**Hyland 1998**, "Boosting, hedging and the negotiation of academic knowledge", *Text* 18(3), DOI `10.1515/text.1.1998.18.3.349`；**Hyland 2005**, "Stance and engagement", *Discourse Studies*, DOI `10.1177/1461445605050365`；Hyland 2005 *Metadiscourse*（章节 DOI `10.5040/9781350063617.0011`，附录词表）。03-工具与依据.md §3.1 判定：**仅可复现**，故必须随产物发布词表 sha256 + 匹配规则 + 分母口径。
+
+### 3.5 `M-BOO-15` booster（强势断言）span 占比
+
+- **定义**：命中**冻结 booster 清单**的 span 数占 alpha token 数的比例；与 hedge 完全对称（同样最长匹配、不重叠）。
+- **公式**：value = booster span 数 / alpha token 数 = n / denominator（**ratio，不乘 1000**）
+- **分子 / 分母 / 单位**：分子 = booster span 数（n）；分母 = alpha token 数（denominator）；单位 `ratio`（与 M-HED-14 同为 per-token ratio，可直接与文献 0.013 比较量级）。
+- **依赖与版本**：`data/lexicons/v1/booster.json`（>= 40 条，含 source 与 sha256）；**与 hedge 集合交集必须为空**（`load_lexicons` 硬校验，违反抛 `LexiconError`）。匹配规则随 `TEXT_METRICS_VERSION`。
+- **反映什么写作行为**：作者强化断言的显性策略（clearly / obviously / must / always / indeed / demonstrate / establish），与 hedge 合看可刻画「立场强度带」。
+- **不能推断什么**：不能论断正确性；不能推断作者自信程度；**不能**说「booster 多 = 差」（无任何效度依据支持该方向性结论）；不能把 hedge/booster 相除当「谨慎指数」。
+- **已知失效场景**：① must 的义务义与推断义不分；② clearly / obviously 的语用差异在词表层面不可分；③ 与 hedge 未互斥时同一 span 双计（由交集校验兜住）；④ 词表来源缺失时数值不可复核（故 source 为必填字段）。
+- **复算路径**：同 M-HED-14（char offset 切片 + 独立 grep）；另跑 hedge 与 booster 交集为空断言。
+- **依据文献**：**Hyland 1998**, DOI `10.1515/text.1.1998.18.3.349`（boosting 与 hedging 并列研究）；**Hyland 2005**, DOI `10.1177/1461445605050365`。03-工具与依据.md §3.1。
+
+### 3.6 `M-CONN-30` 连接词总密度（派生量）
+
+- **定义**：三类连接词（对比 + 因果 + 结果）命中总数占 alpha token 数的比例，换算为每千词密度。**总密度必须由三分量重算，不得独立统计**。
+- **公式**：value = (N_contrast + N_causal + N_result) / alpha token 数 x 1000
+- **恒等式（测试必须断言）**：value(M-CONN-30) 等于 value(30c) + value(30k) + value(30r)，容差 1e-6。
+- **舍入不闭合（已知，属契约的有意选择）**：总密度 = **三个已 round(6) 的分量之和再 round(6)**，并非由原始计数 n 直接算 ×1000。因此少数论文会出现 value(M-CONN-30) 与 n/denominator×1000 的微小差异（实测 34 篇中 2 篇，最大 1.33e-6）。**恒等式优先于「由原始计数直接算」**：第三方复算请**以分量之和为准**，不要用 n/denominator×1000 去卡 1e-6 容差。复算命令：`uv run python -c "import json;d=json.load(open('<out>/_corpus_summary.json'));m=d['metrics'];print(m['M-CONN-30c']['value']+m['M-CONN-30k']['value']+m['M-CONN-30r']['value']==m['M-CONN-30']['value'])"`（应输出 True）。
+- **分子 / 分母 / 单位**：分子 = 三类命中总数（n，三清单互斥故不重复计数）；分母 = alpha token 数（denominator）；单位 `per-1000-words`。
+- **依赖与版本**：`data/lexicons/v1/connectors.json`（groups 恰含 contrastive / causal / result 三组，各 >= 15 条，两两交集为空；loader 拆为 connectors/contrastive 等三个 Lexicon）；多词连接词最长匹配；source 记 PDTB 2.0。
+- **反映什么写作行为**：篇章衔接的**显性化密度**——作者把转折/因果/结果关系写成连接词，而非留给读者推断的倾向。
+- **不能推断什么**：不能推断逻辑连贯性（显性连接词多不等于论证好，也可能只是关系简单）；不能推断因果关系真实存在；不能推断读者理解度。
+- **已知失效场景**：① since 的时间义被计为因果；② as a result 归 result 而非 causal（若归错会破坏互斥）；③ thus / therefore 在 Method 中的过渡用法被计为结果标记；④ 原设计案示例数值本身不自洽（0.042+0.038+0.029 = 0.109，而总密度写 0.094），**禁止**用该示例数当基线，以本实现产物为准。
+- **复算路径**：核验恒等式（容差 1e-6）；按 `evidence.sample[].span` 切片抽检 30 个 span；三清单互斥性由单元测试保障。
+- **依据文献**：**PDTB 2.0 Annotation Manual**（免费 PDF：https://catalog.ldc.upenn.edu/docs/LDC2008T05/manual/pdtb-annotation-manual.pdf ；数据本体 LDC2008T05 属 LDC User Agreement、不可再分发；手册 Appendix A 明列 100 型 explicit connectives / 18459 tokens / 111 senses）。03-工具与依据.md §1.2(10)：这是**零成本获得可验证连接词表**的正解，不必购买 LDC 数据。
+
+#### 3.6.1 `M-CONN-30c` 对比类分量
+
+- **定义**：contrastive 组连接词命中数密度（however / whereas / in contrast / on the other hand / although 等）。
+- **公式**：value = N_contrast / alpha token 数 x 1000；分子 n = N_contrast，分母 = alpha token 数，单位 per-1000-words。
+- **依赖与版本**：同 M-CONN-30（共享 connectors.json 的 contrastive 组与同一最长匹配器）。
+- **反映**：论证转折的显性化程度。**不能推断**逻辑严密性。**失效**：句首与句中的 however 未区分（本实现不区分，属已声明边界）。
+- **复算路径**：按 span 切片抽检；核对三分量之和恒等式。
+- **依据文献**：PDTB 2.0 Manual Appendix A（转折类 sense 组）；01-指标契约 M-CCR-11。
+
+#### 3.6.2 `M-CONN-30k` 因果类分量
+
+- **定义**：causal 组连接词命中数密度（because / since / due to / owing to）。
+- **公式**：value = N_causal / alpha token 数 x 1000
+- **分子 / 分母 / 单位**：分子 = causal 组命中数（n = N_causal）；分母 = alpha token 数（denominator）；单位 `per-1000-words`。
+- **依赖与版本**：同 M-CONN-30（共享 connectors.json 的 causal 组与同一最长匹配器）。
+- **反映**：**显性因果衔接标记（explicit causal connective）的密度**——作者把因果/条件关系写成显式标记的习惯，**不代表**因果推理的质量。
+- **措辞修正（基于实测）**：本指标**不得**读作「因果衔接密度」或「因果推理强度」。① 早期词表（connectors v1.0）含高歧义词 **as / so / still / since**，其中 as 占抽样命中的绝大多数，会把条件、时间、方式等非因果用法一并计入；② v1.1 已剔除该歧义子集（因果组现 18 条：as a result of、because、due to、in that、given that、owing to、seeing that、now that 等）。
+- **前后数值对比（真实 34 篇语料，official 路径逐篇 n 求和）**：
+
+| 组 | v1.0（含歧义项） | v1.1（已去歧义） | 变化 |
+|---|---|---|---|
+| causal（M-CONN-30k） | 2228 | **209** | -90.6% |
+| contrastive（M-CONN-30c） | 1336 | **810** | -39.4% |
+| result（M-CONN-30r） | 502 | **376** | -25.1% |
+| 合计（M-CONN-30） | 4066 | **1395** | -65.7% |
+
+  → 早期 2228 次 causal 命中里绝大部分并非因果标记：引用 v1.0 时代的连接词数值必须先换算或作废。实测 v1.1 因果组中歧义子集 {as, so, still, since} 命中 = **0**。
+- **直接证据（对 v1.0 产物复算）**：v1.0 运行的 M-CONN-30k evidence 抽样共 170 条，其中 `as` 114 条 + `As` 11 条 = **125 条（73.5%）**，另有 `through` 17 条——**独立复现了评审给出的 73.5%**，证明当时的「因果密度」主要由非因果用法构成。
+- **不能推断**因果性真实存在或论证有效。**失效**：即便去歧义后，in that / now that / given that 仍有语用歧义；连接词密度高也可能只是关系简单。
+- **复算路径**：按 span 切片抽检；核对恒等式。
+- **依据文献**：PDTB 2.0 Manual（Contingency 类）；01-指标契约 M-CAUS-12。
+
+#### 3.6.3 `M-CONN-30r` 结果类分量
+
+- **定义**：result 组连接词命中数密度（therefore / thus / hence / as a result / consequently）。
+- **公式**：value = N_result / alpha token 数 x 1000
+- **分子 / 分母 / 单位**：分子 = result 组命中数（n = N_result）；分母 = alpha token 数（denominator）；单位 `per-1000-words`。
+- **依赖与版本**：同 M-CONN-30（共享 connectors.json 的 result 组与同一最长匹配器）。
+- **反映**：结论标记与推论显性化程度。**不能推断**结论正确性。**失效**：Method 节的过渡用法被计为结果标记。
+- **复算路径**：按 span 切片抽检；核对恒等式。
+- **依据文献**：PDTB 2.0 Manual（Contingency: Result）；01-指标契约 M-RCR-13。
+
+### 3.7 `M-AWR-03` 学术词占比
+
+- **定义**：命中冻结学术词表（AWL 代表性子集 >= 300 条）的 token 数占 alpha token 数的比例。**surface form 精确匹配**（本阶段无 lemma 化，见 §7）。
+- **公式**：value = 命中数 / alpha token 数 = n / denominator
+- **分子 / 分母 / 单位**：分子 = 命中数（n）；分母 = alpha token 数（denominator）；单位 `ratio`。
+- **依赖与版本**：`data/lexicons/v1/academic_words.json`（source = Coxhead (2000) AWL，>= 300 条，sha256 入产物）。
+- **反映什么写作行为**：文本落在「一般学术词汇」与「领域专用词汇」之间的取位。
+- **不能推断什么**：不能推断写作专业性；AWL 自身有领域偏差（对工程/数学论文的覆盖率低于人文社科）；**不能**与「好/坏写作」挂钩。
+- **已知失效场景**：① 词表版本不一致导致大幅漂移；② 未 lemma 化时屈折形式（时态/复数变体）漏计，属系统性低估；③ 多词学术短语未定义；④ 公式符号污染分母（alpha token 规则已排除纯符号，但 log / norm 类仍会计入）。
+- **复算路径**：用词表集合 + 计数器独立复算命中数；给 20 个 token 的抽检清单人工判定；词表 sha256 必须与产物记录一致。
+- **依据文献**：**Coxhead 2000** "A New Academic Word List", *TESOL Quarterly*, DOI `10.2307/3587951`；03-工具与依据.md §3.9（AWL 覆盖率是通行操作化）。
+
+### 3.8 `M-PAS-09` 被动句占比
+
+- **定义**：含被动标记的**句子**占合格句总数的比例。被动标记 = (be / is / are / was / were / been / being / get / gets / got / become / becomes / became) + 可选副词 + 过去分词（不规则表 >= 100 条，或 -ed 结尾）。
+- **公式**：value = 被动句数 / 句数 = n / denominator
+- **分子 / 分母 / 单位**：分子 = 被动句数（n，同一句内多处被动只记 1）；分母 = 合格句总数（denominator）；单位 `ratio`。
+- **evidence span 口径（v1.0，已实现）**：`evidence.sample` 的 span 指向**被动短语**（助动词 + 最多 2 个副词 + 过去分词；紧邻的 has/have/had 或情态动词并入，例如 `has been adopted`、`can be mapped`、`were carefully collected`），**不再指向整句**；`excerpt == text[start:end][:80]` 不变。句子 span 只用于分母。metric 顶层新增 `evidence_target = "passive_phrase_span"`。**value / n / denominator 口径未变**（语料级数值与改前逐位一致）。
+- **额外顶层字段**：`n_unresolved` = 分母内无法判定语态的边缘句数（如 is important 这类系表结构被规则跳过）。缺失它则分母不透明，属契约违规。
+- **分位口径**：语料级 median 用 nearest-rank、不插值（§2 总表）；n=34 时取 v[16]。
+- **与 01 契约卡的差异**：01-指标契约 M-PAS-09 的口径是**有限子句级**（需依存分析器）；本阶段纯 stdlib 无 parser，INTERFACES.md §3 冻结为**句级**。因此本数值**不得**与设计案的 0.18（子句级）或 0.42（子句级互斥）比较，见 §7。
+- **依赖与版本**：不规则过去分词表（>= 100 条）+ 规则后缀 -ed（二者为逻辑或）；随 `TEXT_METRICS_VERSION` 冻结。
+- **反映什么写作行为**：施事显隐与客观化的句法选择（把「谁做的」写进句子里，还是隐去）。
+- **不能推断什么**：**不能**推断学术规范优劣（被动不是缺陷）；不能推断作者身份；不能以被动比例推断「客观性」——这是写作教学的流行误说，无同行评议依据。
+- **偏差方向（已修正措辞）**：**未定，必须人工抽检**——本规则同时存在**漏判**（get 被动 / 被动不定式 / 含插入语的被动）与**误报**（be + 过去分词若实为形容词；关键词行或行内数学式落入正文块）两条渠道，因此**不得**声称「系统性偏低」。
+- **形容词 denylist（已落地）**：被动判定用 `text_metrics._PARTICIPIAL_ADJECTIVE_DENYLIST`（27 条：complicated / tired / interested / excited / involved / related / concerned / limited / based / detailed / advanced 等）抑制 be + 形容词误报；时态计数另用 `_ED_ADJECTIVE_DENYLIST`。**宁缺毋滥**：语料实测 copula+-ed 高频词（used 161 / defined 89 / applied 58 等）绝大多数是真被动，故 used / designed / known / left 等**不**排除。实例实测（本机真实运行）：`The problem is complicated.` 与 `The results are interesting.` 均得 `n = 0` 且 `n_unresolved = 1`（计入未判定，而非被动）；对照 `The system is analyzed.` 与 `This approach is widely used.` 均得 `n = 1`（正确计为被动）。证明该反向误报在句型层面已被抑制。
+- **残余污染渠道（实测发现，未修复）**：落在正文块内的关键词行与行内数学式仍参与分句，例如某篇的 `Keywords: Dynamic Vehicle Routing Problem,...` 与行内公式片段出现在 M-PAS-09 的 evidence 抽样中；这会同时影响 `M-SLEN-01` 与 `M-LSF-16`。
+- **抽检精确率（已完成，N=40，agent 裁决）**：工具 paper-metrics/scripts/pas_spotcheck.py，语料 = 34 篇 VRP（paper-analysis），抽样 = 文档序系统性步长（无 RNG），凭证 = impl-baseline/_pas_spotcheck.md 与 .json（含逐条清单与裁决列）。
+  - **P 层（自动判被动，N=20）：精确率 20/20 = 100%，95% Wilson CI [0.839, 1.000]**。区间下限说明：20 条样本只能排除 >16% 的误报率，**不得**据此主张「接近完美」。
+  - **B 层（有被动助动词但未判定，N=10）+ N 层（无助动词，N=10）**：漏报 0/20，漏报率 0，95% Wilson CI [0.000, 0.161]。B 层正是系表/形容词边界（is similar / is a critical step / are fundamental / is admissible），全部裁决为非被动，与 B2 修复方向一致。
+  - **明确局限**：① 裁决由 **agent 完成，非专家人工金标准**；② 系统性抽样非随机抽样，**结论只覆盖这 40 条**，不得外推为全语料精确率/召回率；③ 召回率只在负例半边以「漏报率」形式估计，未覆盖 get 被动、被动不定式、无助动词分词（referred to as / extracted tensors，按准则 5 本就不计）；④ 抽检语料文本为 content_list 全部 text 块拼接（10498 句），**宽于** profiler 的分节正文口径，指标实现相同、输入范围不同。
+- **已知失效场景**：① 系表结构/形容词性过去分词误判（is interested / is determined 类；已由形容词 denylist 大幅抑制，但词表外的形容词仍可能漏网）；② get 被动、含插入语的被动、被动不定式**漏判**；③ 无 by 短语时与系表不可分；④ 公式行、关键词行落入正文块时污染**分母**（见上「残余污染渠道」）；⑤ 与 01 契约卡不同口径（句级 vs 子句级）造成的不可比。
+- **复算路径**：第三方可用同一词表与正则复算；evidence span 现为被动短语 span，可直接逐条核对 text[start:end] 是否确为被动短语；uv run python paper-metrics/scripts/pas_spotcheck.py --corpus <paper-analysis> --out <md> --json <json> [--verdicts <json>] 可重跑本次抽检并复现精确率/召回率；核验 n <= denominator 且 n_unresolved 已输出。
+- **依据文献**：**PassivePy**（Sepehri et al. 2024）, *Journal of Consumer Psychology*, DOI `10.1002/jcpy.1377`（报告了与人工标注的比对验证）。**注意**：03-工具与依据.md §5 明确「Paquet 等被动语态研究」**未核实**，不得引用。
+
+### 3.9 `M-NOM-10` 名词化占比
+
+- **⚠ 口径前提（读本指标前必读）**：本阶段**无 POS 标注器**，分母是 **alpha token 数**（**不是**内容词）。因此本数值**与文献/契约卡的 0.21 不可比**，也**不可**与名词密度（M-ND-06）互推。判定只用「后缀 ∩ 词基动词表 ∩ denylist」三层规则，属后缀法近似。
+- **定义**：命中名词化的 token 数占 alpha token 数的比例。判定 = token 以后缀集之一结尾 **且** 去掉后缀后的词基属于冻结动词表 **且** 全词不在伪名词化 denylist。
+- **公式**：value = 命中数 / alpha token 数 = n / denominator
+- **分子 / 分母 / 单位**：分子 = 命中数（n）；分母 = alpha token 数（denominator）；单位 `ratio`。
+- **与 01 契约卡的差异**：01 契约卡分母为「内容词（NOUN/PROPN/VERB/ADJ/ADV）」需 POS 标注器，本阶段冻结为 alpha token 数（见本节开头的口径前提与 §7 差异表）。
+- **依赖与版本**：`nominalization_suffixes`（11 个）+ `nominalization_verb_bases`（>= 150 条）+ `nominalization_denylist`（>= 60 条），三文件 sha256 均入产物。缺任一条即为「不可复现」。
+- **反映什么写作行为**：信息压缩与过程物化的倾向（Biber 式名词化：把「we analyze」写成「the analysis of」）。
+- **不能推断什么**：不能推断文本质量；不能等同于「抽象度」；不能跨领域直接比较（领域术语本身大量名词化）；名词密度不等于名词化（本指标已用词基表区分，但仍是后缀规则的近似）。
+- **已知失效场景**：① 纯后缀匹配不做词基校验会误收 section / station / mention / action / position / condition / mission / version / question / function，denylist 正是为此存在，覆盖不足时精确率下降；② 词基表缺失导致假阴性（如 implementation 需 implement 在表中才计）；③ -ing 动名词与分词不计入（**已声明**，会系统性低估）；④ 未剔领域术语表时工程类论文虚高。
+- **复算路径**：第三方**无需模型**，仅用三张词表 + 正则即可复算得到同一数值；再用 WordNet 派生动词校验一遍并报告假阳性率；抽检 50 token，要求精确率 >= 0.9，否则调词表并 bump 版本。
+- **依据文献**：**Biber & Gray 2011** "Grammatical change in the noun phrase", *English Language and Linguistics*, DOI `10.1017/s1360674311000025`；TAASSC 的 phrasal elaboration 框架（03-工具与依据.md §1.2(6)：**许可证自相矛盾 GPL-3.0 vs CC BY-NC-SA 4.0，仅作框架参考、不作为依赖**）；03-工具与依据.md §3.2（标准做法 vs 常见误算）。
+
+### 3.10 `M-TENSE-28` 现在时占比
+
+- **定义**：现在时命中数 /（现在时命中 + 过去时命中）。现在时 = -s / -es / -ies 三人称单数后缀 + 不规则动词表现在时列（>= 80 条）；过去时 = -ed + 不规则动词表过去时列（>= 80 条）。
+- **公式**：value = 现在时命中 / (现在时命中 + 过去时命中) = n / denominator
+- **分子 / 分母 / 单位**：分子 = 现在时命中（n）；分母 = 现在时 + 过去时命中（denominator，**不含**无法判定项）；单位 `ratio`。
+- **额外顶层字段**：`n_unresolved` = 无法判定的有限动词数（情态动词、完成时、无时态项）。必须输出，否则分母不透明。
+- **与 01 契约卡的差异**：01 契约卡是「时态分布（多值：present/past + unresolved）」；INTERFACES.md §3 冻结为**单值「现在时占比」**。故本契约**没有** past 值，过去时占比 = 1 - value（仅在 n_unresolved = 0 时成立）。
+- **依赖与版本**：不规则动词表现在时/过去时两列（各 >= 80 条）+ 后缀规则；随 `TEXT_METRICS_VERSION` 冻结。
+- **反映什么写作行为**：章节写作惯例（Method 用过去时叙述已做实验，或用现在时陈述一般事实）。
+- **不能推断什么**：不能推断学术规范遵循（惯例随领域变化，无唯一正确答案）；不能推断作者水平；不能推断时态「一致性」（本指标只在有限动词集合上统计，不判句内一致性）。
+- **已知失效场景**：① 情态动词与完成时归并口径不一，导致 n_unresolved 膨胀、分母缩小；② 被动结构中的时态判定（was analyzed 的 analyzed 是否计入）；③ 规则后缀法对不规则动词覆盖不足时系统性偏低；④ 名词与动词同形（results / processes）被误判为现在时三人称。
+- **复算路径**：核对 n + 过去时命中数 + n_unresolved = 有限动词识别总数；抽检 50 个有限动词人工判定；第三方可用同一不规则表 + 后缀规则复算。
+- **依据文献**：01-指标契约 M-TENSE-28（设计案行326-329）。本指标无独立效度文献，属**描述性惯例统计**，解释时不得越界为规范主张。
+
+---
+
+## 4. 复用类指标（profile 级，非 text_metrics 产出）
+
+本节 5 条由 `profile_papers.py` 直接在语料块序列上计算（**零新增开发**，只修遥测字段与已知缺陷），输出落在 `_domain_profile.json`。
+
+### 4.1 `M-SECSKEL-48` 章节骨架
+
+- **定义**：把每个章节标题归一化（剥编号前缀与尾部标点）后映射到 canonical 标签（精确匹配、关键词子串、原样保留三段解析），统计每个 canonical 章节的出现频次、原始标题变体、中位相对位置与中位词占比。
+- **公式**：frequency = 该 canonical 章节出现的论文数；median_position = median(块序 / 总块数)；median_word_share = median(该章词数 / 全篇词数)
+- **分子 / 分母 / 单位**：分子 = 出现篇数；分母 = 有可解析块的论文数（meta.paper_count）；单位 = 篇（计数），位置为 [0,1] 相对位置，词占比为比率。
+- **依赖与版本**：`profile_papers.py` 的 `_CANONICAL_MAP` 与 `_SECTION_KEYWORD_PATTERNS`（顺序敏感：ablation 必须先于 experiment）；输入 MinerU 中 text_level == 2 的块；随 `PROFILER_VERSION` 冻结。
+- **反映什么写作行为**：该领域论文的章节组织惯例（哪些章几乎必写、写在相对什么位置、占多少篇幅）。
+- **不能推断什么**：不能推断期刊强制模板（只是本语料的经验分布）；不能推断「缺某章 = 论文差」；标题归一化可能把自定义章节归错类。
+- **已知失效场景**：① `_CANONICAL_MAP` 覆盖不足时，未见章节以原始小写串出现，分散成大量 frequency=1 的键；② MinerU 缺 text_level 字段则整篇无章节起点、被静默跳过；③ 关键词子串顺序错会让 ablation study 落入分类之外（已在模式表中固定顺序规避）；④ 中英文标题混排时子串模式需分别覆盖。
+- **复算路径**：第三方直接数 `_content_list.json` 中 text_level == 2 的块，用同一 canonical 映射与模式表复算；抽检 5 篇。
+- **依据文献**：01-指标契约 M-SECSKEL-48；**Kanoksilapatham 2005** "Rhetorical structure of biochemistry research articles", *English for Specific Purposes*, DOI `10.1016/j.esp.2004.08.003`（结构描述的标准范例）；**Crookes 1986**, DOI `10.1093/applin/7.1.57`。
+
+### 4.2 `M-ASSET-49` 图表公式落位
+
+- **定义**：把 figure / table / equation 块归属到其**最近的前置章节**，按 (section, sub_type) 统计频次。子类型由「所在章节 x 块类型」启发式判定：Method 内的 image 记 framework-overview；Experiments 内的 chart 记 data-plot、table 记 benchmark-comparison；Preliminaries 内的 equation 记 problem-definition、method 内的 equation 记 method-formulation；其余归 chart-other / image-other / table-other / equation-other。
+- **公式**：frequency(section, sub_type) = 命中的该 (section, sub_type) 资产数；比例 = 该子类频次 / 同类型资产总数（图/表/公式分别求分母）
+- **分子 / 分母 / 单位**：分子 = 该 (section, sub_type) 计数；分母 = 该类型（图/表/公式）资产总数；单位 = 计数（比例可派生）。
+- **依赖与版本**：`extract_asset_patterns()` 与 `_classify_figure` / `_classify_table` / `_classify_equation`；块序依赖 MinerU 阅读顺序；随 `PROFILER_VERSION` 冻结。
+- **反映什么写作行为**：图表在论证中的**布置惯例**——方法图放 Method、结果表放 Experiments、问题定义公式放 Preliminaries。
+- **不能推断什么**：不能推断图表质量、必要性或数量是否恰当；不能推断期刊排版要求。
+- **已知失效场景**：① MinerU 升级改变 type 命名（image / chart）则整类资产漏计；② 图放在章节标题之前则归属到上一节；③ 跨栏/跨页资产被拆成两块则双计；④ 表格题注与表格体分块导致计数膨胀；⑤ 首节前的资产归入 front_matter（非论文实体章节）。
+- **复算路径**：直接对 `_content_list.json` 的 type 与 text_level 分组计数，与 figure_placement_patterns / table_placement_patterns / equation_placement_patterns 三个数组对拍；抽检 3 篇人工核对归属。
+- **依据文献**：01-指标契约 M-ASSET-49；03-工具与依据.md §3.8（结构类描述必须与「语步/修辞」分开，后者属 INFERRED）。
+
+### 4.3 `M-CITSTYLE-50` 引文风格判定
+
+- **定义**：用两条正则统计方括号数字式 [N] 与作者-年份式（括注式 + 叙述式）引用出现次数，按比值给出 ieee-numeric / author-year / mixed 标签。
+- **公式**：ratio = N_bracket_numeric / (N_bracket_numeric + N_author_year)；ratio >= 0.85 判 ieee-numeric，ratio <= 0.15 判 author-year，否则 mixed；分离度 = max(ratio, 1 - ratio)
+- **分子 / 分母 / 单位**：分子 = 方括号数字匹配数；分母 = 数字式 + 作者-年份式（含叙述式）匹配总数；单位 = 比率 [0,1] 加类别标签。
+- **命名红线**：confidence 只是 max(ratio, 1 - ratio)，是**启发式分离度**，不是校准概率。**禁止**把它读作「有 92% 把握是 IEEE 风格」。**已落地**（对齐 01-指标契约 M-CITSTYLE-50）：产物现同时输出 `separation`（正式口径）与 `confidence`（legacy 兼容，附 note 声明其非校准概率），二者数值相同；读取方应以 `separation` 为准，不得与 M-CONF-44 的校准置信度混用。真实语料实测 separation = 0.965（numeric 2947 / author-year 108，n = 3055，判 ieee-numeric）。
+- **依赖与版本**：`profile_papers.py` 的三条正则（`_BRACKET_NUMERIC_RE` / `_AUTHOR_YEAR_PAREN_RE` / `_NARRATIVE_RE`）；输入为 `marker/*.md`（缺失时回退为文本块拼接）；随 `PROFILER_VERSION` 冻结。
+- **反映什么写作行为**：领域/期刊的引用**著录惯例**（数字编号 vs 作者-年份）。
+- **不能推断什么**：不能推断期刊要求（同一期刊可能接受两种）；不能推断作者是否遵守规范；正则无法识别复杂作者-年份变体（团体作者、多作者缩写、机构作者）。
+- **已知失效场景**：① Marker MD 中数学模式内的引用标记丢失；② (Smith et al., 2020; Jones, 2021) 这类多引文**只计一次**（低估 author-year）；③ [12, 13] 合并编号只匹配到 [12]（低估 numeric）；④ 正则在参考文献表内也会命中导致虚高（属已知边界）；⑤ 该指标是 **pooled 口径**（全语料求和后算比值），会被长文/高引论文支配，故必须同时给 evidence 计数以便独立复核。
+- **复算路径**：用 grep 计数方括号数字模式即可复核分子；抽检 5 篇；分母可与 `evidence` 的 author_year_matches 对拍。
+- **依据文献**：01-指标契约 M-CITSTYLE-50（设计案行1103-1115）。著录惯例本身无「对错」文献依据，故本指标只作惯例描述、不作规范判定。
+
+### 4.4 `M-REFCNT-51` 参考文献数量分位
+
+- **定义**：在 references / bibliography 章节内按条目起始模式计数，得到每篇条目数，再给出语料级 median / p25 / p75（离散分位，整数）。
+- **公式**：count_per_paper，再取 median / p25 / p75（离散分位：idx = round(p x (n-1))）
+- **与全局口径一致（已核对）**：本条早期版本用 `int(statistics.median)`，现已统一为与其它 13 个指标相同的 **nearest-rank / 不插值** 实现（§2 总表该行）。**数值未变**：真实语料 median 仍为 **42**（p25 = 32、p75 = 60，34/34 篇有计数）。
+- **分子 / 分母 / 单位**：分子 = 每篇参考文献条目数；分母 = 不适用（分布统计）；单位 = 条。
+- **依赖与版本**：`profile_papers.py` 的 `_count_references()`（章节识别依赖 text_level == 2 的 References/Bibliography 标题）；输入 MinerU `_content_list.json`；随 `PROFILER_VERSION` 冻结。
+- **本条是历史缺陷位（I2，已修复并实测）**：旧实现只认 [N] 与 N. 两种起始格式，**且只看 type == "text" 的块**；在真实 36 篇语料上恒为 median = 0（34 篇实测），而 Mode B 已用它生成「参考文献数量目标」——这是曾经正在生效的错误。
+- **实测根因（三处，与最初假设不同）**：① MinerU 把 References 标题输出为 type == "header"（而非带 text_level 的 heading），导致整个参考文献区未被识别；② 条目块被 MinerU 标为 sub_type == "ref_text"，旧逻辑不认；③ 有 1 篇使用 [Author et al., 2016] 括注式著录，旧正则未覆盖。修复即对应这三处（识别 header 型章节标题 + 尊重 ref_text 标记 + 括注式模式）。
+- **修复后实测**：34/34 篇全部有计数（此前 30/34，4 篇为 0），median = 42、p25 = 32、p75 = 60（中位数由 44 降至 42，因新纳入的 4 篇计数较低）；语料指纹 corpus_id = 09c68608…。**验收：真实语料 reference_count.median > 0 已达标。**
+- **反映什么写作行为**：领域文献密度的量级（一篇论文通常引多少条）。
+- **不能推断什么**：不能推断文献质量或影响力；**条目数不等于被引次数**；不能推断引用是否恰当。
+- **已知失效场景**：① author-year 语料（无编号）返回全 0，若被读作「该期刊参考文献极少」即误判；② MinerU 把多条参考文献合并为一个块则漏计；③ 参考文献章节标题未被识别为 text_level == 2 则整天不计数；④ 附录/补充材料中的扩展文献表被计入或漏计。
+- **复算路径**：用 grep 按行首方括号数字计数复核编号型；author-year 型需另建规则（按「年份 + 句号/换行」计数）并在报告中说明；抽检 5 篇人工数条目。
+- **依据文献**：01-指标契约 M-REFCNT-51；数值属描述性计量。
+
+### 4.5 `M-CONTRIB-52` 贡献声明句式
+
+- **定义**：用 5 条冻结正则从全文（marker MD 或文本块拼接）抽出贡献声明片段。正则集覆盖：our (main|key|primary)? contributions? (are|is)；in this paper,? we (propose|present|introduce)；we (propose|present|introduce|develop|design) (a|an|the)?；the (main|key)? contributions? of this (paper|work|article)；this paper (makes|presents|proposes) (the following|several)? (main|key)? contributions?。
+- **公式**：当前输出为**去重排序的字面串列表**；可派生覆盖率 ratio = N_paper(含贡献句) / N_papers
+- **分子 / 分母 / 单位**：分子 = 命中冻结正则的片段（去重）；分母 = N_papers（用于覆盖率）；单位 = 字符串列表 / 覆盖率比率。
+- **已知缺陷（建议补，属复用类增强）**：输出**没有篇级来源与 char offset**，第三方无法回指到具体论文与位置；且丢失频次 tf 与语料分布 df。建议升级为 {phrase, tf, paper_refs[], spans[]}；在此之前，本条**只能**作为句式参考，**不得**作为「覆盖率」类统计结论使用。
+- **依赖与版本**：`_CONTRIBUTION_PHRASES` 与 `_CONTRIBUTION_RE`（硬编码于脚本，随 `PROFILER_VERSION` 冻结）。
+- **反映什么写作行为**：论文自我陈述贡献的惯用句式（可支撑「仿写」时的句式选择）。
+- **不能推断什么**：**不能**推断贡献真实大小或创新性；正则命中不等于存在有价值的贡献；未命中不等于没有贡献。
+- **已知失效场景**：① 正则漏掉变体（We make three contributions / This work offers several contributions）导致假阴性；② 同一句被多条正则命中并去重为一条，tf 丢失；③ 在 Related Work 中引述他人贡献句时误命中；④ 只输出去重字符串，无法判断某句式是 1 篇还是 20 篇在用。
+- **复算路径**：用同一正则 grep -in 复核片段；抽检 10 条回指原文；若按覆盖率使用，必须先补 paper_refs。
+- **依据文献**：01-指标契约 M-CONTRIB-52（设计案行1103-1115）；CARS 贡献陈述传统见 **Swales 1990** *Genre Analysis*（**一手链接/ISBN 未核实**，03-工具与依据.md §5 已标注），**不得**把 move 级结论写进本 OBSERVED 指标。
+
+---
+
+## 5. 关联指标（本节不在 §3 表内，但与 §3 同期交付）
+
+### 5.1 `M-PCNT-25` 段落数与段长
+
+- **定义**：section 内段落数与段落词数分布（min / median / max）。段落边界来自 MinerU `_content_list.json` 的文本块序列，合并规则必须 pin。
+- **公式**：段落数 = 段落块计数；段长 = 该段 token 数（分布统计）
+- **分子 / 分母 / 单位**：分子 = 段落数 / 每段 token 数；分母 = 不适用（计数与分布），可另给 section 总词数作分母；单位 = 段、词/段。
+- **依赖与版本**：MinerU 块序列（text 与 text_level 字段）；连续 text 块是否合并为一段的规则随 `PROFILER_VERSION` 冻结。
+- **反映什么写作行为**：信息打包粒度（主题段 vs 长段）。
+- **不能推断什么**：不能推断论证结构（「一段等于一个 move」是无依据假设）；不能推断可读性。
+- **已知失效场景**：双栏/跨页段落被切分；图表题注被计为段落；MinerU 版本升级改变分段。
+- **复算路径**：直接从 `_content_list.json` 计数复算；抽检 2 篇人工核对段落边界。
+- **依据文献**：01-指标契约 M-PCNT-25（设计案行303）；MVP 推荐理由：段长上下界是写作契约的可判定子项，**必须**用计数实现而非 LLM 判断。
+
+### 5.2 V7 可选探针：MinerU vs Marker 文本层对照（默认关闭，属加分项）
+
+- **触发**：`uv run python paper-metrics/scripts/baseline_eval.py --corpus <corpus> --out <out> --drift-probe N`；产出 `_engine_drift.json`，并在 `_baseline_report.md` 的「引擎漂移（V7 探针）」节渲染。
+- **方法**：同一篇论文上分别对 MinerU `canonical_text()` 与 Marker markdown（经 `markdown_to_text`：去围栏/行内代码/图片与链接目标/标题标记/强调/HTML，并在**文档后半段**的首个 References/Bibliography/Appendix/Acknowled\* 标题处截断，以对齐 `_NON_PROSE_SECTIONS`）计算 `M-SLEN-01` / `M-LSF-16` / `M-PAS-09`，逐篇记录 MinerU/Marker 值与 signed/abs/rel 差值。
+- **终锁实测（10 篇有 Marker 输出的论文；与 impl-baseline 的 golden 同一次运行）**：平均绝对差 M-SLEN-01 **2.222705** 词/句（max 5.961942）、M-LSF-16 **0.021556**（max 0.044584）、M-PAS-09 **0.039863**（max 0.091302，相对 -11.7%）。→ 漂移量与指标同阶，**不可忽略**；这正是不能把 PDF→Canonical 混进确定性承诺的理由。
+- **残余不对称（必须随数值一起引用）**：Marker 侧保留图表题注与摘要（MinerU 侧 `canonical_text()` 丢弃 `front_matter`）；截断规则是启发式。故这些差值是**指示性**的（既可能高估也可能低估），不是引擎漂移的计量学测定；且因引擎版本未记录，**不可归因到具体引擎版本**。
+- **未实现**：结构类指标对照；按引擎版本分层的漂移；PDF 原点到 Canonical 的端到端漂移。
+
+---
+
+## 6. 恒等式与交叉校验清单（测试必须断言）
+
+| # | 断言 | 容差 | 违反后果 |
+|---|---|---|---|
+| C1 | value(M-CONN-30) = value(30c) + value(30k) + value(30r) | 1e-6 | 连接词口径漂移（原设计案 0.042+0.038+0.029 不等于 0.094 一类错误复发） |
+| C2 | hedge 词表条目集合 与 booster 词表条目集合 交集为空 | 精确 | 同一 span 双计 |
+| C3 | connectors 三组两两交集为空 | 精确 | 分量之和大于总量 |
+| C4 | M-SLEN-01：value = denominator / n（**注意倒置**，见 §3.1） | 1e-6 | 第三方复算得到句/词 |
+| C5 | M-LSF-16 与 M-PAS-09：n <= denominator | 精确 | 计数越界 |
+| C6 | ratio 类 value 属于 [0,1]；per-1000-words 类 value >= 0 | 精确 | 单位混用 |
+| C7 | evidence.count = n（span 类指标） | 精确 | 证据与数值脱钩 |
+| C8 | 全部 state == "OBSERVED" 且 method == "rule" | 精确 | 三态红线（OBSERVED 层混入模型判定） |
+| C9 | 任一 NaN 必须以 value = null + warning 输出，JSON 中无 NaN 字面量 | 精确 | 产物不可被标准 JSON 解析 |
+| C10 | 同一语料两次运行，`_domain_profile.json` / `_per_paper_metrics.jsonl` / `_corpus_summary.json` **逐字节相同**（`_run_meta.json` 除外） | 逐字节 | 违反 I3 确定性承诺 |
+| C11 | 指纹范围内 JSON 不含时间戳/绝对路径/主机名/耗时 | 精确 | 换路径或换机器即不可复现 |
+| C12 | `M-REFCNT-51.median > 0`（真实 36 篇语料） | 严格 | I2 未修复（当前恒为 0） |
+| C13 | hedge/booster 各 >= 40 条；connectors 各组 >= 15 条；verb_bases >= 150；denylist >= 60；academic_words >= 300；stopwords >= 120 | 精确 | 词表未达冻结规模 |
+| C14 | 全部 dict 以 sort_keys=True 输出、浮点 round(x, 6)、不依赖文件系统枚举顺序（一律 sorted()） | 精确 | 非确定性 |
+
+---
+
+## 7. 与 `01-指标契约.md` 的已冻结差异（**解释与比较前必须先读本节**）
+
+INTERFACES.md §3 为适应「纯 stdlib、无 NLP 依赖」，对 01-指标契约卡的部分口径做了**冻结降级**。**未列入本表的指标与契约卡同口径**（例如 M-HED-14 / M-BOO-15 保持 per-token ratio，未降级）；列入本表的按下表逐条核对。设计案/契约卡的多数示例数字（0.18、0.21、0.094、0.109）与本阶段产物**不可比**，但 **0.021 / 0.013（hedge/booster）是同口径的例外**，可直接比较量级。
+
+| metric_id | 01 契约卡口径 | INTERFACES §3 冻结口径 | 直接后果 |
+|---|---|---|---|
+| `M-PAS-09` | 有限**子句**级（需 parser），报 0.18 / 0.42 | **句级**（be + 过去分词规则），报 ratio 与 n_unresolved | 与 0.18/0.42 不可比；**偏差方向未定**（既有漏判也有误报渠道），须人工抽检，不得假定「系统性偏低」 |
+| `M-NOM-10` | 分母 = **内容词**（需 POS），报 0.21 | 分母 = **alpha token**（无 POS），后缀 且 词基 且 denylist | 与 0.21 不可比；与名词密度分母不同，二者不可互推 |
+| `M-HED-14` 与 `M-BOO-15` | 每词 ratio，报 0.021 / 0.013 | **ratio（未降级，与契约卡同口径）** | 与文献 0.021 / 0.013 **同口径、可直接比较量级，无需 ×1000 换算**；per-1000-words 只出现在 M-CONN-30 系列 |
+| `M-CONN-30` 与三分量 | 每词 ratio | **per-1000-words**（value = n / denominator **× 1000**），且总密度必须由三分量重算 | 与 0.094/0.109 不可比（该示例本身还不自洽）；换算系数 1000 **只适用于这一族** |
+| `M-MTLD-02` | 单向、分母为「因子数」 | **双向平均**，denominator = 1 占位 | 数值略高于单向；分母字段无比率含义 |
+| `M-AWR-03` | lemma 化命中 | **surface form** 精确匹配 | 屈折形式漏计，系统性低于 lemma 口径 |
+| `M-TENSE-28` | 时态**分布**（多值） | **单值「现在时占比」** 与 n_unresolved | 无 past 字段；过去时占比 = 1 - value（仅当 unresolved = 0） |
+| `M-SLEN-01` | 分母「不适用」（分布） | n = 句数、denominator = 词数，故 value = denominator / n | 唯一倒置指标，见 §3.1 |
+| `M-CITSTYLE-50` | 字段名 confidence | 语义为**分离度**，建议改名 separation 或 margin | 不得读作校准概率 |
+| `M-REFCNT-51` | 只认方括号数字与 N. 的 text 块 | 增加 list 块、author-year、detected_format 与告警 | 修复前真实语料 median 恒为 0（I2 缺陷） |
+
+---
+
+## 8. 解释边界速查（一页版）
+
+| 指标 | **可以这样解释** | **禁止这样解释** |
+|---|---|---|
+| M-SLEN-01 | 句子平均信息量、长短节奏 | 句子难易、作者水平、跨领域优劣 |
+| M-LSF-16 | 超长句占比 | 「长句多 = 写得差」 |
+| M-MTLD-02 | 用词复用程度 | 「词汇丰富 = 写作好」；跨长度比较 |
+| M-HED-14 | 断言不确定性显性化程度 | 作者心理谨慎度、研究可信度、「hedge 少 = 自信」 |
+| M-BOO-15 | 断言强化显性策略 | 「booster 多 = 差」、论断正确性 |
+| M-CONN-30 / 30c / 30k / 30r | 篇章显性衔接密度 | 逻辑严密性、因果真实存在、结论正确性 |
+| M-AWR-03 | 一般学术词与领域词的取位 | 专业性强弱、写作好坏 |
+| M-PAS-09 | 施事显隐的句法选择 | 学术规范优劣、客观性、「被动 = 不好」 |
+| M-NOM-10 | 信息压缩/过程物化倾向 | 文本质量、抽象度 |
+| M-TENSE-28 | 章节时态惯例 | 规范遵循度、作者水平 |
+| M-SECSKEL-48 | 章节组织惯例 | 期刊强制模板、「缺章 = 差」 |
+| M-ASSET-49 | 图表布置惯例 | 图表质量或必要性 |
+| M-CITSTYLE-50 | 著录惯例 | 期刊要求、规范遵守度 |
+| M-REFCNT-51 | 文献密度量级 | 文献质量/影响力、条目数等于被引数 |
+| M-CONTRIB-52 | 贡献陈述惯用句式 | 贡献真实大小与创新性 |
+| M-PCNT-25 | 信息打包粒度 | 论证结构、「一段等于一个 move」 |
+
+**三态红线**：以上全部条目 state == "OBSERVED" 且 method == "rule"。任何由 LLM 产生的数字/标签**不得**出现在这些字段中；LLM 的输出只能落 RECOMMENDED，且**不得带小数、不得进入任何 gate**。
+
+---
+
+## 9. 依据文献
+
+**同行评议 / DOI 可解析（B 级）**
+
+| 文献 | 出处 | DOI / 链接 | 本文件中的用途 |
+|---|---|---|---|
+| Hyland 1998, "Boosting, hedging and the negotiation of academic knowledge" | *Text* 18(3) | `10.1515/text.1.1998.18.3.349` | hedge/booster 操作化依据（§3.4/§3.5） |
+| Hyland 2005, "Stance and engagement" | *Discourse Studies* | `10.1177/1461445605050365` | 同上 |
+| Hyland 2005, *Metadiscourse: Exploring Interaction in Writing* | 书（章节 DOI） | `10.5040/9781350063617.0011` | 词表出处标注 |
+| McCarthy & Jarvis 2010 | *Behavior Research Methods* 42(2):381-392 | `10.3758/brm.42.2.381` | MTLD 阈值 0.720 / min 10 / 双向均值（§3.3） |
+| PDTB 2.0 Annotation Manual | LDC2008T05（手册免费；数据本体付费、不可再分发） | 手册 PDF：https://catalog.ldc.upenn.edu/docs/LDC2008T05/manual/pdtb-annotation-manual.pdf | 连接词表来源（§3.6；Appendix A 明列 100 型） |
+| Biber & Gray 2011, "Grammatical change in the noun phrase" | *English Language and Linguistics* | `10.1017/s1360674311000025` | 名词化操作化（§3.9） |
+| Coxhead 2000, "A New Academic Word List" | *TESOL Quarterly* | `10.2307/3587951` | 学术词表来源（§3.7） |
+| Cohan et al. 2019 (SciCite) | NAACL | `10.18653/v1/n19-1361` | 引用功能体系（**INFERRED 层，本阶段未实现**，仅作边界说明） |
+| Jurgens et al. 2018 (ACL-ARC) | TACL | `10.1162/tacl_a_00028` | 同上 |
+| Teufel et al. 2006 | SIGdial | `10.3115/1654595.1654612` | 引用功能标签集（同上） |
+| Sepehri et al. 2024 (PassivePy) | *Journal of Consumer Psychology* | `10.1002/jcpy.1377` | 被动语态自动识别的公开验证（§3.8） |
+| Gibson 1998, "Linguistic complexity: locality of syntactic dependencies" | *Cognition* | `10.1016/s0010-0277(98)00034-1` | 句长解释边界的限定（§3.1） |
+| Kanoksilapatham 2005 | *English for Specific Purposes* | `10.1016/j.esp.2004.08.003` | 章节结构描述范例（§4.1） |
+| Crookes 1986 | *Applied Linguistics* | `10.1093/applin/7.1.57` | 结构分析效度（§4.1） |
+| Davison & Kantor 1982 | *Reading Research Quarterly* | `10.2307/747483` | 可读性公式失效依据（本文件**不含**可读性指标，列入以说明为何排除） |
+
+**工程实现证据（A 级，用于 pin 参数）**
+
+- TAALED（kristopherkyle/taaled）源码：TTR 阈值硬编码 0.720、min = 10、双向均值。
+- MinerU `_content_list.json` 块契约（type / text_level / text）；Marker MD 作为引文与贡献句式输入的降级路径。
+- `/mnt/e/Google_Download/Paper-Reader_设计审查/03-工具与依据.md`：§3.1-§3.9 的标准做法 vs 常见误算；§4.2 判定 hedge/booster、nominalization、connector（私有词表时）、academic_word_ratio 为「仅可复现」，达标条件是**词表/规则/版本/分母四件套随产物发布**——本文件与 `data/lexicons/v1/*.json` 的 sha256 即为兑现该条件。
+
+**未核实（不得当作已核实依据引用；与 03-工具与依据.md §5 一致）**
+
+1. 「Paquet 等」被动语态研究——多轮检索未见，疑为 PassivePy 或 Magali Paquot 的误记。
+2. Swales 1990 *Genre Analysis* 的一手链接/ISBN。
+3. Halliday/Ure 的 lexical density 一手定义来源（故本阶段**不实现** lexical_density）。
+4. Hyland 词表的具体条目数与书内附录页码（本实现取「基于 Hyland 的常用子集」，条目数由词表文件与 sha256 固定，**不主张**它是 Hyland 原表）。
+5. SciCite 数据集上的 F1 具体数值（仅核实 ACL-ARC 的 67.9%）。
+
+---
+
+## 10. 变更控制
+
+1. **改定义**（公式、分母、单位、分子语义）必须 bump `metric_spec_version`，并在本文件 §7 追加差异行。历史产物不得与新产物混合聚合。
+2. **改阈值/词表条目**（40、0.720、后缀集、hedge/booster 增删）必须更新词表文件，使其 sha256 变化，进而使 `LexiconBundle.fingerprint()` 变化；不必 bump `metric_spec_version`，但**必须**在报告中声明「词表指纹已变，数值与旧产物不可比」。
+3. **改匹配规则**（最长匹配策略、大小写归一、缩写保护表）视为定义变更，按第 1 条处理。
+4. **禁止**在任何指标定义中引入 LLM 产出的词表、标签或数值；一经发现，该指标必须从 OBSERVED 层移除。
+5. **禁止**新增第三方依赖而不重新立项（违反 INTERFACES.md §0 红线 1）。
