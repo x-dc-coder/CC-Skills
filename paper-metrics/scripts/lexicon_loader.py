@@ -82,7 +82,7 @@ DEFAULT_DIR = Path(__file__).resolve().parent.parent / "data" / "lexicons" / "v1
 #: equivalent for Chinese - see issue #11 group B), so the release version is
 #: per-language and validated against this table.
 LEXICON_DIRS: dict[str, str] = {"en": "v1", "zh": "v2-zh"}
-LEXICON_VERSIONS: dict[str, str] = {"en": "1.1", "zh": "2.0-zh"}
+LEXICON_VERSIONS: dict[str, str] = {"en": "1.1", "zh": "2.1-zh"}
 SUPPORTED_LEXICON_LANGUAGES: tuple[str, ...] = ("en", "zh")
 
 

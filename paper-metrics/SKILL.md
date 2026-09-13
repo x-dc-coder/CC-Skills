@@ -116,6 +116,40 @@ uv run python paper-metrics/scripts/pas_spotcheck.py --corpus <paper-analysis> -
 - `n_valid < 5` 时**禁止**断言"该期刊偏好 X"；只能呈现单篇表并说明样本不足。
 - 禁止任何"87/100"式百分制综合分：只输出逐指标实际值、目标区间与偏差。
 
+## 词表校准（中文 release 的质量闭环）
+
+中文词表是**策展词表**（无公开可再分发的 Hyland 对应资源，见 issue #11 B 组结论），所以它必须能被质疑、被度量。`scripts/lexicon_calibration.py` 提供四步：
+
+```bash
+cd ~/.claude/skills
+
+# ① 抽标注表（确定性分层抽样：P = 词表命中的句子 / N = 未命中的对照句）
+uv run python paper-metrics/scripts/lexicon_calibration.py sample \
+    --corpus <paper-analysis> --out <dir> --lexicon hedge --positives 120 --negatives 80
+
+# ② 人工在 TSV 的 annotator_a（第二次独立标注写 annotator_b）填 y/n
+
+# ③ 打分：精确率 + 漏检率 + Wilson 区间；两次标注齐了才给 Cohen κ
+uv run python paper-metrics/scripts/lexicon_calibration.py score \
+    --sheets <dir>/_calibration_hedge.tsv --out <dir> --lexicon hedge --method human
+
+# ④ 逐条目审计：哪些条目在真实语料里从不触发（改进词表的直接证据）
+uv run python paper-metrics/scripts/lexicon_calibration.py audit \
+    --corpus <paper-analysis> --out <dir> --lexicon booster
+
+# ⑤ 候选挖掘：高频 CJK n-gram 中不在任何词表里的串（机器提议、人确认）
+uv run python paper-metrics/scripts/lexicon_calibration.py mine \
+    --corpus <paper-analysis> --out <dir> --min-count 15
+```
+
+**纪律**：
+
+- 抽样是**确定性**的（stride 抽样，无 RNG），同语料同配额必然得到同一张表；表头记录词表指纹，分数不会被张冠李戴到别的 release；
+- `--method model` 的标注是**预标注**，报告会写明"不是金标准"并**拒绝给出 κ 结论**（κ 需要两次独立人工）；
+- 打分**不改词表**。改词表 = 改 release（`source` 字段写证据 + `LEXICON_VERSIONS` 同步 bump 八个文件），八个文件版本不一致会被 loader 直接拒绝。
+
+**已做的证据化修订（release 2.0-zh → 2.1-zh）**：审计 10 篇 / 1013 句发现 booster 里 `所有` 是最强命中（54 次）——但它是**量化词**，计的是内容分布而非作者确信度，会让 `M-BOO-15` 失去语义。据此移出 4 个纯量化词（所有/全部/广泛/大量），语料均值 0.0044 → **0.0031**；其余指标不变。未触发的 hedge 条目（也许/似乎/建议…）**一律保留**：它们是通用学术模糊限制语，按单一子领域语料删条目会让词表过拟合。
+
 ## 环境与依赖
 
 - **A 类（统一共享环境）**：纯 stdlib（Python 3.10.12），共享仓库根 `.venv`（`paper-metrics/.venv -> ../.venv`）。

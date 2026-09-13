@@ -1,6 +1,6 @@
 {
   "name": "stopwords",
-  "version": "2.0-zh",
+  "version": "2.1-zh",
   "source": "策展词表（curated-original）：中文无公开可再分发的 Hyland 对应资源（issue #11 B 组结论）。构建方法：① 中文科技论文写作规范与通用汉语虚词表chinese academic writing norms；② 在《运筹与管理》10 篇真实语料上抽样人工确认归属；③ 每条 ≥2 字，避免单字虚词误命中。局限：属策展而非权威词表，后续可用标注集校准（κ ≥ 0.6）后升级。（本表为功能词，仅用于统计口径，不参与任何密度指标）",
   "language": "zh",
   "entries": [
