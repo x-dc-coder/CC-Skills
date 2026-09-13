@@ -96,6 +96,7 @@ uv run python paper-metrics/scripts/pas_spotcheck.py --corpus <paper-analysis> -
 ## 支持的语言（红线：不支持就**显式失败**，绝不给假数字）
 
 - 当前指标层**只支持英文**：分句器以 `.!?` 为句末、token 只认 ASCII 字母、8 个词表均为英文口径。
+  **例外（2026-09-13，issue #10 首步）**：**不依赖分句/词表的元数据层已支持中文**——引用样式识别认全角 `［N］`，参考文献计数认无空格的中文条目与 GB/T 7714 文献类型标记（实测 10 篇《运筹与管理》：`citation_style` unknown → `ieee-numeric`、`reference_count` median 0 → 15、10/10 篇有引用）。**14 条写作指标对中文仍是 `LANGUAGE_NOT_SUPPORTED`**，两者不要混为一谈。
 - 每篇都会算 `cjk_ratio = 汉字数 / (汉字数 + ASCII 字母 token 数)`，**`cjk_ratio > 0.10` 判为不支持**（阈值与实现见 `text_metrics.detect_language`）。
 - 不支持的篇目：**每一个指标输出 `null`**（`n = 0`、`warnings = ["LANGUAGE_NOT_SUPPORTED"]`），计入 `n_missing`，并在语料级触发 `CORPUS_LANGUAGE_UNSUPPORTED` 告警；**任何情况下不得用 0 代替"未测量"**。
 - 草稿校验遇到不支持的语言直接 **退出码 2**（`language_unsupported`），**不输出任何通过/不通过结论**。

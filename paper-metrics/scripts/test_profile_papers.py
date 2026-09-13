@@ -731,6 +731,53 @@ def test_keywords_line_block_is_dropped_and_counted(tmp_path: Path) -> None:
     assert all("eyword" not in s["excerpt"] for s in slen["evidence"]["sample"])
 
 
+def test_chinese_full_width_citations_and_references(tmp_path: Path) -> None:
+    """Chinese (zh) support: full-width ［N］ citations and unspaced entries.
+
+    Measured before the fix on 10 《运筹与管理》 papers: every in-text citation
+    is ［12］ (full width) and entries carry no ASCII spaces, so citation_style
+    was "unknown" and reference_count was 0 for 10/10 papers.
+    """
+    corpus = tmp_path / "zh"
+    d = corpus / "CN1" / "mineru" / "c1" / "auto"
+    d.mkdir(parents=True)
+    blocks = [
+        {"type": "text", "text_level": 1, "text": "生鲜农产品上行集货路径优化"},
+        {"type": "text", "text_level": 2, "text": "1 引言"},
+        {"type": "text", "text": "已有研究见［1］与［2-3］，本文在此基础上展开。"},
+        {"type": "text", "text_level": 2, "text": "参考文献"},
+        {"type": "list", "sub_type": "ref_text", "list_items": [
+            "［1］李军，蔡小强．易腐性产品运输设施选择博弈［J］．管理科学学报，2019，12（1）：28-3",
+            "［2］刘云飞，赵磊．出口汽车零部件集货运输问题［J］．计算机集成制造系统，2016，22（9）：2227",
+            "［3］DRENOVACD，VIDOVICM．Optimization and simulation［J］．Journal of Cleaner，2020，45（9）：1450",
+        ]},
+    ]
+    (d / "c1_content_list.json").write_text(json.dumps(blocks, ensure_ascii=False),
+                                             encoding="utf-8")
+    out = tmp_path / "out"
+    pp.run_profile(corpus, out)
+    profile = json.loads((out / "_domain_profile.json").read_text(encoding="utf-8"))
+    assert profile["citation_style"]["detected"] == "ieee-numeric"
+    assert profile["reference_count"]["median"] == 3
+    # reference counting is corpus-level (per-paper records carry no ref field):
+    # all three entries must survive, including the space-less English one.
+    assert profile["reference_count"]["median"] == 3
+
+
+def test_chinese_reference_shapes_accept_and_reject() -> None:
+    """Marker-first: an explicit bracket wins, a continuation line does not."""
+    # accepted
+    assert pp._looks_like_reference("［1］李军，蔡小强．易腐性产品运输设施选择博弈［J］．管理科学学报，2019")
+    assert pp._looks_like_reference("［13］LIBX，KRUSHINSKYD，REIJERSHA，etal．Thesharingproblem［J］．EJOR，2019")
+    assert pp._looks_like_reference("1. 张三, 李四. 车辆路径问题研究[J]. 管理科学学报, 2020.")
+    assert pp._looks_like_reference("张三, 李四. 车辆路径问题研究[J]. 管理科学学报, 2020, 23(4).")
+    # rejected: a wrapped continuation line / plain body text
+    assert not pp._looks_like_reference("Methodological，2011，45（9）：1450-1464")
+    assert not pp._looks_like_reference("本文研究车辆路径问题。")
+    # the in-text citation pattern itself
+    assert len(pp._BRACKET_NUMERIC_RE.findall("见［1］与［2-3］，另见 [4]。")) == 2
+
+
 def test_keywords_marker_regex_does_not_eat_prose() -> None:
     """Only a leading marker is metadata: a sentence about keywords is body text."""
     assert pp._KEYWORDS_MARKER_RE.match("Keywords: a, b")

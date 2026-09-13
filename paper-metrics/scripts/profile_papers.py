@@ -715,7 +715,10 @@ def extract_asset_patterns(papers: list[Paper]) -> tuple[list[dict], list[dict],
 # Citation style detection
 # ---------------------------------------------------------------------------
 
-_BRACKET_NUMERIC_RE = re.compile(r"\[\d+\]")
+#: Full-width brackets dominate Chinese journals: measured on 10/10
+#: 《运筹与管理》 papers every in-text citation is ［12］, so a half-width-only
+#: pattern reported 0 numeric citations and citation_style = unknown.
+_BRACKET_NUMERIC_RE = re.compile(r"[\[\uff3b]\s*\d+\s*[\]\uff3d]")
 _AUTHOR_YEAR_PAREN_RE = re.compile(
     r"\([A-Z][A-Za-z''-]+(?:\s+(?:et al\.?|and|&)\s+[A-Z][A-Za-z''-]+)*,?\s*\d{4}[a-z]?\)"
 )
@@ -824,8 +827,10 @@ def _detect_contribution_phrases(papers: list[Paper]) -> list[str]:
 # A reference list entry, as MinerU renders it. v1 only accepted
 # type == "text" blocks starting with "[N]" / "N. ", while real MinerU emits
 # reference lists as type == "list" -> reference_count was silently 0.
-_REF_BRACKET_RE = re.compile(r"^\s*\[\d+\]")
-_REF_NUMBERED_RE = re.compile(r"^\s*\d{1,3}[.)]\s")
+_REF_BRACKET_RE = re.compile(r"^\s*[\[\uff3b]\s*\d+\s*[\]\uff3d]")
+#: "12." / "12)" / "12、" ---- the separator must be followed by whitespace
+#: or a CJK character, so a decimal ("1.5") is never read as an entry number.
+_REF_NUMBERED_RE = re.compile(r"^\s*\d{1,3}[.)、．](?:\s|[\u4e00-\u9fff\uf900-\ufaff])")
 _REF_AUTHOR_YEAR_RE = re.compile(r"^\s*[A-Z][A-Za-z'\-]+,\s*[A-Z]")
 _REF_AUTHOR_YEAR_ALT_RE = re.compile(
     r"^\s*[A-Z][A-Za-z'\-]+(?:\s+(?:et al\.?|and|&)\s+[A-Z][A-Za-z'\-]+)*"
@@ -835,17 +840,41 @@ _REF_BRACKETED_AUTHOR_YEAR_RE = re.compile(
     r"^\s*\[[A-Z][^\]]{0,80}?(?:19|20)\d{2}[a-z]?\]"
 )
 _REF_YEAR_RE = re.compile(r"\b(?:19|20)\d{2}[a-z]?\b")
+#: CJK ranges, used to tell "a Chinese entry written without spaces" from "a
+#: stray line of body text".
+_CJK_CHAR_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+#: GB/T 7714 document-type markers ("[J]." journal, "[D]." thesis, "[M]." book).
+_REF_GB_T_MARKER_RE = re.compile(
+    r"\[(?:J|M|D|C|N|S|P|R|A|G|Z|EB/OL|DB/OL|J/OL|M/OL|C/OL)\]")
+#: A Chinese bibliography entry usually starts with "作者, 题名" / "作者. 题名".
+_REF_CJK_AUTHOR_RE = re.compile(r"^\s*[\u4e00-\u9fff]{2,4}\s*[,，、.]")
 
 
 def _looks_like_reference(text: str) -> bool:
-    if len(text.split()) < 5:
-        return False
+    words = len(text.split())
+    cjk = len(_CJK_CHAR_RE.findall(text))
+    # An explicit entry marker is decisive on its own and must be checked before
+    # the length guard: MinerU renders many Chinese-journal entries with no
+    # ASCII spaces at all ("［13］LIBX，KRUSHINSKYD，REIJERSHA，etal．…"), which the
+    # word guard would veto even though the bracket proves it is an entry.
     if _REF_BRACKET_RE.match(text) or _REF_NUMBERED_RE.match(text):
         return True
+    # Chinese entries are written without spaces between words, so the word
+    # guard alone dropped every one of them (measured: 10/10 《运筹与管理》
+    # papers reported reference_count = 0).  Count CJK characters as well.
+    if words < 5 and cjk < 8:
+        return False
     if _REF_BRACKETED_AUTHOR_YEAR_RE.match(text):
         return True
     if _REF_AUTHOR_YEAR_RE.match(text) or _REF_AUTHOR_YEAR_ALT_RE.match(text):
         return True
+    if cjk >= 8:
+        # Chinese / GB-T 7714 shapes: a "[J]" type marker, or "作者, 题名 … 年".
+        if _REF_GB_T_MARKER_RE.search(text) and _REF_YEAR_RE.search(text):
+            return True
+        if _REF_CJK_AUTHOR_RE.match(text) and _REF_YEAR_RE.search(text):
+            return True
+        return False
     # Fallback heuristic: capitalised entry containing a publication year.
     return text[:1].isupper() and bool(_REF_YEAR_RE.search(text))
 
@@ -862,7 +891,8 @@ def _split_reference_entries(chunks: list[str]) -> list[str]:
             part = part.strip()
             if not part:
                 continue
-            starts = [m.start() for m in re.finditer(r"\[\d+\]", part)]
+            starts = [m.start() for m in
+                      re.finditer(r"[\[\uff3b]\s*\d+\s*[\]\uff3d]", part)]
             if len(starts) > 1 and starts[0] <= 2:
                 for i, s in enumerate(starts):
                     end = starts[i + 1] if i + 1 < len(starts) else len(part)
