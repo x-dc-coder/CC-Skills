@@ -690,3 +690,52 @@ def test_cli_help_exits_zero() -> None:
                           capture_output=True, text=True)
     assert proc.returncode == 0, proc.stderr
     assert "--verify" in proc.stdout
+
+
+# ---------------------------------------------------------------------------
+# Non-prose ingestion: keywords line under an unrecognised heading (issue #3)
+# ---------------------------------------------------------------------------
+
+def test_keywords_line_block_is_dropped_and_counted(tmp_path: Path) -> None:
+    """A keyword list is metadata even when its section was classified as prose.
+
+    Journals print the keyword list under headings the classifier does not know
+    ("A R T I C L E I N F O"), so the block used to enter the canonical body and
+    every sentence/token denominator. The drop is now explicit, and the amount
+    is reported in the product (_corpus_summary.json -> non_prose_dropped).
+    """
+    corpus = tmp_path / "kw"
+    d = corpus / "P1" / "mineru" / "p1" / "auto"
+    d.mkdir(parents=True)
+    blocks = [
+        {"type": "text", "text_level": 1, "text": "A study of routing"},
+        {"type": "text", "text": "Jane Doe, John Smith"},
+        {"type": "text", "text_level": 2, "text": "A R T I C L E I N F O"},
+        {"type": "text", "text": "Keywords: routing, scheduling, heuristics"},
+        {"type": "text", "text_level": 2, "text": "1. Introduction"},
+        {"type": "text",
+         "text": "This paper studies vehicle routing. The method is exact."},
+    ]
+    (d / "p1_content_list.json").write_text(json.dumps(blocks), encoding="utf-8")
+    out = tmp_path / "out"
+    pp.run_profile(corpus, out)
+    summary = json.loads((out / "_corpus_summary.json").read_text(encoding="utf-8"))
+    dropped = summary["non_prose_dropped"]
+    assert dropped["keywords_line"] == {"papers": 1, "blocks": 1, "words": 4}
+    assert dropped["front_matter"]["blocks"] == 1  # the author line
+    rec = json.loads(
+        (out / "_per_paper_metrics.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    assert rec["non_prose_dropped"]["keywords_line"]["blocks"] == 1
+    slen = rec["metrics"]["M-SLEN-01"]
+    assert slen["n"] == 2, slen["n"]  # exactly the two real sentences
+    assert all("eyword" not in s["excerpt"] for s in slen["evidence"]["sample"])
+
+
+def test_keywords_marker_regex_does_not_eat_prose() -> None:
+    """Only a leading marker is metadata: a sentence about keywords is body text."""
+    assert pp._KEYWORDS_MARKER_RE.match("Keywords: a, b")
+    assert pp._KEYWORDS_MARKER_RE.match("关键词：车辆路径")
+    assert pp._KEYWORDS_MARKER_RE.match("KEY WORDS: a")
+    assert not pp._KEYWORDS_MARKER_RE.match(
+        "The keywords were extracted from the abstract.")
+    assert not pp._KEYWORDS_MARKER_RE.match("Keyword selection matters here.")

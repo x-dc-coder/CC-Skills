@@ -229,6 +229,59 @@ def test_split_sentences_empty_and_letterless_input():
     assert tm.split_sentences("--- 12. [3] (4)") == []
 
 
+# --- anchor regressions for the keywords / inline-math defect -----------------
+# The three patterns below are the ones the issue reproduces on the real corpus
+# (Okulewicz keywords line, Chen inline formula, TRACE-VNS formula span).  A
+# keywords line or a bare formula must never enter a sentence denominator.
+
+def test_split_sentences_drops_keywords_line_anchor():
+    text = ("This paper studies routing.\n"
+            "Keywords: Dynamic Vehicle Routing Problem,Particle Swarm Optimization,Hyperheuristic\n"
+            "We propose a method.")
+    spans = tm.split_sentences(text)
+    assert [s.text for s in spans] == ["This paper studies routing.", "We propose a method."]
+    assert not any(s.text.lower().startswith("keyword") for s in spans)
+    # a keywords line on its own is metadata, not a one-word "sentence"
+    assert tm.split_sentences("Keywords: a, b, c") == []
+    assert tm.split_sentences("KEY WORDS: routing, scheduling") == []
+    assert tm.split_sentences("关键词：车辆路径；粒子群") == []
+
+
+def test_split_sentences_inline_math_anchor_does_not_become_a_sentence():
+    # a formula fragment on its own carries no prose and must be dropped
+    assert tm.split_sentences("$c: E \\to \\mathbb{R}$") == []
+    assert tm.split_sentences("$x = 1$.") == []
+    # a full stop *inside* math must not end a sentence
+    text = "The cost is $c_{1} = 0.5$. The second case follows."
+    assert [s.text for s in tm.split_sentences(text)] == [
+        "The cost is $c_{1} = 0.5$.", "The second case follows.",
+    ]
+    # display math keeps its surrounding prose split
+    nl = "\n"
+    assert [s.text for s in tm.split_sentences("Before." + nl + "$$\\sum_{i} x_{i} = 0.$$" + nl + "After it.")] == [
+        "Before.", "After it.",
+    ]
+
+
+def test_split_sentences_sub_sup_markup_is_noise():
+    text = "Water is H<sub>2</sub>O and x<sup>2</sup> is small. Next one."
+    spans = tm.split_sentences(text)
+    assert [s.text for s in spans] == ["Water is H<sub>2</sub>O and x<sup>2</sup> is small.", "Next one."]
+    assert tm.split_sentences("<sub>2</sub>") == []
+
+
+def test_split_sentences_span_contract_holds_after_normalisation():
+    text = ("Prose before the keywords line." + "\n"
+            "Keywords: a, b" + "\n"
+            "Prose with $x$ math. And a second one.")
+    spans = tm.split_sentences(text)
+    assert len(spans) == 3
+    for span in spans:
+        assert text[span.start:span.end] == span.text
+        assert span.text == span.text.strip()
+        assert "$" not in span.text or span.text.endswith(".")
+
+
 # ---------------------------------------------------------------------------
 # MTLD
 # ---------------------------------------------------------------------------
@@ -249,7 +302,9 @@ def test_mtld_pinned_parameters_are_frozen():
     assert tm._MTLD_TTR_THRESHOLD == 0.720
     assert tm._MTLD_MIN_FACTOR == 10
     assert tm._LONG_SENTENCE_WORDS == 40
-    assert tm.TEXT_METRICS_VERSION == "1.0"
+    # 1.1: pre-split non-prose masking changed the sentence denominators
+    # (issues #2 / #3) -> the version must move with the numbers.
+    assert tm.TEXT_METRICS_VERSION == "1.1"
 
 
 # ---------------------------------------------------------------------------

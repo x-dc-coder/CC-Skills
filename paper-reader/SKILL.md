@@ -181,6 +181,16 @@ paper_reader.py papers/ --backfill-meta
 - 单项失败只留 `null` + note，**绝不抛异常、绝不阻塞转换**（探测有超时上限，超时保留已产出的部分结果）。
 - `pdf_sha256` 复用预检阶段的读取，不额外全量读盘。
 
+**`pdf_sha256` 的来源等级（可信度分层，issue #7）**——同一个字段可能是三种东西，引用时必须说明是哪一级：
+
+| 等级 | 何时出现 | 能证明什么 | 不能证明什么 |
+|---|---|---|---|
+| **原始投稿 PDF** | 预检时源 PDF 仍在磁盘、可直接读取 | 投稿时那份字节的身份（可用于跨项目比对同一篇 PDF） | 不能证明转换产物与其一致 |
+| **引擎侧副本**（`*_origin.pdf`，同时写 `note`） | 原始 PDF 已不在磁盘，只能对引擎保存的副本取哈希 | 只能证明**当前这份产物**的身份（自洽与幂等） | **不能**回指投稿原件；与原件可能不同字节 |
+| **`null`** | 上述两者都取不到 | 无 | 无（原因见 `pdf_sha256_note`，不得当 0 或空串处理） |
+
+`engine_versions_source` 同理分三级：`conversion_time`（转换当时写入，可证明转换环境）> `current_env_estimate`（回填估计，**不得当作转换时实测**）> `unavailable`（探测失败）。`--backfill-meta` **只补写缺失字段，绝不覆盖已有 `conversion_time`**（`test_backfill_never_touches_conversion_time_record` 锁定）。实测分布（运筹与管理语料 66 个 `_META.json`）：`conversion_time` 11 篇、`current_env_estimate` 36 篇。
+
 ### 回填既有语料（`--backfill-meta`）
 
 已转换过的语料重新转换代价过高（约 6 分钟/篇）。`--backfill-meta` 只补写缺失的溯源字段，**不重跑引擎**：

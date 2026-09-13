@@ -53,9 +53,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 # Algorithm version — bump when metric *semantics* change.
-PROFILER_VERSION = "2.0"
+PROFILER_VERSION = "2.1"  # 2.1: non_prose_dropped counters + upstream section (issues #3/#7)
 # Output contract version — bump when the JSON *schema* changes.
-SCHEMA_VERSION = "2.0"
+SCHEMA_VERSION = "2.1"  # 2.1: by_section evidence:null + non_prose_dropped (issues #6/#3)
 # Version of the written metric definitions (references/metric-definitions.md).
 METRIC_SPEC_VERSION = "1.0"
 
@@ -79,6 +79,16 @@ _STRATIFIED_SECTIONS = ("introduction", "method", "experiments")
 # metrics (a bibliography is not body text; a keyword list is not a sentence).
 _NON_PROSE_SECTIONS = frozenset(
     {"references", "appendix", "acknowledgments", "keywords", "front_matter"}
+)
+
+#: A keywords marker line is metadata even when its block was attributed to a
+#: prose section, which is what happens when the journal prints the keyword list
+#: under an unrecognised heading ("A R T I C L E I N F O").  Only the leading
+#: marker is matched, so a sentence that merely mentions the word "keywords"
+#: ("The keywords were extracted from the abstract.") stays body text.
+_KEYWORDS_MARKER_RE = re.compile(
+    r"^\s*(?:keywords?|key\s+words|关键词|关键字|主題詞|主题词)\s*[:：]",
+    re.IGNORECASE,
 )
 
 
@@ -112,6 +122,10 @@ class Paper:
     # Upstream (paper-reader) provenance: which engines produced this canonical
     # document, and whether their versions were recorded at all.
     upstream: dict = field(default_factory=dict)
+    # reason -> {"blocks": n, "words": m}: every text block kept out of the
+    # canonical body, so a reader can see how much material was dropped and
+    # why (issue: 前置页/关键词混入正文). Populated by canonical_text().
+    non_prose_dropped: dict = field(default_factory=dict)
 
     def load_blocks(self) -> list[dict]:
         if self.blocks:
@@ -164,6 +178,7 @@ class Paper:
         if not include_non_prose and self._text_cache is not None:
             return self._text_cache
         parts: list[str] = []
+        dropped: dict[str, dict[str, int]] = {}
         for section, b in self.labelled_blocks():
             if _is_title_block(b):
                 continue
@@ -172,9 +187,22 @@ class Paper:
             text = (b.get("text") or "").strip()
             if not text:
                 continue
-            if not include_non_prose and section in _NON_PROSE_SECTIONS:
+            reason: str | None = None
+            if not include_non_prose:
+                if section in _NON_PROSE_SECTIONS:
+                    reason = section
+                elif _KEYWORDS_MARKER_RE.match(text):
+                    # journal keyword list printed under a heading the section
+                    # classifier does not recognise as non-prose
+                    reason = "keywords_line"
+            if reason is not None:
+                stats = dropped.setdefault(reason, {"blocks": 0, "words": 0})
+                stats["blocks"] += 1
+                stats["words"] += len(text.split())
                 continue
             parts.append(text)
+        if not include_non_prose:
+            self.non_prose_dropped = {k: dropped[k] for k in sorted(dropped)}
         # NFC normalisation happens here, once, at the ingestion point: the same
         # logical text in NFC vs NFD would otherwise tokenise differently and
         # silently shift every length/ratio metric. Spans recorded in evidence
@@ -193,8 +221,11 @@ class Paper:
             if _is_title_block(b) or b.get("type") != "text":
                 continue
             text = (b.get("text") or "").strip()
-            if text:
-                buckets[section].append(text)
+            if not text:
+                continue
+            if section in _NON_PROSE_SECTIONS or _KEYWORDS_MARKER_RE.match(text):
+                continue
+            buckets[section].append(text)
         self._sections_cache = {
             k: unicodedata.normalize("NFC", "\n\n".join(v)) for k, v in buckets.items()
         }
@@ -1173,6 +1204,12 @@ def _aggregate_metric(per_paper_values: dict[str, float], unit: str,
             "n_valid": len(sv),
             "mean": (sum(sv) / len(sv)) if sv else None,
             "median": _percentile(sv, 0.5) if sv else None,
+            # Explicit, never absent: a stratified value carries no evidence
+            # pointer of its own. Trace a stratum back through
+            # _per_paper_metrics.jsonl (per-paper records hold the samples).
+            # See issue #6: an implicit missing key was indistinguishable from
+            # "no evidence exists".
+            "evidence": None,
         }
     return {
         "unit": unit, "n_valid": n, "n_missing": len(missing),
@@ -1372,9 +1409,19 @@ def aggregate_corpus(records: list[dict], corpus_id: str | None = None) -> dict:
                        f"reported as null and counted as missing, never as 0. "
                        f"Chinese support is tracked in issue #10."),
         })
+    # How much text was kept out of the canonical body, and why (issue: 前置页
+    # 混入正文). Aggregated over papers so the filtering rule is auditable.
+    dropped_totals: dict[str, dict[str, int]] = {}
+    for r in records:
+        for reason, stats in (r.get("non_prose_dropped") or {}).items():
+            acc = dropped_totals.setdefault(reason, {"papers": 0, "blocks": 0, "words": 0})
+            acc["papers"] += 1
+            acc["blocks"] += int(stats.get("blocks", 0))
+            acc["words"] += int(stats.get("words", 0))
     out = {
         "schema_version": SCHEMA_VERSION,
         "analysis_unit": "paper",
+        "non_prose_dropped": {k: dropped_totals[k] for k in sorted(dropped_totals)},
         "weight_mode": "equal_paper",
         "languages": {k: lang_counts[k] for k in sorted(lang_counts)},
         "language_supported": language_supported,
@@ -1436,6 +1483,7 @@ def run_profile(corpus_dir: Path, out_dir: Path,
         text = paper.canonical_text()
         record: dict = {
             "paper_key": paper.paper_key,
+            "non_prose_dropped": paper.non_prose_dropped,
             "inputs": paper.inputs,
             "sections": paper.sections_present(),
             "n_tokens": len(text_metrics_mod.tokenize(text)),
@@ -1535,6 +1583,25 @@ def _render_md(profile: dict) -> str:
     if skipped:
         lines.append(f"- 跳过论文: {len(skipped)} 篇（原因见 _domain_profile.json 的 corpus.skipped）")
     lines.append("")
+    # Upstream provenance (issue #7): the machine profile already carried
+    # upstream.* but the human report dropped it, so a reader could not tell a
+    # measured engine version from an environment estimate.
+    upstream = (profile.get("corpus_summary") or {}).get("upstream") or {}
+    if upstream:
+        lines.append("## 上游溯源 (Upstream Provenance)")
+        lines.append("")
+        lines.append(f"- 记录到 paper-reader meta 的论文: {upstream.get('papers_with_paper_reader_meta', 0)}")
+        lines.append(f"- 引擎版本来源: {', '.join(upstream.get('engine_versions_sources') or []) or '未记录'}")
+        lines.append(f"- pdf_sha256 已记录: {upstream.get('pdf_sha256_recorded', 0)} 篇")
+        for engine, versions in sorted((upstream.get("engine_versions") or {}).items()):
+            lines.append(f"- {engine}: {', '.join(versions) or '未记录'}")
+        lines.append("")
+        lines.append("> **来源等级**：" + _TICK + "conversion_time" + _TICK
+                     + " = 转换当时写入的真实版本（可证明转换环境）；"
+                     + _TICK + "current_env_estimate" + _TICK
+                     + " = 当时未记录、用当前环境版本回填的**估计值**，不得当作转换时实测；"
+                     "缺失则为未知，不填 0。")
+        lines.append("")
     lines.append("## 章节骨架 (Section Skeleton)")
     lines.append("")
     lines.append("| 规范标签 | 出现频次 | 变体示例 | 中位位置 | 中位字数占比 |")

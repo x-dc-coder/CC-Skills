@@ -19,7 +19,7 @@
 | 比较域 | 同一 `metric_spec_version` + 同一词表 `fingerprint()` 的产物之间 | 跨词表版本、跨 `metric_spec_version`、跨 01-指标契约.md 的原始示例数（0.18/0.21/0.094/0.109 等）**一律不可比**，见 §7 |
 | V7 引擎漂移对照 | — | **未实现**：profile 主链不含任何 drift 数值；marker_markdown 的 sha256 虽被记录但**无任何指标读取它**；仅有 `ENGINE_VERSION_NOT_RECORDED` 告警（漂移可发现、不可归因）。可选加分项见 §5.2 |
 | **M-PAS-09 短语级精确率** | — | **已完成（N=40，agent 裁决）**：evidence span 已改为**被动短语 span**（助动词+可选副词+过去分词，含 has been / can be 前置），抽检**精确率 20/20 = 100%，95% Wilson CI 下限 0.839**；负例半边（10 条"有助动词但未判定"边界句 + 10 条无助动词句）漏报 **0/20**。**限制：agent 裁决非专家金标准，结论只覆盖这 40 条**，见 impl-baseline/_pas_spotcheck.md |
-| **正文块内关键词行 / 行内数学式** | — | **本轮未修（已知边界）**：落在正文块内的关键词行与行内 LaTeX 仍参与分句，从而进入 M-SLEN-01 / M-LSF-16 / M-PAS-09 的分母。复现锚点（reslice 已逐字符核对）：① `2020 - PSO Hyper-heuristic for Dynamic VRP [Okulewicz-Mandziuk]` span [901, 1091]（Keywords 行）；② `2023 - Approximation Algorithms for CVRP - Survey [Chen]` span [323, 469]（行内公式）。真实语料 M-PAS-09 的 170 条证据抽样中含 **10 条**此类污染 |
+| **正文块内关键词行 / 行内数学式** | — | **已修（2026-09-13，issue #2）**：分句前对**等长副本**做非正文掩码（原文 offset 不变，span 仍切片回原文）——① 关键词行（`Keywords:` / `Key words:` / `关键词：`，含行内其余内容）；② 行内与行间数学 `$...$` / `$$...$$`（不跨行）；③ MinerU 的 `<sub>`/`<sup>` 标签。掩码后**不含字母的片段直接丢弃**。两个复现锚点已从 evidence.sample 消失（实测 34 篇：含 `eyword` 的样本 M-SLEN-01 3→0、M-LSF-16 2→0；锚点 [901,1091] / [323,469] 均不再出现）。语料级差值见〈正文口径与关键词行过滤〉 |
 | 统计效力 | `n_valid >= 5` 才允许讨论分布 | `n_valid < 5` 时 `_corpus_summary.json` 记 `N_LT_5` 告警；`n_valid == 0` 时统计置 `null`，**禁止**输出期刊级结论 |
 
 ### 0.1 V7（PDF→Canonical 引擎漂移）现状：**未实现**
@@ -27,6 +27,52 @@
 本轮**没有**实现 Marker 与 MinerU 的双链指标漂移对照。profile 侧只有两件事：① 每篇输入产物的 sha256（可寻址）；② `ENGINE_VERSION_NOT_RECORDED` 语料告警（暴露 paper-reader 的 `_META.json` 未记引擎版本）。因此「PDF→Canonical」的漂移**既没有数值、也无法归因到引擎版本**——§0 第 5 行的确定性承诺边界依然只覆盖 Canonical→指标。
 
 **可选加分项**：`baseline_eval.py --drift-probe N`（默认关闭）提供文本层三项指标的探针，实测与局限见 §5.2。**未做部分**：结构类指标（章节骨架/图表公式落位）在 Marker 侧无对应物；按引擎版本分层的漂移；PDF 原点到 Canonical 的端到端漂移。
+
+### 正文口径与关键词行过滤（issue #3 / #2，2026-09-13）
+
+**正文口径（可执行的过滤规则）**：`canonical_text()` 只保留 `type == "text"`、非标题、且**不属于非正文 section** 的块；非正文 section 集合为
+`{references, appendix, acknowledgments, keywords, front_matter}`；**首个二级标题之前的所有块 = `front_matter`**。本次新增第二条规则：**块文本以关键词标记开头**（`Keywords:` / `Key words:` / `关键词：`，正则只匹配行首标记）时，即使它落在正文 section 内也丢弃——期刊常把关键词排在 `A R T I C L E I N F O` 这类未被识别的标题下（实测 7 篇命中）。
+
+**丢弃量（34 篇语料，直接取自 `_corpus_summary.json` 的 `non_prose_dropped`）**：
+
+| 原因 | 篇数 | 块数 | 词数 |
+|---|---:|---:|---:|
+| `front_matter`（题名/作者/机构/邮箱） | 34 | 149 | 3 257 |
+| `references` | 4 | 18 | 564 |
+| `acknowledgments` | 10 | 11 | 409 |
+| `appendix` | 4 | 15 | 308 |
+| `keywords`（section 已被识别） | 3 | 3 | 35 |
+| `keywords_line`（本次新增规则） | 7 | 7 | 93 |
+| **合计** | — | **203** | **4 666** |
+
+**误删自证**：抽验 `2020 - PSO Hyper-heuristic for Dynamic VRP [Okulewicz-Mandziuk]`，其 `front_matter` 的 9 个块恰为标题 / 作者 / 机构 / 邮箱，无正文段落；`abstract` 是独立 section 且被完整保留（`canonical_text()` 开头即摘要正文）。
+
+**修正前后语料级差值**（同一语料 `corpus_id = a95e790e…`，34 篇；修前 / 修后为同机同参数两次运行）：
+
+| 指标 | 修前 | 修后 | Δ |
+|---|---:|---:|---:|
+| M-SLEN-01（words/sentence） | 28.9662 | 26.2047 | **−9.53 %** |
+| M-LSF-16（长句占比） | 0.1129 | 0.1172 | **+3.83 %** |
+| M-PAS-09（被动率） | 0.2834 | 0.2861 | **+0.97 %** |
+| M-MTLD-02（词汇多样性） | 72.9721 | 72.9654 | −0.01 % |
+| M-CONN-30（连接词密度） | 5.9684 | 5.9712 | +0.05 % |
+| M-PCNT-25（段长） | 89.9890 | 89.9890 | 0.00 % |
+
+句数（M-LSF-16 / M-PAS-09 的分母）合计 **10 002 → 10 127（+125）**。变化来自两个方向，都可复现：① 关键词行与纯公式片段被丢弃 → 句数减少；② 句号后**紧跟数学或 `<sub>` 标签**时，修前因「句号后必须是空白或收尾符」而**不判句界**（把两句并成一句），掩码后正确判界 → 句数增加。净额为 +125，属修正而非口径漂移。
+
+### INFERRED 层准入检查表（红线，issue #9）
+
+本层**只做 OBSERVED**（确定性规则、零 LLM）。语步（move）、引用功能（citation function）、论证图等语义指标**未实现**，且在下列 5 条**同时**落地之前不得引入（落地第 1 条即可开启评估，未落地时 `state` 必须保持 `OBSERVED`、`method` 必须保持 `rule`，由 `test_profile_papers.py` 与 `test_determinism.py` 断言守线）：
+
+1. **标签集冻结为仓库内文件**（含版本号与 `sha256`）；
+2. 建立**人工标注集**（建议 ≥ 200 句）并报告 **κ ≥ 0.6**，未达标不得写入 profile；
+3. 在**留出集**上报告 precision / recall / F1；
+4. 每句输出 `{sid, label, confidence_method, model_id, prompt_sha256, seed, temperature}`，且 `method ∈ {model, human}`；
+5. 产出**不得进入任何 gate**，也不得带小数形式的"自报置信度"（未校准则只能给 `score_raw`）。
+
+验收基准 V6 在本层为 **N/A**（无 INFERRED 指标）——N/A **不是及格**。
+
+
 
 ### 0.2 语言不支持：从「声明」到「可执行的失败契约」（A 轮）
 
@@ -109,6 +155,7 @@ text_metrics.compute_text_metrics(text, bundle) 的返回值为 {metric_id: metr
 - `evidence.count`：命中总数，**等于** `n`（ratio/密度类）。`evidence.sample` 最多 5 条；`excerpt` 最多 80 字符。
 - **span 坐标系**：`[start, end]` 是相对**本次入参 text**（单篇论文全文拼接串）的 char 偏移，不是文件偏移、不是块内偏移。第三方回指原文的方法：把该篇 `_per_paper_metrics.jsonl` 对应行的 `inputs[].artifact` 原文按同一条拼接规则（按块序、块间以换行连接）重建字符串，再按下面的截断规则切片比对。
 - `warnings`：例如 `mtld_short_text`、`no_evidence`、`unresolved_tense`。告警**不改变** `value`，只声明解释边界。
+- **分层值（`_corpus_summary.json` → `metrics.<id>.by_section.<section>`）不携带证据指针**：每个分层显式带 `"evidence": null`（issue #6——缺省键与「没有证据」无法区分，故改为显式）。逐条回指原文请用 `_per_paper_metrics.jsonl`：分层只是把同一批 per-paper 值按 section 重新聚合，样本仍在该文件的 `metrics.<id>.evidence.sample`。
 
 ### 1.1 证据抽样与复现规则（冻结，v1.1）
 
@@ -264,6 +311,7 @@ text_metrics.compute_text_metrics(text, bundle) 的返回值为 {metric_id: metr
 - **反映什么写作行为**：篇章衔接的**显性化密度**——作者把转折/因果/结果关系写成连接词，而非留给读者推断的倾向。
 - **不能推断什么**：不能推断逻辑连贯性（显性连接词多不等于论证好，也可能只是关系简单）；不能推断因果关系真实存在；不能推断读者理解度。
 - **已知失效场景**：① since 的时间义被计为因果；② as a result 归 result 而非 causal（若归错会破坏互斥）；③ thus / therefore 在 Method 中的过渡用法被计为结果标记；④ 原设计案示例数值本身不自洽（0.042+0.038+0.029 = 0.109，而总密度写 0.094），**禁止**用该示例数当基线，以本实现产物为准。
+- **召回下界（issue #5，选项 ②，2026-09-13 实测）**：词表 v1.1 删除了 9 个无法词法消歧的裸词，因此 `M-CONN-30k`（因果）与 `M-CONN-30` 应读作**下界**，不是无偏估计。代价量级（34 篇 / 10 127 句，按当前版本分句与 tokenize 统计"句中出现该词"）：`as` 1 525 句、`while` 416、`through` 192、`so` 132、`since` 74、`still` 72、`yet` 37（合计 2 448 句，占全部句子 **24.2 %**，其中句首 325 句）——这些句子里**真实**的因果/转折用法一律不再进入分子。复算命令：`uv run python /tmp/verify_recall_dc.py`（脚本：遍历语料 `canonical_text()` → `split_sentences()` → `tokenize()` 计数；数字随 #2 的分句修正而变化，修前口径为 2 212 句 / 22.1 %）。多词变体（`as a result of` / `as a consequence` / `so that` / `because of` / `due to` …）仍保留并按最长匹配优先，故下界只在"裸词"这一层成立。**口径待统一**：issue 正文记裸 `as` 占修复前因果分量 **77.6 %**，`connectors.json` 的 `notes` 记 **73.5 %**（语料篇数不同）——两者不可同时引用，引用时请注明语料与版本。多词变体（`as a result of` / `as a consequence` / `so that` / `because of` / `due to` …）仍保留并按最长匹配优先，故下界只在"裸词"这一层成立。**口径待统一**：issue 正文记裸 `as` 占修复前因果分量 **77.6 %**，`connectors.json` 的 `notes` 记 **73.5 %**（语料篇数不同）——两者不可同时引用，引用时请注明语料与版本。
 - **复算路径**：核验恒等式（容差 1e-6）；按 `evidence.sample[].span` 切片抽检 30 个 span；三清单互斥性由单元测试保障。
 - **依据文献**：**PDTB 2.0 Annotation Manual**（免费 PDF：https://catalog.ldc.upenn.edu/docs/LDC2008T05/manual/pdtb-annotation-manual.pdf ；数据本体 LDC2008T05 属 LDC User Agreement、不可再分发；手册 Appendix A 明列 100 型 explicit connectives / 18459 tokens / 111 senses）。03-工具与依据.md §1.2(10)：这是**零成本获得可验证连接词表**的正解，不必购买 LDC 数据。
 

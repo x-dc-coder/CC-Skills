@@ -58,6 +58,22 @@ Pinned matching rules (a third party reproduces every number from these):
    and an empty evidence sample.  A language the module cannot measure is never
    reported as 0 (that would be a fabricated number) and never raises.
 
+7. **Pre-split normalisation (2026-09-13)**: before any sentence boundary is
+   computed, three classes of non-prose characters are blanked to spaces in a
+   same-length copy of the text, so every offset stays valid and every span
+   still slices the original characters.  (a) A **journal keywords line** (a
+   line whose first non-blank token is `Keywords`/`Key words`/`关键词`/
+   `关键字` followed by `:`) is metadata, never prose.  (b) **Inline and
+   display math** delimited by `$...$` / `$$...$$` (never crossing a line
+   break) can no longer be emitted as a standalone "sentence".  (c) The HTML
+   **`<sub>`/`<sup>` wrappers** emitted by MinerU are dropped (the characters
+   they wrap are kept).  A candidate span whose blanked content contains no
+   alpha token is dropped, which is what removes a bare formula or a keywords
+   line.  Rationale: keyword lines and inline formulas used to enter the
+   sentence denominator of M-SLEN-01 / M-LSF-16 / M-PAS-09 and deflate them
+   (issue: 正文块内的关键词行与行内公式参与分句); the normalisation is part of
+   the reproducibility contract, not a heuristic knob.
+
 Deliberate, documented readings of the contract:
 
 * _MTLD_MIN_FACTOR (10) is used only as the length guard
@@ -112,7 +128,7 @@ from typing import TYPE_CHECKING, Any, Iterable, Mapping, Sequence
 if TYPE_CHECKING:  # pragma: no cover - typing only, never executed
     from lexicon_loader import LexiconBundle
 
-TEXT_METRICS_VERSION = "1.0"
+TEXT_METRICS_VERSION = "1.1"  # 1.1: pre-split non-prose masking (issue #2)
 
 _LONG_SENTENCE_WORDS = 40
 _MTLD_TTR_THRESHOLD = 0.720
@@ -207,6 +223,41 @@ _EVIDENCE_RULE_DEFAULT = "unit=span" + _EVIDENCE_SUFFIX
 # ---------------------------------------------------------------------------
 
 _TERMINATORS = ".!?"
+
+# ---------------------------------------------------------------------------
+# Pre-split normalisation (issue: 正文块内的关键词行与行内公式参与分句)
+# ---------------------------------------------------------------------------
+#: A keywords line is metadata: the marker and the rest of the line are blanked
+#: (the newline is kept, so line structure survives for the abbreviation probe).
+_KEYWORDS_LINE_RE = re.compile(
+    r"^[ \t]*(?:keywords?|key[ \t]+words|关键词|关键字|主題詞|主题词)[ \t]*[:：][^\n]*",
+    re.IGNORECASE | re.MULTILINE,
+)
+#: Display math ($$...$$) must be blanked before inline math ($...$).
+_DISPLAY_MATH_RE = re.compile(r"\$\$[^$\n]*\$\$")
+_INLINE_MATH_RE = re.compile(r"\$[^$\n]*\$")
+#: MinerU sub/superscript wrappers; the characters they wrap are kept.
+_SUB_SUP_TAG_RE = re.compile(r"</?(?:sub|sup)\b[^>]*>", re.IGNORECASE)
+_MASK_PATTERNS = (
+    _KEYWORDS_LINE_RE,
+    _DISPLAY_MATH_RE,
+    _INLINE_MATH_RE,
+    _SUB_SUP_TAG_RE,
+)
+
+
+def _mask_non_prose(text: str) -> str:
+    """Blank non-prose characters to spaces, keeping length and line breaks.
+
+    The result locates sentence boundaries only; span text is always sliced back
+    out of the original string (module docstring rule 7).
+    """
+    masked = text
+    for pattern in _MASK_PATTERNS:
+        masked = pattern.sub(lambda match: " " * (match.end() - match.start()), masked)
+    return masked
+
+
 _TRAILING_CLOSERS = frozenset("\"')]}\u00bb\u201d\u2019")
 #: Horizontal whitespace only: a line break is a hard sentence-boundary
 #: candidate and is never skipped while probing for an abbreviation continuation.
@@ -325,21 +376,27 @@ def split_sentences(text: str) -> list[Span]:
     numbering and initials chains are protected (see the module docstring).
     Fragments without a single letter are dropped.  Span.text is always
     text[span.start:span.end] and never has leading or trailing whitespace.
+
+    Boundaries are located on a blanked copy of the text (module docstring rule
+    7): keywords lines, inline/display math and <sub>/<sup> markup are not prose
+    and can neither end a sentence nor become one.  Span text is always sliced
+    back out of the *original* string, so evidence still quotes the source.
     """
     if not isinstance(text, str) or not text:
         return []
+    masked = _mask_non_prose(text)
     raw: list[tuple[int, int]] = []
     start = 0
     length = len(text)
     for index in range(length):
-        if text[index] in _TERMINATORS and _is_sentence_end(text, index):
+        if masked[index] in _TERMINATORS and _is_sentence_end(masked, index):
             raw.append((start, index + 1))
             start = index + 1
     raw.append((start, length))
 
     spans: list[Span] = []
     for begin, end in raw:
-        chunk = text[begin:end]
+        chunk = masked[begin:end]
         stripped = chunk.strip()
         if not stripped:
             continue
@@ -348,8 +405,10 @@ def split_sentences(text: str) -> list[Span]:
         s = begin + lead
         e = end - tail
         piece = text[s:e]
-        if _ALPHA_TOKEN_RE.search(piece) is None:
-            continue  # letter-less fragment ("3.", "---", "[]")
+        if _ALPHA_TOKEN_RE.search(masked[s:e]) is None:
+            # letter-less fragment ("3.", "---", "[]"), a keywords line, or a
+            # bare inline formula: none of them are prose sentences.
+            continue
         spans.append(Span(s, e, piece))
     return spans
 
