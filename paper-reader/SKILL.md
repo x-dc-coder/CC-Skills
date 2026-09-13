@@ -217,6 +217,44 @@ paper_reader.py <papers_dir> --backfill-meta
 | 页数超限 | 默认 200 页上限 | SKIP → 标记 `too_large` |
 | 扫描件检测 | 前 10 页 text 层检查 | DEGRADE → 警告，建议 MinerU OCR |
 
+## 文本层探针（阶段 1.5：秒级、无模型、无 GPU）
+
+`scripts/textlayer_probe.py` 独立复算 PDF 自带文本层的字符/数字/标点，与 canonical 文本对比，产出 `_textlayer_probe.json`。
+
+**它存在的唯一理由**：`PDF → content_list.json` 这一跳**没有任何独立校验**，而这里会发生两类**静默损坏**（不报错、不告警，直接污染下游指标）。
+
+### 本机实测（《运筹与管理》10 篇中文核心期刊，2026-09-13）
+
+| 损坏类型 | 实测结果 |
+|---|---|
+| **数字丢失（CNKI 全角字体）** | **10/11 篇命中，丢失率 73 %–90 %**（此前估计 ~52 %，实测更严重）。CNKI 把数字编码成全角 `１２.７３`，PDF 文本层里有、转换后消失（MinerU issue #5330） |
+| **英文段空格丢失** | **8 篇命中**：PDF 文本层 **0** 条 15+ 字母长串，canonical 侧 **58** 条 → **空格是转换过程弄丢的**，不是 PDF 本身的问题 |
+
+### 判定规则（`compare_text_layers`，纯函数、可单测）
+
+| verdict | 条件 | 含义 |
+|---|---|---|
+| `not_applicable` | 文本层 < 200 字符 | 扫描件，**不是"测到 0"** |
+| `pdf_only` | 未提供 canonical 文本 | **没对照过就不算通过**（禁止报 `ok`） |
+| `warn` | `digit_loss_rate > 2 %` 或 `unspaced_runs_introduced > 2` | 给出 `DIGIT_LOSS_HIGH` / `UNSPACED_ENGLISH_RUNS` |
+| `ok` | 上述都不触发 | — |
+
+关键设计：空格丢失用**两侧之差**判定（`canonical - pdf`），因为"长串数量多"可能只是原文真有长复合词；**差值 > 0 才说明是转换引入的**。
+
+### 红线
+
+- **产物绝不喂给 `canonical_text()`**——旁路证据，`paper-metrics` 的纯 stdlib / 零 LLM / 逐字节契约不受影响（实测：同一英文语料改动前后 `_per_paper_metrics.jsonl` **逐字节相同**）；
+- 只用无模型、无 GPU 的宽松许可库（`pdfplumber` MIT）；**不要**在这里引入 PyMuPDF（AGPL）；
+- 探针失败**绝不阻塞**转换流水线（异常一律降级为 `not_applicable` + `TEXT_LAYER_UNREADABLE`）；
+- 同输入两次运行 JSON **逐字节一致**（键排序、无时间戳、只记文件名不记绝对路径）。
+
+### 用法
+
+```bash
+cd ~/.claude/skills && uv run python paper-reader/scripts/textlayer_probe.py \
+    --pdf paper.pdf --canonical canonical.txt --out _textlayer_probe.json
+```
+
 ## 异常处理（三级响应）
 
 | 级别 | 含义 | 行为 | 示例 |
