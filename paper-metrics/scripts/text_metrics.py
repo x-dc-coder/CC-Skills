@@ -74,6 +74,21 @@ Pinned matching rules (a third party reproduces every number from these):
    (issue: 正文块内的关键词行与行内公式参与分句); the normalisation is part of
    the reproducibility contract, not a heuristic knob.
 
+8. **CJK support (Chinese, 2026-09-13, issue #13)**: Chinese is a *per-metric*
+   capability, not an all-or-nothing language gate.  Sentence boundaries include
+   the CJK terminators `。！？…` (a run like `……` ends once, at its last
+   character; a closing quote stays inside the sentence; `；` is NOT a
+   boundary because Chinese uses it within a sentence), and the fragment filter
+   keeps a span that has no ASCII letter but does have a CJK character.  The
+   metrics whose pinned rules need no lexicon are computed for Chinese with
+   documented calibers: sentence length counts **CJK characters + ASCII alpha
+   tokens** (unit `cjk-units/sentence`, so a mixed sentence is not
+   under-counted) and M-LSF-16 uses a Chinese long-sentence threshold of
+   `_LONG_SENTENCE_CJK_UNITS` (80) instead of the English 40 words.  Every
+   other metric is reported as `null` with **CAPABILITY_NOT_SUPPORTED** — the
+   per-metric sibling of LANGUAGE_NOT_SUPPORTED, and still never 0.
+   \`_METRIC_LANGUAGE_CAPABILITY\` is the single source of truth for the matrix.
+
 Deliberate, documented readings of the contract:
 
 * _MTLD_MIN_FACTOR (10) is used only as the length guard
@@ -128,7 +143,7 @@ from typing import TYPE_CHECKING, Any, Iterable, Mapping, Sequence
 if TYPE_CHECKING:  # pragma: no cover - typing only, never executed
     from lexicon_loader import LexiconBundle
 
-TEXT_METRICS_VERSION = "1.1"  # 1.1: pre-split non-prose masking (issue #2)
+TEXT_METRICS_VERSION = "1.2"  # 1.2: CJK sentence splitting + per-metric capability (issue #13)
 
 _LONG_SENTENCE_WORDS = 40
 _MTLD_TTR_THRESHOLD = 0.720
@@ -159,7 +174,27 @@ METRIC_IDS = (
 LANGUAGE_SUPPORT_CJK_THRESHOLD = 0.10
 
 #: Languages this module's OBSERVED metrics are validated for.
-SUPPORTED_LANGUAGES = ("en",)
+SUPPORTED_LANGUAGES = ("en", "zh")
+
+#: Per-metric language capability (issue #13). A metric is only emitted for a
+#: language whose pinned rules are validated for it; every other (metric,
+#: language) pair becomes a null "not measured" record carrying
+#: CAPABILITY_NOT_SUPPORTED. English behaviour is unchanged; Chinese starts with
+#: the two metrics that need no lexicon at all.
+_METRIC_LANGUAGE_CAPABILITY: dict[str, tuple[str, ...]] = {
+    "M-SLEN-01": ("en", "zh"),
+    "M-LSF-16": ("en", "zh"),
+}
+_DEFAULT_METRIC_LANGUAGES: tuple[str, ...] = ("en",)
+#: Distinct from LANGUAGE_NOT_SUPPORTED: the language is measurable, this
+#: particular metric is not (yet) validated for it. Both are "not measured".
+CAPABILITY_NOT_SUPPORTED = "CAPABILITY_NOT_SUPPORTED"
+#: Chinese sentence-length unit: CJK characters + ASCII alpha tokens, so a mixed
+#: sentence ("采用 K-means 算法") is not under-counted.
+_UNIT_CJK_UNITS_PER_SENTENCE = "cjk-units/sentence"
+#: A Chinese academic sentence longer than this many units counts as "long"; the
+#: English threshold (40 words) does not transfer (Chinese has no word spaces).
+_LONG_SENTENCE_CJK_UNITS = 80
 
 #: Warning code emitted on every metric when the input language is unsupported.
 #: The value is null (never 0) so downstream aggregation counts it as missing.
@@ -223,6 +258,16 @@ _EVIDENCE_RULE_DEFAULT = "unit=span" + _EVIDENCE_SUFFIX
 # ---------------------------------------------------------------------------
 
 _TERMINATORS = ".!?"
+
+#: CJK sentence terminators. Kept separate from _TERMINATORS because their
+#: boundary rule differs: Chinese prose puts no space after the terminator, so
+#: the ASCII rule ("the stop must be followed by whitespace") would never fire.
+_CJK_TERMINATORS = "\u3002\uff01\uff1f\u2026"  # 。！？…
+#: Closing punctuation that belongs to the sentence it terminates ("好。」").
+_CJK_TRAILING_CLOSERS = "\u300d\u300f\u3011\u300b\uff09\uff3d\uff1e\u3009"  # 」』】》（）＞〉
+#: A run of terminators ("……", "！！") ends one sentence at its last character;
+#: stopping at the first would emit one-letter fragments.
+_CJK_TERMINATOR_RUN_RE = re.compile("[%s]+" % _CJK_TERMINATORS)
 
 # ---------------------------------------------------------------------------
 # Pre-split normalisation (issue: 正文块内的关键词行与行内公式参与分句)
@@ -366,6 +411,26 @@ def _is_sentence_end(text: str, index: int) -> bool:
     return True
 
 
+def _is_cjk_sentence_end(text: str, index: int) -> bool:
+    """True when a CJK terminator at `index` ends a sentence.
+
+    A terminator inside a run ("……" / "！！") is not a boundary: only the last
+    character of the run is, otherwise the run would be split into fragments.
+    """
+    nxt = text[index + 1] if index + 1 < len(text) else ""
+    if nxt in _CJK_TERMINATORS:
+        return False
+    return True
+
+
+def _cjk_trailing_closer_run(text: str, start: int) -> int:
+    """Length of the closing-punctuation run at `start` (kept inside the span)."""
+    end = start
+    while end < len(text) and text[end] in _CJK_TRAILING_CLOSERS:
+        end += 1
+    return end - start
+
+
 def split_sentences(text: str) -> list[Span]:
     """Split the text into sentence spans (rule-based, deterministic).
 
@@ -389,9 +454,15 @@ def split_sentences(text: str) -> list[Span]:
     start = 0
     length = len(text)
     for index in range(length):
-        if masked[index] in _TERMINATORS and _is_sentence_end(masked, index):
+        char = masked[index]
+        if char in _TERMINATORS and _is_sentence_end(masked, index):
             raw.append((start, index + 1))
             start = index + 1
+        elif char in _CJK_TERMINATORS and _is_cjk_sentence_end(masked, index):
+            # keep a trailing closing quote/bracket inside the sentence
+            end = index + 1 + _cjk_trailing_closer_run(masked, index + 1)
+            raw.append((start, end))
+            start = end
     raw.append((start, length))
 
     spans: list[Span] = []
@@ -405,9 +476,12 @@ def split_sentences(text: str) -> list[Span]:
         s = begin + lead
         e = end - tail
         piece = text[s:e]
-        if _ALPHA_TOKEN_RE.search(masked[s:e]) is None:
-            # letter-less fragment ("3.", "---", "[]"), a keywords line, or a
-            # bare inline formula: none of them are prose sentences.
+        if (_ALPHA_TOKEN_RE.search(masked[s:e]) is None
+                and _CJK_CHAR_RE.search(masked[s:e]) is None):
+            # letter-less AND CJK-less fragment ("3.", "---", "[]"), a keywords
+            # line, or a bare inline formula: none of them are prose sentences.
+            # CJK characters must be accepted, otherwise every Chinese sentence
+            # is silently dropped instead of measured.
             continue
         spans.append(Span(s, e, piece))
     return spans
@@ -952,7 +1026,8 @@ def _percentile(ordered: Sequence[int], quantile: float) -> float:
 # ---------------------------------------------------------------------------
 
 def _metric_slen01(text: str, sentences: Sequence[Span],
-                   counts: Sequence[int]) -> dict[str, Any]:
+                   counts: Sequence[int], *,
+                   unit: str = _UNIT_WORDS_PER_SENTENCE) -> dict[str, Any]:
     n_sentences = len(sentences)
     n_words = sum(counts)
     warnings: list[str] = []
@@ -975,17 +1050,18 @@ def _metric_slen01(text: str, sentences: Sequence[Span],
         }
     evidence = _evidence([(span.start, span.end) for span in sentences], text, n_sentences)
     return _metric("M-SLEN-01", value=value, n=n_sentences, denominator=n_words,
-                   unit=_UNIT_WORDS_PER_SENTENCE, evidence=evidence, warnings=warnings,
+                   unit=unit, evidence=evidence, warnings=warnings,
                    distribution=distribution)
 
 
 def _metric_lsf16(text: str, sentences: Sequence[Span],
-                  counts: Sequence[int]) -> dict[str, Any]:
+                  counts: Sequence[int], *,
+                  threshold: int = _LONG_SENTENCE_WORDS) -> dict[str, Any]:
     n_sentences = len(sentences)
     long_spans = [
         (span.start, span.end)
         for span, count in zip(sentences, counts)
-        if count >= _LONG_SENTENCE_WORDS
+        if count >= threshold
     ]
     warnings: list[str] = []
     if n_sentences == 0:
@@ -996,7 +1072,7 @@ def _metric_lsf16(text: str, sentences: Sequence[Span],
     evidence = _evidence(long_spans, text, len(long_spans))
     return _metric("M-LSF-16", value=value, n=len(long_spans), denominator=n_sentences,
                    unit=_UNIT_RATIO, evidence=evidence, warnings=warnings,
-                   long_sentence_threshold=_LONG_SENTENCE_WORDS)
+                   long_sentence_threshold=threshold)
 
 
 def _metric_mtld02(text: str, tokens: Sequence[str],
@@ -1293,7 +1369,8 @@ def detect_language(text: str) -> dict[str, Any]:
     }
 
 
-def _unsupported_metric(metric_spec: str, language: dict[str, Any]) -> dict[str, Any]:
+def _unsupported_metric(metric_spec: str, language: dict[str, Any],
+                        warning: str = LANGUAGE_NOT_SUPPORTED) -> dict[str, Any]:
     """Contract-shaped "not measured" record for an unsupported language.
 
     Never 0 (0 would be a fake measurement); never an exception.  Every field
@@ -1310,9 +1387,45 @@ def _unsupported_metric(metric_spec: str, language: dict[str, Any]) -> dict[str,
         "metric_spec": metric_spec,
         "evidence": {"count": 0, "sample": []},
         "evidence_rule": _EVIDENCE_RULES.get(metric_spec, _EVIDENCE_RULE_DEFAULT),
-        "warnings": [LANGUAGE_NOT_SUPPORTED],
+        "warnings": [warning],
         "language": language["language"],
         "cjk_ratio": language["cjk_ratio"],
+    }
+
+
+def _zh_cjk_unit_count(span_text: str) -> int:
+    """Chinese sentence-length unit: CJK characters + ASCII alpha tokens.
+
+    Counting CJK characters only would under-count mixed sentences
+    ("采用 K-means 算法求解"), and counting ASCII tokens only would report ~0.
+    """
+    return len(_CJK_CHAR_RE.findall(span_text)) + len(tokenize(span_text))
+
+
+def _zh_metrics(text: str, sentences: Sequence[Span],
+                language: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Chinese metric set for the metrics whose rules are language-independent.
+
+    v1 covers sentence length and long-sentence ratio: both are pure surface
+    statistics over a CJK-aware sentence splitter and need no lexicon. Every
+    other metric is emitted as a null CAPABILITY_NOT_SUPPORTED record so a
+    consumer can tell "this language cannot measure it yet" from "measured 0".
+    """
+    counts = [_zh_cjk_unit_count(span.text) for span in sentences]
+    computed: dict[str, dict[str, Any]] = {
+        "M-SLEN-01": _metric_slen01(text, sentences, counts,
+                                    unit=_UNIT_CJK_UNITS_PER_SENTENCE),
+        "M-LSF-16": _metric_lsf16(text, sentences, counts,
+                                  threshold=_LONG_SENTENCE_CJK_UNITS),
+    }
+    for metric_id, record in computed.items():
+        record["language"] = language["language"]
+        record["cjk_ratio"] = language["cjk_ratio"]
+    return {
+        metric_id: (computed[metric_id] if metric_id in computed
+                    else _unsupported_metric(metric_id, language,
+                                             warning=CAPABILITY_NOT_SUPPORTED))
+        for metric_id in METRIC_IDS
     }
 
 
@@ -1334,6 +1447,12 @@ def compute_text_metrics(text: str, bundle: Any) -> dict[str, dict[str, Any]]:
     if not isinstance(text, str):
         text = ""
     language = detect_language(text)
+    if language["language"] == "zh":
+        # Per-metric capability matrix (issue #13): Chinese gets the metrics
+        # whose pinned rules are language-independent; the rest are null with
+        # CAPABILITY_NOT_SUPPORTED. Never 0 - a fabricated zero would look like
+        # a measurement.
+        return _zh_metrics(text, split_sentences(text), language)
     if not language["supported"]:
         return {metric_id: _unsupported_metric(metric_id, language)
                 for metric_id in METRIC_IDS}

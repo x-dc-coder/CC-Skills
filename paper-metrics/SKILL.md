@@ -96,6 +96,12 @@ uv run python paper-metrics/scripts/pas_spotcheck.py --corpus <paper-analysis> -
 ## 支持的语言（红线：不支持就**显式失败**，绝不给假数字）
 
 - 当前指标层**只支持英文**：分句器以 `.!?` 为句末、token 只认 ASCII 字母、8 个词表均为英文口径。
+- **中文（zh）是逐指标能力，不是一刀切门禁（2026-09-13，issue #13）**：
+  - **已可测**：`M-SLEN-01` 句长（单位 **`cjk-units/sentence`** = 汉字数 + ASCII 字母 token 数，混合句不会被漏计）、`M-LSF-16` 长句占比（中文阈值 **80 单位**，不是英文的 40 词）；
+  - **尚不可测**：其余 12 条 → `null` + **`CAPABILITY_NOT_SUPPORTED`**（`LANGUAGE_NOT_SUPPORTED` 的逐指标版本；**仍然不是 0**）；
+  - 分句支持 `。！？…`；`……` 这类终止符连写只结一次；引号内的句号留在句中；**`；` 不切句**（中文在句内使用）；
+  - 实测（《运筹与管理》10 篇）：`M-SLEN-01` 语料均值 **54.32 cjk-units/sentence**、`M-LSF-16` **0.139**；**英文语料产物逐字节零回归**；
+  - 能力矩阵的唯一事实源是 `text_metrics._METRIC_LANGUAGE_CAPABILITY`。
   **例外（2026-09-13，issue #10 首步）**：**不依赖分句/词表的元数据层已支持中文**——引用样式识别认全角 `［N］`，参考文献计数认无空格的中文条目与 GB/T 7714 文献类型标记（实测 10 篇《运筹与管理》：`citation_style` unknown → `ieee-numeric`、`reference_count` median 0 → 15、10/10 篇有引用）。**14 条写作指标对中文仍是 `LANGUAGE_NOT_SUPPORTED`**，两者不要混为一谈。
 - 每篇都会算 `cjk_ratio = 汉字数 / (汉字数 + ASCII 字母 token 数)`，**`cjk_ratio > 0.10` 判为不支持**（阈值与实现见 `text_metrics.detect_language`）。
 - 不支持的篇目：**每一个指标输出 `null`**（`n = 0`、`warnings = ["LANGUAGE_NOT_SUPPORTED"]`），计入 `n_missing`，并在语料级触发 `CORPUS_LANGUAGE_UNSUPPORTED` 告警；**任何情况下不得用 0 代替"未测量"**。

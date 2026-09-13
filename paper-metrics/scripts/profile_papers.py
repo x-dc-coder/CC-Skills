@@ -53,9 +53,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 # Algorithm version — bump when metric *semantics* change.
-PROFILER_VERSION = "2.1"  # 2.1: non_prose_dropped counters + upstream section (issues #3/#7)
+PROFILER_VERSION = "2.2"  # 2.2: corpus summary inherits per-metric capability codes (issue #13)
 # Output contract version — bump when the JSON *schema* changes.
-SCHEMA_VERSION = "2.1"  # 2.1: by_section evidence:null + non_prose_dropped (issues #6/#3)
+SCHEMA_VERSION = "2.2"  # 2.2: per-metric capability codes + CJK subset (issue #13)
 # Version of the written metric definitions (references/metric-definitions.md).
 METRIC_SPEC_VERSION = "1.0"
 
@@ -1326,6 +1326,11 @@ def aggregate_corpus(records: list[dict], corpus_id: str | None = None) -> dict:
     metrics: dict[str, dict] = {}
     corpus_warnings: list[dict] = []
     length_by_paper = {r["paper_key"]: r.get("n_tokens", 0) for r in records}
+    # Per-metric explanation codes seen in the per-paper records. The summary has
+    # to inherit them: otherwise a corpus-level row can only say "no valid value"
+    # and loses whether the cause was the language or a metric-specific
+    # capability gap (issue #13).
+    metric_record_codes: dict[str, set[str]] = defaultdict(set)
     for mid in sorted(metric_ids):
         per_paper: dict[str, float] = {}
         unit = ""
@@ -1336,6 +1341,7 @@ def aggregate_corpus(records: list[dict], corpus_id: str | None = None) -> dict:
                 per_paper[r["paper_key"]] = None
                 continue
             per_paper[r["paper_key"]] = m.get("value")
+            metric_record_codes[mid].update(m.get("warnings") or ())
             unit = unit or m.get("unit", "")
             for section, smap in (r.get("section_metrics") or {}).items():
                 if smap.get(mid) is not None:
@@ -1426,10 +1432,18 @@ def aggregate_corpus(records: list[dict], corpus_id: str | None = None) -> dict:
         # 13x N_LT_5 + 13x N_VALID_LT_3 is pure noise that hides the real cause.
         # Collapse them into the single, actionable LANGUAGE_NOT_SUPPORTED code.
         _small_n_codes = {"NO_VALID_VALUES", "N_LT_5", "N_VALID_LT_3"}
-        for msum in metrics.values():
+        # CAPABILITY_NOT_SUPPORTED (issue #13) is the per-metric sibling of
+        # LANGUAGE_NOT_SUPPORTED: a Chinese corpus now measures the subset whose
+        # rules are language-independent and reports the rest as unmeasurable, so
+        # both codes have to count as "explained" before the small-n noise is
+        # collapsed away.
+        _explained_codes = {"LANGUAGE_NOT_SUPPORTED", "CAPABILITY_NOT_SUPPORTED"}
+        for mid, msum in metrics.items():
             codes = set(msum.get("warnings") or [])
-            if msum.get("n_valid") == 0 and codes and codes <= _small_n_codes | {"LANGUAGE_NOT_SUPPORTED"}:
-                msum["warnings"] = sorted((codes - _small_n_codes) | {"LANGUAGE_NOT_SUPPORTED"})
+            if msum.get("n_valid") == 0 and codes and codes <= _small_n_codes | _explained_codes:
+                explanation = (metric_record_codes.get(mid, set()) & _explained_codes) \
+                    or {"LANGUAGE_NOT_SUPPORTED"}
+                msum["warnings"] = sorted((codes - _small_n_codes) | explanation)
         corpus_warnings = [w for w in corpus_warnings if w["code"] not in _small_n_codes]
     if unsupported:
         corpus_warnings.append({

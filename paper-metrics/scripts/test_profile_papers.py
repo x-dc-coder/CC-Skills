@@ -635,10 +635,19 @@ def test_unsupported_language_suppresses_paragraph_length_stats(tmp_path: Path) 
     summary = json.loads((out / "_corpus_summary.json").read_text(encoding="utf-8"))
     assert summary["language_supported"] is False
     assert "CORPUS_LANGUAGE_UNSUPPORTED" in {w["code"] for w in summary["corpus_warnings"]}
-    # no small-n noise once the language cause is known
-    codes = {c for m in summary["metrics"].values() for c in (m.get("warnings") or [])}
-    assert "NO_VALID_VALUES" not in codes and "N_LT_5" not in codes, codes
-    assert "LANGUAGE_NOT_SUPPORTED" in codes
+    # Issue #13 changed the shape of this guarantee: Chinese now measures the
+    # subset whose rules need no lexicon, so the small-n trio may legitimately
+    # appear for a *measured* metric. What must never happen is an unmeasurable
+    # metric drowning in small-n noise instead of naming its real cause.
+    measured = {mid: m for mid, m in summary["metrics"].items()
+                if m.get("n_valid", 0) > 0}
+    unmeasured = {mid: m for mid, m in summary["metrics"].items()
+                  if m.get("n_valid", 0) == 0}
+    assert measured, "the surface metrics must be measurable for Chinese"
+    for mid, m in unmeasured.items():
+        codes = set(m.get("warnings") or [])
+        assert not (codes & {"NO_VALID_VALUES", "N_LT_5", "N_VALID_LT_3"}), (mid, codes)
+        assert codes & {"LANGUAGE_NOT_SUPPORTED", "CAPABILITY_NOT_SUPPORTED"}, (mid, codes)
     rec = json.loads((out / "_per_paper_metrics.jsonl").read_text(encoding="utf-8").splitlines()[0])
     pm = rec["metrics"]["M-PCNT-25"]
     assert pm["value"] is None and pm["distribution"] is None
