@@ -237,6 +237,36 @@ cd ~/.claude/skills && uv run python paper-metrics/scripts/validate_draft.py \
 - 退出码：任一 `gate` 失败 → 1，便于接进 CI 或二次修订循环。
 - 校验器与 profiler（均在 `paper-metrics` 技能内）共用 `text_metrics.py`，因此草稿侧与语料侧的口径**不可能漂移**。
 
+#### E.2c 中文（zh）语料的契约与校验（issue #13）
+
+上面两步对中英文**同一套命令**，但中文有三条必须遵守的口径规则：
+
+| 规则 | 原因 | 怎么做 |
+|---|---|---|
+| **契约必须与语料同语言** | 中文的句长单位、密度分母、段落口径与英文都不同（见下），拿英文契约卡中文稿必然全条 warn | 用哪份 `_corpus_summary.json` 生成契约，就用同语言草稿校验；中文契约把输出命名为 `_writing_contract.zh.yaml` 以免混淆 |
+| **中文单位不可与英文数值比较** | 句长 = `cjk-units/sentence`（汉字 + ASCII 词）；连接词 = `per-1000-cjk-units`；段落 = `cjk-units/paragraph`；`M-MTLD-02` 中文是**字符级**（`params.tokenization = "cjk-char+ascii-token"`），英文是词级 | 只跟**中文契约区间**比；不要用英文语料的数字做直觉判断 |
+| **12/14 条可测，2 条会跳过** | `M-NOM-10`（中文名词化需标注集）、`M-TENSE-28`（中文无时态）对中文是 `CAPABILITY_NOT_SUPPORTED` | 校验报告里这两条是 `skipped + capability_not_supported`，**不是失败**；不要为了让它们通过去改稿 |
+
+**中文语料的标准流程**：
+
+```bash
+cd ~/.claude/skills
+# 1) 中文语料 → 指标（自动按语言选 v2-zh 词表；12/14 条有值）
+uv run python paper-metrics/scripts/profile_papers.py --corpus <zh_paper-analysis> --out <output_dir>
+
+# 2) 生成中文契约（区间 = 中文语料 p25/p75；两条不可测指标自动降级为 null+warn）
+uv run python paper-metrics/scripts/build_contract.py \
+    --summary <output_dir>/_corpus_summary.json --out <output_dir>/_writing_contract.zh.yaml
+
+# 3) 校验中文草稿（能力感知：测不了的逐条跳过并写明原因）
+uv run python paper-metrics/scripts/validate_draft.py \
+    --contract <output_dir>/_writing_contract.zh.yaml --draft <output_dir>/full-paper.md
+```
+
+- **中文草稿的有效性门槛是 `cjk-units ≥ 150`**（不是 ASCII 词数）——太短的草稿会被判 `insufficient_evidence` 并退出码 2，这是"样本不足"而不是"语言不支持"；
+- **各章节字数预算**用 `section_skeleton[].median_word_share × 目标总字数`，中文按**字**计，不要套用英文的"词"；
+- 词表来源可追溯：`_domain_profile.json → toolchain.lexicon_releases.zh.fingerprint` 记录中文 release 指纹（当前 `2.1-zh`），换词表必须重新生成契约。
+
 #### E.3 补充确认
 - 占位符残留检查（同 Mode A）
 - 参考文献编号连续性（共享逻辑，已检查）
