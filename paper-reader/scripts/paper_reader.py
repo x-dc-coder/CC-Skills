@@ -73,7 +73,29 @@ _ENGINE_PROBE_TIMEOUT = 45.0
 _ENGINE_VENV_NAMES = ("marker", "mineru")
 # Frozen _META.json contract (agreed with the metrics layer): exactly these keys,
 # always present, null when the probe could not determine a value.
-_ENGINE_CONTRACT_KEYS = ("marker", "mineru", "torch", "cuda", "python")
+_ENGINE_CONTRACT_KEYS = ("marker", "mineru", "surya", "torch", "cuda", "python")
+
+#: License identity of every engine whose code or weights we actually run.
+#: Recorded next to the versions because a version number alone cannot tell a
+#: downstream consumer that, e.g., the Surya *weights* are OpenRAIL-M (non-OSI,
+#: free commercial use only under the revenue/funding threshold) even though the
+#: Marker code that pulls them in is Apache-2.0. Static facts, so no probing.
+_ENGINE_LICENSE_IDS = {
+    "marker": {"code": "Apache-2.0", "weights": "Apache-2.0"},
+    "mineru": {
+        "code": "Apache-2.0",
+        "code_note": "additional terms: commercial license required above 100M MAU or USD 20M monthly revenue; online services must credit MinerU",
+        "weights": "AGPL-3.0 (MinerU2.5-2509-1.2B VLM weights)",
+    },
+    "surya": {
+        "code": "Apache-2.0",
+        "weights": "modified AI Pubs OpenRAIL-M (non-OSI; free commercial use only below the funding/revenue threshold)",
+    },
+    "torch": {"code": "BSD-3-Clause", "weights": None},
+    "pdfplumber": {"code": "MIT", "weights": None},
+    # Explicitly NOT used: AGPL would contaminate the published pipeline.
+    "pymupdf": {"code": "AGPL-3.0 (NOT USED by design)", "weights": None},
+}
 _ENGINE_VERSIONS_CACHE: dict | None = None
 _ENGINE_VERSIONS_LOCK = threading.Lock()
 
@@ -86,7 +108,8 @@ try:
     import importlib.metadata as md
 except Exception:
     md = None
-for key, pkg in (("marker", "marker-pdf"), ("mineru", "mineru"), ("torch", "torch")):
+for key, pkg in (("marker", "marker-pdf"), ("mineru", "mineru"),
+                 ("surya", "surya-ocr"), ("torch", "torch")):
     if md is None:
         out[key] = None
         continue
@@ -209,6 +232,7 @@ def _collect_engine_version_provenance() -> dict:
         "python": _first("python"),
         "marker": _first("marker"),
         "mineru": _first("mineru"),
+        "surya": _first("surya"),
         "torch": _first("torch"),
         "cuda": _first("cuda"),
     }
@@ -256,6 +280,14 @@ def _engine_version_snapshot() -> dict:
             versions = {k: snap.get("versions", {}).get(k) for k in _ENGINE_CONTRACT_KEYS}
             _ENGINE_VERSIONS_CACHE = {
                 "engine_versions": versions,
+                # Which license each engine's code and weights carry. A version
+                # number alone cannot tell a consumer that the Surya weights are
+                # OpenRAIL-M, so the identity is recorded with the version.
+                # Full static policy record, not filtered by what happened to be
+                # detected: it also documents the license we deliberately avoid
+                # (PyMuPDF, AGPL) so a consumer cannot re-add it by accident.
+                "engine_license_ids": {k: _ENGINE_LICENSE_IDS[k]
+                                       for k in sorted(_ENGINE_LICENSE_IDS)},
                 "engine_versions_source": (
                     "conversion_time" if any(versions.values()) else "unavailable"
                 ),

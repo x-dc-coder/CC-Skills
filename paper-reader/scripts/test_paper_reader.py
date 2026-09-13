@@ -192,20 +192,31 @@ def test_normalize_meta_lines_are_removed() -> None:
 # ---------------------------------------------------------------------------
 
 _FAKE_SNAPSHOT = {
-    "engine_versions": {"marker": "9.9.9", "mineru": "8.8.8", "torch": "7.7.7",
-                        "cuda": "6.6", "python": "3.10.12"},
+    # surya joined the contract in issue #14: it reaches the pipeline through
+    # Marker 2.0, and its *weights* are OpenRAIL-M, so the version has to be
+    # recorded alongside the code that pulls it in.
+    "engine_versions": {"marker": "9.9.9", "mineru": "8.8.8", "surya": "0.22.1",
+                        "torch": "7.7.7", "cuda": "6.6", "python": "3.10.12"},
+    "engine_license_ids": {"marker": {"code": "Apache-2.0", "weights": "Apache-2.0"}},
     "engine_versions_source": "conversion_time",
     "engine_versions_note": None,
 }
 
 
 def test_engine_version_snapshot_contract() -> None:
-    """Snapshot exposes the frozen five version keys plus a source marker."""
+    """Snapshot exposes the frozen version keys, license ids and a source marker."""
     pr._reset_engine_version_cache()
     snap = pr._engine_version_snapshot()
-    assert set(snap) == {"engine_versions", "engine_versions_source",
-                         "engine_versions_note"}
+    assert set(snap) == {"engine_versions", "engine_license_ids",
+                         "engine_versions_source", "engine_versions_note"}
     assert list(snap["engine_versions"]) == list(pr._ENGINE_CONTRACT_KEYS)
+    assert "surya" in snap["engine_versions"], "issue #14: surya is a contract key"
+    # A version number alone cannot tell a consumer that the Surya weights are
+    # OpenRAIL-M, so the license identity ships next to the version.
+    licenses = snap["engine_license_ids"]
+    assert licenses["surya"]["weights"].startswith("modified AI Pubs OpenRAIL-M")
+    assert "additional terms" in licenses["mineru"]["code_note"]
+    assert licenses["pymupdf"]["code"].startswith("AGPL-3.0 (NOT USED")
     assert snap["engine_versions_source"] in {"conversion_time", "unavailable"}
     assert snap["engine_versions_note"] is None or isinstance(
         snap["engine_versions_note"], str)
@@ -423,7 +434,10 @@ def test_backfill_fills_missing_hash_and_marks_estimate(tmp_path: Path, monkeypa
 
     assert record["pdf_sha256"] == expected
     assert stats["pdf_sha256_filled"] == 1
+    # Backfill must fill every contract key (including surya), never leave a
+    # hole: a missing key is indistinguishable from "unknown".
     assert record["engine_versions"] == _FAKE_SNAPSHOT["engine_versions"]
+    assert set(record["engine_versions"]) == set(pr._ENGINE_CONTRACT_KEYS)
     # Honesty: never claim conversion-time measurement for a backfilled record.
     assert record["engine_versions_source"] == "current_env_estimate"
     assert "not a conversion-time measurement" in record["engine_versions_note"]

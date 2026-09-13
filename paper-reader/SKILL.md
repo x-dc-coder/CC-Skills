@@ -255,6 +255,25 @@ cd ~/.claude/skills && uv run python paper-reader/scripts/textlayer_probe.py \
     --pdf paper.pdf --canonical canonical.txt --out _textlayer_probe.json
 ```
 
+## 引擎与许可（红线）
+
+| 引擎 | 代码许可 | 权重许可 | 备注 |
+|---|---|---|---|
+| **MinerU** | Apache-2.0 **+ 附加条款** | **AGPL-3.0**（MinerU2.5-2509-1.2B VLM 权重） | 附加条款：MAU > 1 亿或月营收 > 2000 万美元需商业许可；**提供在线服务须署名 MinerU** |
+| **Marker 2.0** | Apache-2.0 | Apache-2.0 | v1.x 曾是 GPL-3.0，2.0 起改为 Apache-2.0 |
+| **Surya**（经 Marker 引入） | Apache-2.0 | **modified AI Pubs OpenRAIL-M（非 OSI）** | **免费商用仅在融资/营收低于阈值时成立**；它已随 Marker 2.0（`Requires-Dist: surya-ocr>=0.22.1`）进入流水线，因此**必须**与版本一起记录 |
+| **PyMuPDF** | **AGPL-3.0** | — | **本技能不使用**（会污染发布路径）；文本层探针改用 MIT 的 `pdfplumber` |
+
+`_META.json` 里：
+
+- `engine_versions` 含 **`marker / mineru / surya / torch / cuda / python`** 六个键（**取不到写 `null`，不省略键**）；
+- `engine_license_ids` 记录上表的许可标识——**版本号本身看不出"Surya 权重是 OpenRAIL-M"**，所以许可与版本同行记录。
+
+### venv 布局
+
+- **在用**：`venvs/marker/`（当前 Marker，surya 0.22.1）、`venvs/mineru/`；
+- `venvs/marker-v1.10.2/`：**遗留 pinned venv，仓库代码从未引用**（其中 surya 是 0.17.1）。它与在用 venv 是**两套独立环境**，**不是同一环境里的重复 dist-info**——保留或删除需人工决定，不要当垃圾清理。
+
 ## 异常处理（三级响应）
 
 | 级别 | 含义 | 行为 | 示例 |
