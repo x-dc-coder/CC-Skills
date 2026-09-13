@@ -614,12 +614,14 @@ def test_aggregate_flags_unsupported_and_undetermined_language() -> None:
     assert en["metrics"]["M-SLEN-01"]["n_valid"] == 1
 
 
-def test_unsupported_language_suppresses_paragraph_length_stats(tmp_path: Path) -> None:
-    """M-PCNT-25's length stats must be suppressed for unsupported languages.
+def test_chinese_paragraph_stats_use_the_cjk_caliber(tmp_path: Path) -> None:
+    """M-PCNT-25 for Chinese counts cjk-units, not whitespace chunks.
 
-    Regression: a Chinese corpus reported ~62 "words"/paragraph because
-    len(text.split()) counts whitespace chunks in CJK text; the ">=15 words"
-    paragraph filter also drops real CJK paragraphs. Everything is suppressed.
+    Regression history: len(text.split()) counts whitespace chunks, so a Chinese
+    corpus reported ~62 "words"/paragraph for the handful of paragraphs that
+    survived the ">= 15 words" filter, and every real CJK paragraph was dropped.
+    Issue #13 replaced that with the CJK caliber (CJK characters + ASCII tokens,
+    minimum 40 units); the metric is now *measured* rather than suppressed.
     """
     corpus = tmp_path / "zh"
     d = corpus / "CN1" / "mineru" / "c1" / "auto"
@@ -650,10 +652,12 @@ def test_unsupported_language_suppresses_paragraph_length_stats(tmp_path: Path) 
         assert codes & {"LANGUAGE_NOT_SUPPORTED", "CAPABILITY_NOT_SUPPORTED"}, (mid, codes)
     rec = json.loads((out / "_per_paper_metrics.jsonl").read_text(encoding="utf-8").splitlines()[0])
     pm = rec["metrics"]["M-PCNT-25"]
-    assert pm["value"] is None and pm["distribution"] is None
-    assert pm["n"] == 0 and pm["denominator"] == 0  # no half-valid count either
-    assert "LANGUAGE_NOT_SUPPORTED" in pm["warnings"]
-    assert pm["note"], "the suppression must explain itself"
+    assert pm["unit"] == "cjk-units/paragraph"
+    assert pm["value"] == pytest.approx(96.0)   # 96 CJK characters per paragraph
+    assert pm["distribution"] is not None and pm["n"] == 2
+    assert pm["warnings"] == []
+    # the old, wrong caliber must not resurface
+    assert pm["value"] != 3.0, "word-split caliber reported 3 whitespace chunks"
 
 
 def test_quantile_convention_is_declared_and_nearest_rank(

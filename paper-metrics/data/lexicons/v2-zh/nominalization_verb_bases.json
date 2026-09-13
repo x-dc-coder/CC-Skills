@@ -1,0 +1,14 @@
+{
+  "name": "nominalization_verb_bases",
+  "version": "2.0-zh",
+  "source": "占位：中文 M-NOM-10 未启用（见 nominalization_suffixes.json 的说明）。",
+  "language": "zh",
+  "entries": [
+    "优化",
+    "评估",
+    "分析",
+    "验证",
+    "设计",
+    "实现"
+  ]
+}

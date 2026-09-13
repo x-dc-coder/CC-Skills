@@ -356,7 +356,7 @@ def test_mtld_pinned_parameters_are_frozen():
     assert tm._LONG_SENTENCE_WORDS == 40
     # 1.1: pre-split non-prose masking changed the sentence denominators
     # (issues #2 / #3) -> the version must move with the numbers.
-    assert tm.TEXT_METRICS_VERSION == "1.2"
+    assert tm.TEXT_METRICS_VERSION == "1.3"
 
 
 # ---------------------------------------------------------------------------
@@ -761,9 +761,17 @@ def test_chinese_measures_the_supported_subset_and_names_the_rest():
             assert record["n"] == 0 and record["denominator"] == 0, metric_id
             assert record["warnings"] == ["CAPABILITY_NOT_SUPPORTED"], metric_id
             assert record["evidence"] == {"count": 0, "sample": []}, metric_id
-    assert measured == ["M-SLEN-01", "M-LSF-16"]
+    # 12 of the 14 metrics are measurable for Chinese; only the two that need an
+    # annotation set (M-NOM-10) or do not exist in the language (M-TENSE-28,
+    # Chinese has no tense) stay unsupported.
+    assert set(measured) == {
+        "M-SLEN-01", "M-LSF-16", "M-MTLD-02", "M-HED-14", "M-BOO-15",
+        "M-CONN-30", "M-CONN-30c", "M-CONN-30k", "M-CONN-30r", "M-AWR-03",
+        "M-PAS-09"} - {"M-NOM-10", "M-TENSE-28"}
     assert metrics["M-SLEN-01"]["unit"] == tm._UNIT_CJK_UNITS_PER_SENTENCE
     assert metrics["M-LSF-16"]["long_sentence_threshold"] == tm._LONG_SENTENCE_CJK_UNITS
+    assert metrics["M-CONN-30"]["unit"] == tm._UNIT_PER_1000_CJK_UNITS
+    assert metrics["M-MTLD-02"]["params"]["tokenization"] == "cjk-char+ascii-token"
     assert "NaN" not in json.dumps(metrics, sort_keys=True)
 
 
@@ -786,10 +794,11 @@ def test_mixed_language_ratio_boundary():
     assert (above["cjk_chars"], above["ascii_alpha_tokens"]) == (11, 89)
     assert above["cjk_ratio"] == pytest.approx(0.11)
     assert above["supported"] is False and above["language"] == "zh"
-    # zh: the surface metrics are now measured, the lexicon ones are not
+    # zh: the surface metrics are measured; the two unmeasurable ones say why
     mixed_zh = tm.compute_text_metrics("车" * 11 + " " + "word " * 89, BUNDLE)
     assert mixed_zh["M-SLEN-01"]["value"] is not None
-    assert mixed_zh["M-HED-14"]["warnings"] == ["CAPABILITY_NOT_SUPPORTED"]
+    assert mixed_zh["M-HED-14"]["value"] is not None
+    assert mixed_zh["M-TENSE-28"]["warnings"] == ["CAPABILITY_NOT_SUPPORTED"]
     # 10 / (10 + 90) = 0.10 exactly -> supported (threshold is inclusive)
     exact = tm.detect_language("车" * 10 + " " + "word " * 90)
     assert exact["cjk_ratio"] == pytest.approx(0.10)
@@ -804,12 +813,16 @@ def test_mixed_language_ratio_boundary():
 def test_unsupported_language_never_raises_on_empty_bundle():
     """No lexicon bundle must still not raise, and must not fabricate numbers."""
     metrics = tm.compute_text_metrics(CHINESE_TEXT, None)
-    recorded = {mid for mid, record in metrics.items() if record["value"] is not None}
-    assert recorded <= {"M-SLEN-01", "M-LSF-16"}, recorded
+    # No bundle at all: the lexicon-driven metrics must degrade to empty
+    # lexicons (all-zero densities are legitimate here because the lexicon is
+    # empty and the warning says so), and nothing may raise.
     for mid, record in metrics.items():
-        if mid not in recorded:
-            assert record["value"] is None
+        if record["value"] is None:
             assert record["warnings"] == ["CAPABILITY_NOT_SUPPORTED"], mid
+        elif mid in {"M-HED-14", "M-BOO-15", "M-CONN-30c", "M-CONN-30k",
+                     "M-CONN-30r", "M-AWR-03"}:
+            assert any("is empty" in w for w in record["warnings"]), mid
+    assert metrics["M-SLEN-01"]["value"] is not None
 
 
 # ---------------------------------------------------------------------------

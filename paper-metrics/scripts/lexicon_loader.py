@@ -62,6 +62,10 @@ from pathlib import Path
 __all__ = [
     "LEXICON_VERSION",
     "DEFAULT_DIR",
+    "LEXICON_DIRS",
+    "LEXICON_VERSIONS",
+    "SUPPORTED_LEXICON_LANGUAGES",
+    "lexicon_dir_for",
     "CONNECTOR_GROUPS",
     "LexiconError",
     "Lexicon",
@@ -72,6 +76,23 @@ __all__ = [
 
 LEXICON_VERSION = "1.1"
 DEFAULT_DIR = Path(__file__).resolve().parent.parent / "data" / "lexicons" / "v1"
+
+#: Lexicon set per language. English keeps the frozen v1 release; Chinese ships
+#: its own curated release (there is no public, redistributable Hyland
+#: equivalent for Chinese - see issue #11 group B), so the release version is
+#: per-language and validated against this table.
+LEXICON_DIRS: dict[str, str] = {"en": "v1", "zh": "v2-zh"}
+LEXICON_VERSIONS: dict[str, str] = {"en": "1.1", "zh": "2.0-zh"}
+SUPPORTED_LEXICON_LANGUAGES: tuple[str, ...] = ("en", "zh")
+
+
+def lexicon_dir_for(language: str) -> Path:
+    """Directory holding the lexicon release of `language`."""
+    if language not in LEXICON_DIRS:
+        raise LexiconError(
+            "no lexicon release for language %r (available: %s)"
+            % (language, sorted(LEXICON_DIRS)))
+    return Path(__file__).resolve().parent.parent / "data" / "lexicons" / LEXICON_DIRS[language]
 
 #: The exact three connector sub-lists required in connectors.json.
 CONNECTOR_GROUPS: tuple[str, ...] = ("contrastive", "causal", "result")
@@ -129,6 +150,9 @@ class LexiconBundle:
     nominalization_denylist: Lexicon
     academic_words: Lexicon
     stopwords: Lexicon
+    #: Which lexicon release this bundle is ("en" | "zh"). Appended with a
+    #: default so existing positional construction keeps working.
+    language: str = "en"
 
     # -- helpers ----------------------------------------------------------
     def all_lexicons(self) -> tuple[Lexicon, ...]:
@@ -309,14 +333,19 @@ def _check_disjoint(a: Lexicon, b: Lexicon) -> None:
         )
 
 
-def load_lexicons(directory: Path | None = None) -> LexiconBundle:
+def load_lexicons(directory: Path | None = None,
+                  language: str = "en") -> LexiconBundle:
     """Load and validate all eight lexicon files from directory.
 
     Parameters
     ----------
     directory:
-        Directory holding the eight JSON files. Defaults to DEFAULT_DIR
-        (.../data/lexicons/v1).
+        Directory holding the eight JSON files. Defaults to the release
+        directory of `language` (en -> .../data/lexicons/v1,
+        zh -> .../data/lexicons/v2-zh).
+    language:
+        Which release to load. Sets the expected release version too, so a
+        half-bumped Chinese release cannot ship as if it were English.
 
     Raises
     ------
@@ -325,8 +354,13 @@ def load_lexicons(directory: Path | None = None) -> LexiconBundle:
         empty normalized entry, a hedge/booster overlap, or connector groups
         that are not exactly contrastive/causal/result and pairwise disjoint.
     """
+    if language not in LEXICON_VERSIONS:
+        raise LexiconError(
+            "unknown lexicon language %r (available: %s)"
+            % (language, sorted(LEXICON_VERSIONS)))
+    expected_version = LEXICON_VERSIONS[language]
     if directory is None:
-        directory = DEFAULT_DIR
+        directory = lexicon_dir_for(language)
     directory = Path(directory)
     if not directory.is_dir():
         raise LexiconError("lexicon directory does not exist: %s" % directory)
@@ -354,13 +388,16 @@ def load_lexicons(directory: Path | None = None) -> LexiconBundle:
             "lexicon files declare inconsistent versions: %s "
             "(one lexicon release must bump all eight files together)" % sorted(versions)
         )
-    if versions != {LEXICON_VERSION}:
+    if versions != {expected_version}:
         raise LexiconError(
-            "lexicon release version %s does not match LEXICON_VERSION %s"
-            % (sorted(versions), LEXICON_VERSION)
+            "lexicon release version %s does not match the expected version %s for language %r "
+            "(LEXICON_VERSION=%s; per-language releases: %s)"
+            % (sorted(versions), expected_version, language,
+               LEXICON_VERSION, sorted(LEXICON_VERSIONS.items()))
         )
 
     bundle = LexiconBundle(
+        language=language,
         version=versions.pop(),
         directory=directory,
         hedge=plain["hedge"],

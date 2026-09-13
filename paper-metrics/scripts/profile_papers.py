@@ -53,9 +53,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 # Algorithm version — bump when metric *semantics* change.
-PROFILER_VERSION = "2.2"  # 2.2: corpus summary inherits per-metric capability codes (issue #13)
+PROFILER_VERSION = "2.3"  # 2.3: per-language lexicon bundles + cjk paragraph caliber (issue #13)
 # Output contract version — bump when the JSON *schema* changes.
-SCHEMA_VERSION = "2.2"  # 2.2: per-metric capability codes + CJK subset (issue #13)
+SCHEMA_VERSION = "2.3"  # 2.3: per-language lexicon releases + zh calibers (issue #13)
 # Version of the written metric definitions (references/metric-definitions.md).
 METRIC_SPEC_VERSION = "1.0"
 
@@ -1025,13 +1025,35 @@ def _import_sibling(module_name: str):
 
 
 def _load_lexicons():
+    """Load one lexicon release per supported language (issue #13).
+
+    English keeps the frozen v1 release; Chinese ships its own curated release.
+    Loading both up front costs a few milliseconds and keeps the per-paper path
+    free of I/O, so a mixed-language corpus is profiled in one pass.
+    """
     loader = _import_sibling("lexicon_loader")
-    return loader, loader.load_lexicons()
+    bundles = {language: loader.load_lexicons(language=language)
+               for language in loader.SUPPORTED_LEXICON_LANGUAGES}
+    return loader, bundles
 
 
-def _toolchain(bundle) -> dict:
+def _bundle_for(bundles: dict, language: str | None):
+    """Lexicon release for a detected language, falling back to English.
+
+    Chinese needs its own word lists (there is no public Chinese Hyland
+    equivalent), so the language decides which release is loaded rather than
+    which metrics are attempted - the capability matrix in text_metrics owns
+    that decision.
+    """
+    if language and language in bundles:
+        return bundles[language]
+    return bundles["en"]
+
+
+def _toolchain(bundle, bundles_used: tuple[str, ...] = ("en",),
+               releases: dict | None = None) -> dict:
     """Versions that a third party needs in order to reproduce a number."""
-    return {
+    toolchain = {
         "python": platform.python_version(),
         "implementation": "stdlib-only",
         "third_party_dependencies": [],
@@ -1043,6 +1065,16 @@ def _toolchain(bundle) -> dict:
         "lexicon_version": bundle.version,
         "lexicon_fingerprint": bundle.fingerprint(),
     }
+    # Only present when a non-English release actually took part: an English-only
+    # corpus must keep its historical toolchain bytes identical.
+    if any(language != "en" for language in bundles_used):
+        releases = releases or {}
+        toolchain["lexicon_releases"] = {
+            language: {"version": releases[language].version,
+                       "fingerprint": releases[language].fingerprint()}
+            for language in sorted(bundles_used) if language in releases
+        }
+    return toolchain
 
 
 # ---------------------------------------------------------------------------
@@ -1067,7 +1099,27 @@ def _distribution(values: list[int]) -> dict:
     }
 
 
-def compute_paragraph_metric(paper: Paper) -> dict:
+#: Chinese paragraph calibers (issue #13). A Chinese "paragraph" is measured in
+#: cjk-units and the minimum is set low enough that a short real paragraph is not
+#: discarded as a caption (15 characters would be far too strict).
+_PARAGRAPH_MIN_CJK_UNITS = 40
+_PARAGRAPH_UNIT_EN = "words/paragraph"
+_PARAGRAPH_UNIT_CJK = "cjk-units/paragraph"
+
+
+def _cjk_units_in_text(text: str) -> int:
+    """CJK characters + ASCII alpha tokens, the Chinese length unit."""
+    cjk = sum(1 for ch in text
+              if "\u3400" <= ch <= "\u4dbf" or "\u4e00" <= ch <= "\u9fff"
+              or "\uf900" <= ch <= "\ufaff")
+    ascii_tokens = len([m for m in _ASCII_TOKEN_RE.finditer(text)])
+    return cjk + ascii_tokens
+
+
+_ASCII_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z'\-]*")
+
+
+def compute_paragraph_metric(paper: Paper, language: str = "en") -> dict:
     """M-PCNT-25: paragraph count + word-length distribution.
 
     Definition: a paragraph is a text block with >= _PARAGRAPH_MIN_WORDS words,
@@ -1081,9 +1133,20 @@ def compute_paragraph_metric(paper: Paper) -> dict:
         if b.get("type") != "text":
             continue
         text = (b.get("text") or "").strip()
-        words = len(text.split())
-        if words >= _PARAGRAPH_MIN_WORDS:
-            rows.append((idx, section, words, text[:80]))
+        # Chinese paragraphs carry no whitespace, so len(text.split()) collapses
+        # to ~1 and the ">= 15 words" filter dropped every real paragraph
+        # (measured earlier: a Chinese corpus reported ~62 "words"/paragraph for
+        # the handful that survived). The CJK caliber counts CJK characters plus
+        # ASCII tokens, and uses a lower minimum because a 15-*character* Chinese
+        # paragraph is a caption, not a paragraph.
+        if language == "zh":
+            length = _cjk_units_in_text(text)
+            threshold = _PARAGRAPH_MIN_CJK_UNITS
+        else:
+            length = len(text.split())
+            threshold = _PARAGRAPH_MIN_WORDS
+        if length >= threshold:
+            rows.append((idx, section, length, text[:80]))
     words_list = [r[2] for r in rows]
     n = len(rows)
     longest = sorted(rows, key=lambda r: (-r[2], r[0]))[:3]
@@ -1091,17 +1154,20 @@ def compute_paragraph_metric(paper: Paper) -> dict:
         "value": (sum(words_list) / n) if n else None,
         "n": n,
         "denominator": n,
-        "unit": "words/paragraph",
+        "unit": _PARAGRAPH_UNIT_CJK if language == "zh" else _PARAGRAPH_UNIT_EN,
         "state": "OBSERVED",
         "method": "rule",
         "metric_spec": "M-PCNT-25",
         "distribution": _distribution(words_list),
         "evidence": {
             "count": n,
-            "sample": [{"block_index": r[0], "section": r[1], "words": r[2],
+            "sample": [{"block_index": r[0], "section": r[1],
+                        "words" if language != "zh" else "cjk_units": r[2],
                         "excerpt": r[3]} for r in longest],
         },
-        "warnings": [] if n else ["no_paragraphs_above_min_words"],
+        "warnings": [] if n else (
+            ["no_paragraphs_above_min_cjk_units"] if language == "zh"
+            else ["no_paragraphs_above_min_words"]),
     }
 
 
@@ -1109,13 +1175,16 @@ def compute_paragraph_metric(paper: Paper) -> dict:
 # Per-paper metric computation
 # ---------------------------------------------------------------------------
 
-def compute_paper_metrics(paper: Paper, bundle, text_metrics_mod) -> dict:
-    metrics = dict(text_metrics_mod.compute_text_metrics(paper.canonical_text(), bundle))
-    metrics["M-PCNT-25"] = compute_paragraph_metric(paper)
+def compute_paper_metrics(paper: Paper, bundles, text_metrics_mod) -> dict:
+    text = paper.canonical_text()
+    language = text_metrics_mod.detect_language(text)
+    metrics = dict(text_metrics_mod.compute_text_metrics(
+        text, _bundle_for(bundles, language["language"])))
+    metrics["M-PCNT-25"] = compute_paragraph_metric(paper, language["language"])
     return metrics
 
 
-def compute_section_metrics(paper: Paper, bundle, text_metrics_mod,
+def compute_section_metrics(paper: Paper, bundles, text_metrics_mod,
                             metrics_of_interest: tuple[str, ...]) -> dict:
     """Stratified values for the sections in _STRATIFIED_SECTIONS.
 
@@ -1126,7 +1195,8 @@ def compute_section_metrics(paper: Paper, bundle, text_metrics_mod,
     for section, text in sorted(paper.section_texts().items()):
         if section not in _STRATIFIED_SECTIONS:
             continue
-        computed = text_metrics_mod.compute_text_metrics(text, bundle)
+        computed = text_metrics_mod.compute_text_metrics(
+            text, _bundle_for(bundles, text_metrics_mod.detect_language(text)["language"]))
         out[section] = {mid: (computed[mid].get("value") if mid in computed else None)
                         for mid in metrics_of_interest}
     return out
@@ -1507,8 +1577,11 @@ def run_profile(corpus_dir: Path, out_dir: Path,
     out_dir.mkdir(parents=True, exist_ok=True)
     discovery = discover_papers_detailed(corpus_dir)
     papers = discovery.papers
-    loader, bundle = _load_lexicons()
+    loader, bundles = _load_lexicons()
     text_metrics_mod = _import_sibling("text_metrics")
+    # Which lexicon releases actually took part, so the toolchain record can name
+    # them (an English-only corpus keeps its historical toolchain bytes).
+    releases_used: set[str] = set()
 
     skeleton = extract_section_skeleton(papers)
     figures, tables, equations = extract_asset_patterns(papers)
@@ -1518,9 +1591,9 @@ def run_profile(corpus_dir: Path, out_dir: Path,
 
     records: list[dict] = []
     for paper in papers:
-        metrics = compute_paper_metrics(paper, bundle, text_metrics_mod)
+        metrics = compute_paper_metrics(paper, bundles, text_metrics_mod)
         section_metrics = (
-            compute_section_metrics(paper, bundle, text_metrics_mod,
+            compute_section_metrics(paper, bundles, text_metrics_mod,
                                     _LOCAL_CONFOUND_METRICS)
             if include_section_metrics else {}
         )
@@ -1537,7 +1610,11 @@ def run_profile(corpus_dir: Path, out_dir: Path,
             "warnings": list(paper.warnings),
         }
         record.update(_language_facts(text_metrics_mod, text, metrics))
-        if record.get("language_supported") is False:
+        releases_used.add(_bundle_for(bundles, record.get("language")).language)
+        if record.get("language_supported") is False and record.get("language") not in (
+                "en", "zh"):
+            # M-PCNT-25 is only suppressed for languages we cannot measure at
+            # all; Chinese now has a CJK caliber, so it is computed there.
             _suppress_language_dependent_paragraph_stats(record["metrics"])
         records.append(record)
 
@@ -1547,7 +1624,8 @@ def run_profile(corpus_dir: Path, out_dir: Path,
     profile = {
         "schema_version": SCHEMA_VERSION,
         "metric_spec_version": METRIC_SPEC_VERSION,
-        "toolchain": _toolchain(bundle),
+        "toolchain": _toolchain(bundles["en"], tuple(sorted(releases_used)) or ("en",),
+                                bundles),
         "meta": {
             "profiler_version": PROFILER_VERSION,
             "schema_version": SCHEMA_VERSION,
@@ -1564,7 +1642,12 @@ def run_profile(corpus_dir: Path, out_dir: Path,
                          for r in records],
             "skipped": discovery.skipped,
         },
-        "lexicons": bundle.to_manifest(),
+        "lexicons": bundles["en"].to_manifest(),
+        # Chinese word lists are a separate release; only listed when used.
+        "lexicons_by_language": {
+            language: bundles[language].to_manifest()
+            for language in sorted(releases_used) if language != "en"
+        },
         "section_skeleton": skeleton,
         "figure_placement_patterns": figures,
         "table_placement_patterns": tables,

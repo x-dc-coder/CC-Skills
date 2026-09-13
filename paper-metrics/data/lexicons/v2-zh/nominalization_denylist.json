@@ -1,0 +1,7 @@
+{
+  "name": "nominalization_denylist",
+  "version": "2.0-zh",
+  "source": "占位：中文 M-NOM-10 未启用（见 nominalization_suffixes.json 的说明）。",
+  "language": "zh",
+  "entries": []
+}

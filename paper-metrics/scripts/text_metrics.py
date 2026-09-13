@@ -87,7 +87,7 @@ Pinned matching rules (a third party reproduces every number from these):
    `_LONG_SENTENCE_CJK_UNITS` (80) instead of the English 40 words.  Every
    other metric is reported as `null` with **CAPABILITY_NOT_SUPPORTED** — the
    per-metric sibling of LANGUAGE_NOT_SUPPORTED, and still never 0.
-   \`_METRIC_LANGUAGE_CAPABILITY\` is the single source of truth for the matrix.
+   `_METRIC_LANGUAGE_CAPABILITY` is the single source of truth for the matrix.
 
 Deliberate, documented readings of the contract:
 
@@ -143,7 +143,7 @@ from typing import TYPE_CHECKING, Any, Iterable, Mapping, Sequence
 if TYPE_CHECKING:  # pragma: no cover - typing only, never executed
     from lexicon_loader import LexiconBundle
 
-TEXT_METRICS_VERSION = "1.2"  # 1.2: CJK sentence splitting + per-metric capability (issue #13)
+TEXT_METRICS_VERSION = "1.3"  # 1.3: full Chinese metric set (12/14) + zh calibers (issue #13)
 
 _LONG_SENTENCE_WORDS = 40
 _MTLD_TTR_THRESHOLD = 0.720
@@ -184,6 +184,19 @@ SUPPORTED_LANGUAGES = ("en", "zh")
 _METRIC_LANGUAGE_CAPABILITY: dict[str, tuple[str, ...]] = {
     "M-SLEN-01": ("en", "zh"),
     "M-LSF-16": ("en", "zh"),
+    "M-MTLD-02": ("en", "zh"),
+    "M-HED-14": ("en", "zh"),
+    "M-BOO-15": ("en", "zh"),
+    "M-CONN-30": ("en", "zh"),
+    "M-CONN-30c": ("en", "zh"),
+    "M-CONN-30k": ("en", "zh"),
+    "M-CONN-30r": ("en", "zh"),
+    "M-AWR-03": ("en", "zh"),
+    "M-PAS-09": ("en", "zh"),
+    # M-NOM-10: Chinese nominalization cannot be decided by a suffix+verb-base
+    # rule without an annotation set, so it stays unmeasurable for zh.
+    # M-TENSE-28: Chinese has no tense at all - reporting a number would be a
+    # fabricated measurement, so it stays unmeasurable for zh by design.
 }
 _DEFAULT_METRIC_LANGUAGES: tuple[str, ...] = ("en",)
 #: Distinct from LANGUAGE_NOT_SUPPORTED: the language is measurable, this
@@ -192,6 +205,21 @@ CAPABILITY_NOT_SUPPORTED = "CAPABILITY_NOT_SUPPORTED"
 #: Chinese sentence-length unit: CJK characters + ASCII alpha tokens, so a mixed
 #: sentence ("采用 K-means 算法") is not under-counted.
 _UNIT_CJK_UNITS_PER_SENTENCE = "cjk-units/sentence"
+#: Connector density for Chinese: hits per 1000 cjk-units (the Chinese analogue
+#: of "per-1000-words"; Chinese has no word boundaries).
+_UNIT_PER_1000_CJK_UNITS = "per-1000-cjk-units"
+#: Chinese token stream for M-MTLD-02: every CJK character and every ASCII word,
+#: in document order. Character-level diversity is NOT comparable with the
+#: English word-level value; the record says so via its tokenization field.
+_TOKEN_STREAM_RE = re.compile(
+    r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]|[A-Za-z][A-Za-z'\-]*")
+#: Chinese passive markers. English marks the passive with aux + past participle;
+#: Chinese uses a small closed set of function words. Only 被/受到/得到/加以/予以
+#: are used: 由 and bare 为 are far too ambiguous in academic Chinese
+#: ("由式(1)可得", "为便于讨论") to count as passive without a parser.
+_CJK_PASSIVE_MARKERS: tuple[str, ...] = ("受到", "得到", "加以", "予以", "被")
+#: How many characters after the marker are recorded as the passive phrase span.
+_CJK_PASSIVE_SPAN_CHARS = 4
 #: A Chinese academic sentence longer than this many units counts as "long"; the
 #: English threshold (40 words) does not transfer (Chinese has no word spaces).
 _LONG_SENTENCE_CJK_UNITS = 80
@@ -1075,8 +1103,28 @@ def _metric_lsf16(text: str, sentences: Sequence[Span],
                    long_sentence_threshold=threshold)
 
 
+def _mtld_params(tokenization: str) -> dict[str, Any]:
+    """Frozen MTLD parameters, plus the token stream when it is not the default.
+
+    English keeps exactly the historical parameter set (byte-identical products);
+    a non-default stream (Chinese counts CJK characters + ASCII words) is
+    recorded because the two values are different statistics and must never be
+    compared by accident.
+    """
+    params: dict[str, Any] = {
+        "ttr_threshold": _MTLD_TTR_THRESHOLD,
+        "min_factor": _MTLD_MIN_FACTOR,
+        "bidirectional": True,
+        "partial_factor": "(1 - ttr) / (1 - ttr_threshold)",
+    }
+    if tokenization != "ascii-alpha-token":
+        params["tokenization"] = tokenization
+    return params
+
+
 def _metric_mtld02(text: str, tokens: Sequence[str],
-                   token_spans: Sequence[tuple[int, int]]) -> dict[str, Any]:
+                   token_spans: Sequence[tuple[int, int]],
+                   *, tokenization: str = "ascii-alpha-token") -> dict[str, Any]:
     value = mtld(tokens)
     warnings: list[str] = []
     if math.isnan(value):
@@ -1089,12 +1137,7 @@ def _metric_mtld02(text: str, tokens: Sequence[str],
     return _metric(
         "M-MTLD-02", value=value, n=len(tokens), denominator=1, unit=_UNIT_INDEX,
         evidence=evidence, warnings=warnings,
-        params={
-            "ttr_threshold": _MTLD_TTR_THRESHOLD,
-            "min_factor": _MTLD_MIN_FACTOR,
-            "bidirectional": True,
-            "partial_factor": "(1 - ttr) / (1 - ttr_threshold)",
-        },
+        params=_mtld_params(tokenization),
     )
 
 
@@ -1402,22 +1445,215 @@ def _zh_cjk_unit_count(span_text: str) -> int:
     return len(_CJK_CHAR_RE.findall(span_text)) + len(tokenize(span_text))
 
 
-def _zh_metrics(text: str, sentences: Sequence[Span],
-                language: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    """Chinese metric set for the metrics whose rules are language-independent.
+def _match_cjk_entries(sentences: Sequence[Span],
+                       entries: Sequence[str]) -> list[tuple[int, int, int]]:
+    """Literal, longest-first, non-overlapping matches of Chinese entries.
 
-    v1 covers sentence length and long-sentence ratio: both are pure surface
-    statistics over a CJK-aware sentence splitter and need no lexicon. Every
-    other metric is emitted as a null CAPABILITY_NOT_SUPPORTED record so a
-    consumer can tell "this language cannot measure it yet" from "measured 0".
+    Chinese is written without spaces, so the English token matcher does not
+    apply: entries are matched as literal strings **inside a sentence** (matching
+    never crosses a sentence boundary, same as the English rule) and a candidate
+    is only accepted when it is the longest entry starting at that position.
+    Every shipped Chinese entry is >= 2 characters (release policy), which keeps
+    single-character function words from firing everywhere.
+    """
+    if not entries:
+        return []
+    by_length: dict[int, set[str]] = {}
+    for entry in entries:
+        by_length.setdefault(len(entry), set()).add(entry)
+    lengths = sorted(by_length, reverse=True)
+    hits: list[tuple[int, int, int]] = []
+    for index, span in enumerate(sentences):
+        piece = span.text
+        pos, end = 0, len(piece)
+        while pos < end:
+            matched = 0
+            for length in lengths:
+                if pos + length <= end and piece[pos:pos + length] in by_length[length]:
+                    matched = length
+                    break
+            if matched:
+                hits.append((span.start + pos, span.start + pos + matched, index))
+                pos += matched
+            else:
+                pos += 1
+    return hits
+
+
+def _match_cjk_groups(sentences: Sequence[Span],
+                      groups: Mapping[str, Sequence[str]]
+                      ) -> dict[str, list[tuple[int, int, int]]]:
+    """Match every connector group at once, so the groups stay exclusive.
+
+    M-CONN-30 must equal 30c + 30k + 30r exactly. Matching each group on its own
+    would double count a shorter entry inside a longer one of another group
+    ("由此可见" contains "由此"), so all groups share one longest-first pass and a
+    matched span belongs to exactly one group.
+    """
+    table: dict[str, str] = {}
+    for group, entries in groups.items():
+        for entry in entries:
+            table[entry] = group
+    per_group: dict[str, list[tuple[int, int, int]]] = {group: [] for group in groups}
+    if not table:
+        return per_group
+    lengths = sorted({len(entry) for entry in table}, reverse=True)
+    for index, span in enumerate(sentences):
+        piece = span.text
+        pos, end = 0, len(piece)
+        while pos < end:
+            chosen: tuple[int, str] | None = None
+            for length in lengths:
+                if pos + length <= end:
+                    candidate = piece[pos:pos + length]
+                    group = table.get(candidate)
+                    if group is not None:
+                        chosen = (length, group)
+                        break
+            if chosen is not None:
+                length, group = chosen
+                per_group[group].append((span.start + pos, span.start + pos + length, index))
+                pos += length
+            else:
+                pos += 1
+    return per_group
+
+
+def _cjk_passive_hits(sentences: Sequence[Span]) -> list[tuple[int, int, int]]:
+    """Passive phrase spans for Chinese (marker + the characters that follow).
+
+    A marker alone is not a passive ("被" in a title, "得到" as a plain verb), so
+    a marker only counts when a CJK character follows it inside the same
+    sentence. Spans are de-duplicated and sorted, because a sentence can carry
+    more than one marker.
+    """
+    hits: set[tuple[int, int, int]] = set()
+    for index, span in enumerate(sentences):
+        piece = span.text
+        for marker in _CJK_PASSIVE_MARKERS:
+            cursor = 0
+            while True:
+                found = piece.find(marker, cursor)
+                if found < 0:
+                    break
+                after = found + len(marker)
+                if after < len(piece) and _CJK_CHAR_RE.match(piece[after]):
+                    end = min(len(piece), after + _CJK_PASSIVE_SPAN_CHARS)
+                    hits.add((span.start + found, span.start + end, index))
+                cursor = after
+    return sorted(hits)
+
+
+def _zh_token_stream(text: str) -> tuple[list[str], list[tuple[int, int]]]:
+    """Document-order token stream + spans for Chinese MTLD (CJK chars + ASCII words).
+
+    Character-level diversity is not the same statistic as the English word-level
+    MTLD; the metric record carries a `tokenization` field that says which one
+    was used, so the two can never be compared by accident.
+    """
+    tokens: list[str] = []
+    spans: list[tuple[int, int]] = []
+    for match in _TOKEN_STREAM_RE.finditer(text):
+        tokens.append(match.group(0).lower())
+        spans.append((match.start(), match.end()))
+    return tokens, spans
+
+
+def _zh_metrics(text: str, sentences: Sequence[Span], language: dict[str, Any],
+                bundle: Any) -> dict[str, dict[str, Any]]:
+    """Chinese metric set.
+
+    Every metric whose rules are validated for Chinese is computed here from the
+    **Chinese lexicon release** (`data/lexicons/v2-zh`); the two that cannot be
+    decided without an annotation set (M-NOM-10) or that do not exist in the
+    language (M-TENSE-28, Chinese has no tense) stay null with
+    CAPABILITY_NOT_SUPPORTED. Nothing is ever reported as a fabricated 0.
+
+    Denomination: Chinese has no word boundaries, so densities use
+    **cjk-units** (CJK characters + ASCII alpha tokens) as their denominator and
+    say so in the metric's unit field.
     """
     counts = [_zh_cjk_unit_count(span.text) for span in sentences]
-    computed: dict[str, dict[str, Any]] = {
-        "M-SLEN-01": _metric_slen01(text, sentences, counts,
-                                    unit=_UNIT_CJK_UNITS_PER_SENTENCE),
-        "M-LSF-16": _metric_lsf16(text, sentences, counts,
-                                  threshold=_LONG_SENTENCE_CJK_UNITS),
-    }
+    n_units = _zh_cjk_unit_count(text)
+    hedge_entries = _entries(bundle, "hedge")
+    booster_entries = _entries(bundle, "booster")
+    academic_entries = _entries(bundle, "academic_words")
+
+    hedge_hits = _match_cjk_entries(sentences, hedge_entries)
+    booster_hits = _match_cjk_entries(sentences, booster_entries)
+    academic_hits = _match_cjk_entries(sentences, academic_entries)
+    group_specs = (
+        ("M-CONN-30c", "contrastive"),
+        ("M-CONN-30k", "causal"),
+        ("M-CONN-30r", "result"),
+    )
+    group_entries = {group: _connector_entries(bundle, group) for _, group in group_specs}
+    group_hits = _match_cjk_groups(sentences, group_entries)
+    passive_hits = _cjk_passive_hits(sentences)
+
+    computed: dict[str, dict[str, Any]] = {}
+    computed["M-SLEN-01"] = _metric_slen01(text, sentences, counts,
+                                           unit=_UNIT_CJK_UNITS_PER_SENTENCE)
+    computed["M-LSF-16"] = _metric_lsf16(text, sentences, counts,
+                                         threshold=_LONG_SENTENCE_CJK_UNITS)
+    token_stream, token_spans = _zh_token_stream(text)
+    computed["M-MTLD-02"] = _metric_mtld02(text, token_stream, token_spans,
+                                           tokenization="cjk-char+ascii-token")
+
+    def _density(spec: str, hits: Sequence[tuple[int, int, int]],
+                 entries: Sequence[str]) -> dict[str, Any]:
+        warnings = [] if entries else [
+            f"{spec}: Chinese lexicon is empty; the metric is 0 by construction"]
+        return _rate(spec, len(hits), n_units, _UNIT_RATIO,
+                     _evidence(hits, text, len(hits)), warnings,
+                     n_lexicon_entries=len(entries), denominator_unit="cjk-units")
+
+    computed["M-HED-14"] = _density("M-HED-14", hedge_hits, hedge_entries)
+    computed["M-BOO-15"] = _density("M-BOO-15", booster_hits, booster_entries)
+
+    component_records: dict[str, dict[str, Any]] = {}
+    for spec, group in group_specs:
+        entries = group_entries[group]
+        hits = group_hits[group]
+        warnings = [] if entries else [
+            f"{spec}: Chinese connector group is empty; the metric is 0 by construction"]
+        component_records[spec] = _rate(
+            spec, len(hits), n_units, _UNIT_PER_1000_CJK_UNITS,
+            _evidence(hits, text, len(hits)), warnings, scale=1000.0,
+            n_lexicon_entries=len(entries), denominator_unit="cjk-units")
+        computed[spec] = component_records[spec]
+
+    all_connector_hits = sorted(hit for _, group in group_specs
+                                for hit in group_hits[group])
+    component_values = [component_records[spec]["value"] for spec, _ in group_specs]
+    total_n = sum(len(group_hits[group]) for _, group in group_specs)
+    total_warnings: list[str] = []
+    if n_units <= 0:
+        total_warnings.append(
+            "M-CONN-30: denominator is 0 (no cjk-unit in the input); value is undefined")
+        total_value = None
+    else:
+        component_defined = all(value is not None for value in component_values)
+        total_value = round(sum(component_values), _ROUND_DIGITS) if component_defined else None
+        if total_value is None:
+            total_warnings.append("M-CONN-30: at least one component is undefined; value is undefined")
+    computed["M-CONN-30"] = _metric(
+        "M-CONN-30", value=total_value, n=total_n, denominator=n_units,
+        unit=_UNIT_PER_1000_CJK_UNITS,
+        evidence=_evidence(all_connector_hits, text, total_n),
+        warnings=total_warnings, denominator_unit="cjk-units",
+        components={spec: {"value": component_records[spec]["value"],
+                           "n": component_records[spec]["n"]} for spec, _ in group_specs},
+    )
+
+    computed["M-AWR-03"] = _density("M-AWR-03", academic_hits, academic_entries)
+    computed["M-PAS-09"] = _rate(
+        "M-PAS-09", len(passive_hits), len(sentences), _UNIT_RATIO,
+        _evidence(passive_hits, text, len(passive_hits)),
+        [] if passive_hits or sentences else ["M-PAS-09: no sentence detected"],
+        denominator_unit="sentences",
+        passive_markers=list(_CJK_PASSIVE_MARKERS))
+
     for metric_id, record in computed.items():
         record["language"] = language["language"]
         record["cjk_ratio"] = language["cjk_ratio"]
@@ -1452,7 +1688,7 @@ def compute_text_metrics(text: str, bundle: Any) -> dict[str, dict[str, Any]]:
         # whose pinned rules are language-independent; the rest are null with
         # CAPABILITY_NOT_SUPPORTED. Never 0 - a fabricated zero would look like
         # a measurement.
-        return _zh_metrics(text, split_sentences(text), language)
+        return _zh_metrics(text, split_sentences(text), language, bundle)
     if not language["supported"]:
         return {metric_id: _unsupported_metric(metric_id, language)
                 for metric_id in METRIC_IDS}

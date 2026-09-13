@@ -75,6 +75,10 @@ MAX_EVIDENCE = 5
 # Degenerate-input guard: below these thresholds a draft may not be reported as
 # passing, because "every clause skipped" is not evidence of compliance.
 MIN_ALPHA_TOKENS = 50
+#: Chinese drafts have no ASCII words at all, so the alpha-token floor would
+#: always read "insufficient evidence". The Chinese floor is expressed in
+#: cjk-units (CJK characters + ASCII tokens) instead (issue #13).
+MIN_CJK_UNITS = 150
 MIN_EVALUABLE_RATIO = 0.5
 
 # Languages the OBSERVED metric layer is defined for. The list is informational:
@@ -94,6 +98,9 @@ _DEFAULT_LEXICON_MODULE = "lexicon_loader"
 # Structure metric owned by the validator (see the module docstring).
 PARAGRAPH_METRIC_ID = "M-PCNT-25"
 MIN_PARAGRAPH_WORDS = 15
+#: Chinese paragraph floor, in cjk-units: a 15-character Chinese block is a
+#: caption, not a paragraph (issue #13).
+MIN_PARAGRAPH_CJK_UNITS = 40
 PARAGRAPH_EVIDENCE_SAMPLE = 3
 EXCERPT_MAX = 80
 
@@ -111,6 +118,7 @@ LanguageDetector = Callable[[str], Any]
 # ---------------------------------------------------------------------------
 
 def load_default_compute(
+    language: str = "en",
     metrics_module: str = _DEFAULT_METRICS_MODULE,
     lexicon_module: str = _DEFAULT_LEXICON_MODULE,
 ) -> ComputeFn:
@@ -135,6 +143,12 @@ def load_default_compute(
     if missing:
         raise ValidatorError(f"metrics layer is incomplete, missing callable(s): {', '.join(missing)}")
     try:
+        # The draft's language decides which word-list release is loaded; a
+        # Chinese draft measured with English lists would produce numbers that
+        # look fine and mean nothing.
+        bundle = lexicons.load_lexicons(language=language)
+    except TypeError:
+        # an injected loader without language support (interface stays lenient)
         bundle = lexicons.load_lexicons()
     except Exception as exc:  # noqa: BLE001 - surface any lexicon failure verbatim
         raise ValidatorError(f"load_lexicons() failed: {exc}") from exc
@@ -249,6 +263,22 @@ def normalize_language_verdict(raw: Any, detector: str | None = None) -> dict:
         "note": None if supported else UNSUPPORTED_LANGUAGE_NOTE,
         "warnings": warnings,
     }
+
+
+def _rule_languages() -> tuple[str, ...]:
+    """Languages the metrics layer has validated rules for ("en", "zh").
+
+    Read from the metrics module so there is exactly one source of truth; falls
+    back to English-only when an injected provider has no SUPPORTED_LANGUAGES.
+    """
+    try:
+        module = importlib.import_module(_DEFAULT_METRICS_MODULE)
+        declared = getattr(module, "SUPPORTED_LANGUAGES", None)
+        if isinstance(declared, (list, tuple)) and declared:
+            return tuple(str(item) for item in declared)
+    except Exception:  # noqa: BLE001 - an unreadable provider must not block
+        pass
+    return tuple(SUPPORTED_METRIC_LANGUAGES)
 
 
 def detect_draft_language(
@@ -370,30 +400,56 @@ def _paragraph_distribution(words: list[int]) -> dict:
     return {"median": pct(0.5), "p25": pct(0.25), "p75": pct(0.75), "std": round(float(std), 6)}
 
 
-def compute_paragraph_metric(text: str, blocks: list[ParagraphBlock] | None = None) -> dict:
-    """M-PCNT-25 for a draft: mean words per prose paragraph (>= 15 words)."""
+def compute_paragraph_metric(text: str, blocks: list[ParagraphBlock] | None = None,
+                             language: str = "en") -> dict:
+    """M-PCNT-25 for a draft: mean length of prose paragraphs.
+
+    English measures words per paragraph with a 15-word floor; Chinese measures
+    cjk-units per paragraph with a 40-unit floor (Chinese has no spaces, so the
+    word caliber would collapse every paragraph to ~1 and then filter it out).
+    """
     if blocks is None:
         blocks = split_paragraphs(text)
-    paragraphs = [block for block in blocks if block.words >= MIN_PARAGRAPH_WORDS]
-    count = len(paragraphs)
-    value = round(sum(block.words for block in paragraphs) / count, 6) if count else None
-    longest = sorted(paragraphs, key=lambda block: (-block.words, block.index))[:PARAGRAPH_EVIDENCE_SAMPLE]
+    if language == "zh":
+        lengths = [_cjk_units(block.text) for block in blocks]
+        floor = MIN_PARAGRAPH_CJK_UNITS
+        unit = "cjk-units/paragraph"
+        warning_code = "no_paragraphs_above_min_cjk_units"
+    else:
+        lengths = [block.words for block in blocks]
+        floor = MIN_PARAGRAPH_WORDS
+        unit = "words/paragraph"
+        warning_code = "no_paragraphs_above_min_words"
+    keep = [index for index, length in enumerate(lengths) if length >= floor]
+    count = len(keep)
+    value = round(sum(lengths[index] for index in keep) / count, 6) if count else None
+    longest = sorted(keep, key=lambda index: (-lengths[index], blocks[index].index))[:PARAGRAPH_EVIDENCE_SAMPLE]
     return {
         "value": value,
         "n": count,
         "denominator": count,
-        "unit": "words/paragraph",
+        "unit": unit,
         "state": "OBSERVED",
         "method": "rule",
         "metric_spec": PARAGRAPH_METRIC_ID,
-        "distribution": _paragraph_distribution([block.words for block in paragraphs]),
+        "distribution": _paragraph_distribution([lengths[index] for index in keep]),
         "n_blocks": len(blocks),
         "evidence": {
             "count": count,
-            "sample": [{"block_index": block.index, "excerpt": _excerpt(block.text)} for block in longest],
+            "sample": [{"block_index": blocks[index].index,
+                        "excerpt": _excerpt(blocks[index].text)} for index in longest],
         },
-        "warnings": [] if count else ["no_paragraphs_above_min_words"],
+        "warnings": [] if count else [warning_code],
     }
+
+
+def _cjk_units(text: str) -> int:
+    """CJK characters + ASCII alpha tokens (the Chinese length unit)."""
+    cjk = sum(1 for ch in text
+              if "\u3400" <= ch <= "\u4dbf" or "\u4e00" <= ch <= "\u9fff"
+              or "\uf900" <= ch <= "\ufaff")
+    return cjk + len([1 for ch in text if ch.isascii() and ch.isalpha()])
+    
 
 
 # ---------------------------------------------------------------------------
@@ -556,6 +612,13 @@ def _skip_reason(metric_id: str, entry: Any) -> str:
     if metric_id == PARAGRAPH_METRIC_ID:
         return "no_paragraphs_above_min_words"
     if entry.get("value") is None:
+        # Name the real cause: "this language/metric pair is not measurable yet"
+        # is a different statement from "the metrics layer returned nothing"
+        # (issue #13 per-metric capability).
+        warnings = set(entry.get("warnings") or ())
+        for code in ("CAPABILITY_NOT_SUPPORTED", "LANGUAGE_NOT_SUPPORTED"):
+            if code in warnings:
+                return code.lower()
         return "value_missing_or_null_in_the_metrics_layer"
     return "value_not_a_finite_number"
 
@@ -598,7 +661,24 @@ def validate(
     # pass/fail/warn verdict at all, so it can never be graded against an English
     # baseline (and no metric is computed, which also keeps the provider uncalled).
     draft_language = detect_draft_language(draft_text, language_detector)
-    language_blocked = bool(draft_language["available"] and draft_language["supported"] is False)
+    # Issue #13: a language is blocked only when *no* metric is validated for it.
+    # Chinese is partially measurable, so it is evaluated clause by clause; the
+    # clauses whose metric is not (yet) validated for it are skipped with the
+    # per-metric reason rather than silently graded.
+    rule_languages = _rule_languages()
+    draft_language_code = draft_language.get("language")
+    # Blocked when the language is known to have no rules, or when the detector
+    # refuses without naming a language (in that case there is nothing to look up
+    # and its supported=False verdict must be trusted).
+    language_blocked = bool(
+        draft_language["available"]
+        and (
+            (draft_language_code not in (None, "unknown")
+             and draft_language_code not in rule_languages)
+            or (draft_language_code in (None, "unknown")
+                and draft_language.get("supported") is False)
+        )
+    )
 
     starts = line_starts(draft_text)
     n_lines = len(starts)
@@ -608,7 +688,7 @@ def validate(
 
     if not language_blocked:
         if compute is None:
-            compute = load_default_compute()
+            compute = load_default_compute(draft_language_code or "en")
         try:
             metrics = compute(draft_text)
         except ValidatorError:
@@ -627,7 +707,8 @@ def validate(
             block_lines = {block.index: line_of(block.start, starts) for block in paragraph_blocks}
             if _metric_value(metrics.get(PARAGRAPH_METRIC_ID)) is None:
                 metrics = dict(metrics)
-                metrics[PARAGRAPH_METRIC_ID] = compute_paragraph_metric(draft_text, paragraph_blocks)
+                metrics[PARAGRAPH_METRIC_ID] = compute_paragraph_metric(
+                    draft_text, paragraph_blocks, draft_language_code or "en")
 
     results: list[dict] = []
     warnings: list[str] = []
@@ -710,12 +791,18 @@ def validate(
     n_gate_clauses = sum(1 for clause in contract["clauses"] if clause["level"] == "gate")
 
     alpha_tokens, tokenizer = count_alpha_tokens(draft_text)
+    # The degenerate-input floor is language-specific: a Chinese draft has no
+    # ASCII words at all, so it is measured in cjk-units (issue #13).
+    cjk_units = _cjk_units(draft_text) if draft_language_code == "zh" else 0
     validity_reasons: list[str] = []
     if language_blocked:
         validity_reasons.append(language_scope_message(draft_language))
         validity_status = "language_unsupported"
     else:
-        if alpha_tokens < min_alpha_tokens:
+        if draft_language_code == "zh":
+            if cjk_units < MIN_CJK_UNITS:
+                validity_reasons.append(f"cjk_units={cjk_units} < {MIN_CJK_UNITS}")
+        elif alpha_tokens < min_alpha_tokens:
             validity_reasons.append(f"alpha_tokens={alpha_tokens} < {min_alpha_tokens}")
         if n_clauses and n_evaluable == 0:
             # absolute floor: an all-skipped contract is unusable evidence whatever
@@ -739,6 +826,8 @@ def validate(
         "cjk_ratio": draft_language.get("cjk_ratio"),
         "alpha_tokens": alpha_tokens,
         "min_alpha_tokens": min_alpha_tokens,
+        "cjk_units": cjk_units or None,
+        "min_cjk_units": MIN_CJK_UNITS if draft_language_code == "zh" else None,
         "tokenizer": tokenizer,
         "n_evaluable": n_evaluable,
         "n_clauses": n_clauses,

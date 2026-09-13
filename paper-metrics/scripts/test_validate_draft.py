@@ -864,43 +864,41 @@ def test_f1_components_at_their_lower_bounds_pass_the_total_gate():
 CHINESE_DRAFT = "# 绪论\n\n本文研究车辆路径问题的 GPU 加速方法，共 1296 个字。\n"
 
 
-def test_chinese_draft_is_refused_as_unsupported_language():
+def test_short_chinese_draft_is_insufficient_evidence_not_unsupported():
+    """Issue #13: Chinese is measurable, so a stub draft is refused for being too
+    short - not for being the wrong language.
+
+    The historical behavior refused Chinese outright and never called the metrics
+    layer. Now the clauses are graded and only the draft size keeps it honest.
+    """
     contract = _gate_contract(3)
-    result = vd.validate(contract, CHINESE_DRAFT, _compute({"M-TEST-00": 0.9}),
-                         language_detector=CJK_DETECTOR)
-    assert result["draft_validity"]["status"] == "language_unsupported"
+    compute = _compute({"M-TEST-00": 0.9})
+    result = vd.validate(contract, CHINESE_DRAFT, compute, language_detector=CJK_DETECTOR)
+    assert result["draft_validity"]["status"] == "insufficient_evidence"
     assert result["exit_code"] == 2
-    # no pass/fail/warn verdict anywhere, and no "warn-only" wording either
-    assert {clause["status"] for clause in result["clauses"]} == {"skipped"}
-    assert {clause["status_reason"] for clause in result["clauses"]} == {"language_unsupported"}
-    assert result["summary"]["n_fail"] == 0 and result["summary"]["n_warn"] == 0
-    assert result["summary"]["gate_failures"] == [] and result["summary"]["warn_failures"] == []
-    assert result["summary"]["note"] is None
+    assert any("cjk_units=" in reason for reason in result["draft_validity"]["reasons"])
     language = result["draft_language"]
     assert language["cjk_ratio"] == 0.9235
-    assert language["supported"] is False
     assert language["language"] == "zh"
-    assert "当前支持的指标语言 = en（中文支持见 issue #10）" in language["note"]
-
-    payload = _dump(result)
-    assert "cjk_ratio" in payload
-    assert "当前支持的指标语言 = en（中文支持见 issue #10）" in payload
+    assert compute.calls, "the metrics provider must be called for a Chinese draft"
+    assert result["draft_validity"]["cjk_units"] is not None
     report = vd.render_report(result)
-    assert "UNSUPPORTED LANGUAGE" in report
-    assert "cjk_ratio=0.9235" in report
-    assert "当前支持的指标语言 = en（中文支持见 issue #10）" in report
-    assert "warn-only" not in report
-    assert "INSUFFICIENT" not in report
+    assert "INSUFFICIENT" in report
+    assert "UNSUPPORTED LANGUAGE" not in report
 
 
-def test_language_verdict_precedes_any_gate_math():
+def test_language_without_rules_is_refused_before_any_gate_math():
+    """The A4 principle survives: a language with no validated rules gets no verdict."""
+    no_rules = _detector(supported=False, language="ja", cjk_ratio=None)
     compute = _compute({"M-TEST-00": 0.9})
     result = vd.validate(_gate_contract(1), CHINESE_DRAFT, compute,
-                         language_detector=CJK_DETECTOR)
+                         language_detector=no_rules)
     assert compute.calls == []                      # the provider is never called
     assert result["draft"]["n_paragraph_blocks"] == 0
     assert result["summary"]["n_evaluable"] == 0
     assert result["summary"]["n_skipped"] == 1
+    assert {clause["status_reason"] for clause in result["clauses"]} == {"language_unsupported"}
+    assert result["draft_validity"]["status"] == "language_unsupported"
     assert result["exit_code"] == 2
 
 
@@ -927,25 +925,30 @@ def test_mixed_draft_below_the_cjk_threshold_is_validated_normally():
     assert result["exit_code"] == 0
 
 
-def test_mixed_draft_above_the_cjk_threshold_is_refused():
+def test_mixed_draft_above_the_cjk_threshold_is_graded_as_chinese():
+    """A mixed draft past the CJK threshold is Chinese for the metrics layer, so it
+    is graded against the contract instead of being refused."""
     contract = _contract([_clause("M-HED-14", "gate", [0.01, 0.05])])
     draft = "mixed 中英 draft words more text " * 20
     result = vd.validate(contract, draft, _compute({"M-HED-14": 0.02}),
                          language_detector=_detector(supported=False, language="zh", cjk_ratio=0.11))
     assert result["draft_language"]["cjk_ratio"] == 0.11
-    assert result["draft_validity"]["status"] == "language_unsupported"
-    assert result["exit_code"] == 2
+    assert result["draft_validity"]["status"] == "ok"
+    assert result["exit_code"] == 0
 
 
-@pytest.mark.parametrize("raw, expected_supported", [("en", True), ("zh", False),
-                                                     (True, True), (False, False)])
-def test_simple_language_verdicts_are_accepted(raw, expected_supported):
+@pytest.mark.parametrize("raw, expected_supported, expected_exit", [
+    ("en", True, 0), ("zh", False, 0), (True, True, 0), (False, False, 2)])
+def test_simple_language_verdicts_are_accepted(raw, expected_supported, expected_exit):
     result = vd.validate(_contract([_clause("M-HED-14", "gate", [0.01, 0.05])]),
                          "word " * 60, _compute({"M-HED-14": 0.02}),
                          language_detector=lambda text: raw)
     assert result["draft_language"]["available"] is True
     assert result["draft_language"]["supported"] is expected_supported
-    assert result["exit_code"] == (0 if expected_supported else 2)
+    # "zh" keeps its historical supported=False verdict (most metrics are still
+    # unmeasurable for it) yet is graded clause by clause; only a language with no
+    # rules at all - here the boolean False - is refused.
+    assert result["exit_code"] == expected_exit
 
 
 @pytest.mark.parametrize("raw", [None, 42, {"unexpected": True}, object()])
@@ -1013,13 +1016,15 @@ def test_all_targets_null_and_all_skipped_exits_2_even_with_relaxed_thresholds()
     assert result["exit_code"] == 2
 
 
-def test_cli_language_unsupported_exit_2_with_ratio_and_note(tmp_path, capsys):
+def test_cli_unsupported_language_exit_2_with_ratio_and_note(tmp_path, capsys):
+    """A language with no validated rules is still refused verbatim (issue #13
+    narrowed the gate; it did not remove it)."""
     contract_path = tmp_path / "_writing_contract.yaml"
     contract_path.write_text(bc.dump_yaml(_gate_contract(2)), encoding="utf-8")
     draft_path = tmp_path / "初稿.md"
     draft_path.write_text(CHINESE_DRAFT, encoding="utf-8")
-    lang_module = _write_lang_module(tmp_path, supported=False, language="zh",
-                                     cjk_ratio=0.9, name="fake_lang_zh")
+    lang_module = _write_lang_module(tmp_path, supported=False, language="ja",
+                                     cjk_ratio=0.9, name="fake_lang_ja")
     sys.path.insert(0, str(tmp_path))
     try:
         rc = vd.main(["--contract", str(contract_path), "--draft", str(draft_path),
@@ -1031,12 +1036,29 @@ def test_cli_language_unsupported_exit_2_with_ratio_and_note(tmp_path, capsys):
     assert rc == 2
     assert "UNSUPPORTED LANGUAGE" in stdout
     assert "cjk_ratio=0.9" in stdout
-    assert "当前支持的指标语言 = en（中文支持见 issue #10）" in stdout
     assert "warn-only" not in stdout
     payload = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
     assert payload["draft_validity"]["status"] == "language_unsupported"
     assert payload["draft_language"]["cjk_ratio"] == 0.9
     assert payload["exit_code"] == 2
+
+
+def test_cli_chinese_draft_is_not_refused_as_a_language(tmp_path, capsys):
+    """The same CLI path with the real detector + a Chinese draft: no
+    UNSUPPORTED LANGUAGE verdict, because Chinese is measurable now."""
+    contract_path = tmp_path / "_writing_contract.yaml"
+    contract_path.write_text(bc.dump_yaml(_gate_contract(2)), encoding="utf-8")
+    draft_path = tmp_path / "初稿.md"
+    draft_path.write_text("# 绪论\n\n" + "本文研究车辆路径问题的加速方法。" * 40,
+                          encoding="utf-8")
+    rc = vd.main(["--contract", str(contract_path), "--draft", str(draft_path),
+                  "--json", str(tmp_path / "report.json")])
+    stdout = capsys.readouterr().out
+    payload = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
+    assert payload["draft_language"]["language"] == "zh"
+    assert payload["draft_validity"]["status"] != "language_unsupported"
+    assert "UNSUPPORTED LANGUAGE" not in stdout
+    assert rc in (0, 1, 2)
 
 
 def test_cli_rejects_a_language_module_without_detect_language(tmp_path, capsys):
@@ -1065,14 +1087,22 @@ def _real_detector():
     return detector
 
 
-def test_integration_chinese_draft_is_refused_by_the_real_detector():
+def test_integration_chinese_draft_is_graded_by_the_real_detector():
+    """Real detector + real Chinese text: "zh" is no longer a refusal (issue #13).
+
+    The supported=False verdict stays for backward compatibility (most metrics
+    are still unmeasurable for Chinese), but it no longer short-circuits the
+    validation.
+    """
     detector = _real_detector()
     draft = "# 绪论\n\n" + "本文研究车辆路径问题的 GPU 加速方法。" * 30
-    if vd.normalize_language_verdict(detector(draft), "real")["supported"] is not False:
-        pytest.skip(f"real detector does not flag the Chinese draft: {detector(draft)!r}")
+    verdict = vd.normalize_language_verdict(detector(draft), "real")
+    if verdict["language"] != "zh":
+        pytest.skip(f"real detector did not classify the draft as zh: {verdict!r}")
+    assert verdict["supported"] is False
     result = vd.validate(_gate_contract(2), draft, _compute({}))
-    assert result["draft_validity"]["status"] == "language_unsupported"
-    assert result["exit_code"] == 2
+    assert result["draft_language"]["language"] == "zh"
+    assert result["draft_validity"]["status"] != "language_unsupported"
 
 
 def test_integration_mixed_drafts_around_the_real_cjk_threshold():
