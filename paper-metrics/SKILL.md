@@ -97,8 +97,9 @@ uv run python paper-metrics/scripts/pas_spotcheck.py --corpus <paper-analysis> -
 
 - **英文（en）**：14 条指标全部可测，词表用 `data/lexicons/v1/`。
 - **中文（zh）是逐指标能力，不是一刀切门禁（2026-09-13，issue #13）**：
-  - **已可测 12/14 条**：`M-SLEN-01`、`M-LSF-16`、`M-MTLD-02`、`M-HED-14`、`M-BOO-15`、`M-CONN-30(c/k/r)`、`M-AWR-03`、`M-PAS-09`、`M-PCNT-25`（词表用 `data/lexicons/v2-zh/`）；
-  - **尚不可测 2 条**：`M-NOM-10`（中文名词化无法用"后缀+动词基"规则可靠判定，需标注集）、`M-TENSE-28`（**中文没有时态**，给数字就是编造）→ `null` + **`CAPABILITY_NOT_SUPPORTED`**（`LANGUAGE_NOT_SUPPORTED` 的逐指标版本；**仍然不是 0**）；
+  - **已可测 13/14 条**：`M-SLEN-01`、`M-LSF-16`、`M-MTLD-02`、`M-HED-14`、`M-BOO-15`、`M-CONN-30(c/k/r)`、`M-AWR-03`、`M-PAS-09`、`M-PCNT-25`、`M-NOM-10`（词表用 `data/lexicons/v2-zh/`）；
+  - **尚不可测 1 条**：`M-TENSE-28`（**中文没有时态**，给数字就是编造）→ `null` + **`CAPABILITY_NOT_SUPPORTED`**（`LANGUAGE_NOT_SUPPORTED` 的逐指标版本；**仍然不是 0**）；
+  - **两个"同槽不同量"的指标要特别小心**：`M-MTLD-02` 中文是**字符级**、`M-NOM-10` 中文是**抽象名词后缀（性/度/率）密度**——与英文同名指标**不是同一个统计量**，记录里带 `tokenization` / `variant` 标记，禁止跨语言比较；
   - **中文口径（与英文不可混用，跨语言不可比）**：句长单位 **`cjk-units/sentence`**（汉字数 + ASCII 字母 token，混合句不漏计）；长句阈值 **80 单位**（不是英文的 40 词）；密度类分母为 **cjk-units**、连接词单位 **`per-1000-cjk-units`**；段落单位 **`cjk-units/paragraph`**（下限 40 单位）；`M-MTLD-02` 是 **字符级**（`tokenization=cjk-char+ascii-token`，与英文词级值不可比）；
   - 分句支持 `。！？…`；`……` 这类终止符连写只结一次；引号内的句号留在句中；**`；` 不切句**（中文在句内使用）；片段过滤要求"无字母**且**无 CJK"才丢弃；
   - 被动用中文标记规则（`被/受到/得到/加以/予以` + 后接汉字）；连接词三组**联合最长匹配**，保证 `M-CONN-30 = 30c + 30k + 30r` 严格成立；

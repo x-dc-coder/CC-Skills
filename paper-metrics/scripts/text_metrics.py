@@ -143,7 +143,7 @@ from typing import TYPE_CHECKING, Any, Iterable, Mapping, Sequence
 if TYPE_CHECKING:  # pragma: no cover - typing only, never executed
     from lexicon_loader import LexiconBundle
 
-TEXT_METRICS_VERSION = "1.3"  # 1.3: full Chinese metric set (12/14) + zh calibers (issue #13)
+TEXT_METRICS_VERSION = "1.4"  # 1.4: Chinese M-NOM-10 (abstract-noun suffix variant) -> 13/14 (issue #13)
 
 _LONG_SENTENCE_WORDS = 40
 _MTLD_TTR_THRESHOLD = 0.720
@@ -193,8 +193,13 @@ _METRIC_LANGUAGE_CAPABILITY: dict[str, tuple[str, ...]] = {
     "M-CONN-30r": ("en", "zh"),
     "M-AWR-03": ("en", "zh"),
     "M-PAS-09": ("en", "zh"),
-    # M-NOM-10: Chinese nominalization cannot be decided by a suffix+verb-base
-    # rule without an annotation set, so it stays unmeasurable for zh.
+    # M-NOM-10(zh): Chinese derives nouns from verbs by ZERO derivation
+    # (优化 / 评估 / 分析 are already both), so the English "suffix + verb base"
+    # rule has nothing to bite on. The stable, checkable signal in academic
+    # Chinese is the abstract-noun suffix set; the metric records
+    # variant="cjk-abstract-noun-suffix" so it can never be compared with the
+    # English value by accident.
+    "M-NOM-10": ("en", "zh"),
     # M-TENSE-28: Chinese has no tense at all - reporting a number would be a
     # fabricated measurement, so it stays unmeasurable for zh by design.
 }
@@ -220,6 +225,19 @@ _TOKEN_STREAM_RE = re.compile(
 _CJK_PASSIVE_MARKERS: tuple[str, ...] = ("受到", "得到", "加以", "予以", "被")
 #: How many characters after the marker are recorded as the passive phrase span.
 _CJK_PASSIVE_SPAN_CHARS = 4
+#: Abstract-noun suffixes for Chinese M-NOM-10 (variant cjk-abstract-noun-suffix).
+#: 化 is deliberately excluded: it is entangled with verb forms that are not
+#: nominalizations at all (优化 "optimise", 转化 "convert into", 深化 "deepen"),
+#: and a metric that counts those would be measuring something else.
+_CJK_ABSTRACT_NOUN_SUFFIXES = ("性", "度", "率")
+#: A suffix only counts when at least this many CJK characters precede it inside
+#: the same run. One is the right floor: two-character abstract nouns are the
+#: norm in Chinese (效率 / 精度 / 温度 / 强度), while a bare suffix or one glued to
+#: a Latin symbol ("$x$性") is not an abstract noun at all. The evidence window
+#: carries the preceding characters, so a reviewer always sees the whole word.
+_CJK_ABSTRACT_NOUN_MIN_PREFIX = 1
+#: How many preceding characters are recorded as the evidence span.
+_CJK_ABSTRACT_NOUN_WINDOW = 4
 #: A Chinese academic sentence longer than this many units counts as "long"; the
 #: English threshold (40 words) does not transfer (Chinese has no word spaces).
 _LONG_SENTENCE_CJK_UNITS = 80
@@ -1519,6 +1537,32 @@ def _match_cjk_groups(sentences: Sequence[Span],
     return per_group
 
 
+def _cjk_abstract_noun_hits(sentences: Sequence[Span]) -> list[tuple[int, int, int]]:
+    """Abstract-noun suffix hits for Chinese (性 / 度 / 率).
+
+    Counts suffix **occurrences**, not segmented words: Chinese has no spaces and
+    segmenting it would need a dictionary that could then drift.  The evidence
+    span carries the preceding window, so a reviewer sees "稳定性" rather than a
+    bare "性".
+    """
+    hits: list[tuple[int, int, int]] = []
+    for index, span in enumerate(sentences):
+        piece = span.text
+        for position, char in enumerate(piece):
+            if char not in _CJK_ABSTRACT_NOUN_SUFFIXES:
+                continue
+            prefix = 0
+            cursor = position - 1
+            while cursor >= 0 and _CJK_CHAR_RE.match(piece[cursor]):
+                prefix += 1
+                cursor -= 1
+            if prefix < _CJK_ABSTRACT_NOUN_MIN_PREFIX:
+                continue
+            start = max(0, position - _CJK_ABSTRACT_NOUN_WINDOW)
+            hits.append((span.start + start, span.start + position + 1, index))
+    return hits
+
+
 def _cjk_passive_hits(sentences: Sequence[Span]) -> list[tuple[int, int, int]]:
     """Passive phrase spans for Chinese (marker + the characters that follow).
 
@@ -1647,6 +1691,18 @@ def _zh_metrics(text: str, sentences: Sequence[Span], language: dict[str, Any],
     )
 
     computed["M-AWR-03"] = _density("M-AWR-03", academic_hits, academic_entries)
+    abstract_hits = _cjk_abstract_noun_hits(sentences)
+    computed["M-NOM-10"] = _rate(
+        "M-NOM-10", len(abstract_hits), n_units, _UNIT_PER_1000_CJK_UNITS,
+        _evidence(abstract_hits, text, len(abstract_hits)), [],
+        scale=1000.0, denominator_unit="cjk-units",
+        # Which operationalization this number is. The English M-NOM-10 counts
+        # verb->noun derivations; the Chinese one counts abstract-noun suffixes.
+        # Same slot in the contract, different statistic: never compare them.
+        variant="cjk-abstract-noun-suffix",
+        suffixes=list(_CJK_ABSTRACT_NOUN_SUFFIXES),
+        excluded_suffixes={"化": "entangled with non-nominalising verb forms (优化/转化/深化)"})
+
     computed["M-PAS-09"] = _rate(
         "M-PAS-09", len(passive_hits), len(sentences), _UNIT_RATIO,
         _evidence(passive_hits, text, len(passive_hits)),

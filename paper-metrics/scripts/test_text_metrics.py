@@ -275,6 +275,28 @@ def test_zh_unit_count_covers_mixed_sentences():
     assert tm._zh_cjk_unit_count(text) == cjk + 1 == 7
 
 
+def test_chinese_abstract_noun_rule():
+    """M-NOM-10 for Chinese counts abstract-noun suffixes, not verb derivations.
+
+    Chinese converts verbs to nouns by zero derivation, so the English
+    suffix+verb-base rule cannot apply; the recorded variant makes clear that the
+    two numbers are different statistics.
+    """
+    spans = tm.split_sentences("该方法的稳定性和求解效率都很重要。")
+    hits = tm._cjk_abstract_noun_hits(spans)
+    excerpts = sorted(spans[0].text[start - spans[0].start:end - spans[0].start]
+                      for start, end, _ in hits)
+    # the span is a window ending at the suffix, so a reviewer sees the word
+    assert any(text.endswith("稳定性") for text in excerpts)
+    assert any(text.endswith("效率") for text in excerpts)
+    # 化 must never count: 优化 / 转化 / 深化 are verbs, not nominalisations
+    assert tm._cjk_abstract_noun_hits(tm.split_sentences("我们优化了模型并转化了目标函数。")) == []
+    # a bare suffix with too short a prefix is not an abstract noun
+    assert tm._cjk_abstract_noun_hits(tm.split_sentences("性 度 率")) == []
+    # each hit carries the preceding window so a reviewer sees a real word
+    assert all(end - start >= 2 for start, end, _ in hits)
+
+
 def test_chinese_metric_weights_are_declared():
     assert tm._LONG_SENTENCE_CJK_UNITS == 80
     assert tm._UNIT_CJK_UNITS_PER_SENTENCE == "cjk-units/sentence"
@@ -356,7 +378,7 @@ def test_mtld_pinned_parameters_are_frozen():
     assert tm._LONG_SENTENCE_WORDS == 40
     # 1.1: pre-split non-prose masking changed the sentence denominators
     # (issues #2 / #3) -> the version must move with the numbers.
-    assert tm.TEXT_METRICS_VERSION == "1.3"
+    assert tm.TEXT_METRICS_VERSION == "1.4"
 
 
 # ---------------------------------------------------------------------------
@@ -764,10 +786,13 @@ def test_chinese_measures_the_supported_subset_and_names_the_rest():
     # 12 of the 14 metrics are measurable for Chinese; only the two that need an
     # annotation set (M-NOM-10) or do not exist in the language (M-TENSE-28,
     # Chinese has no tense) stay unsupported.
-    assert set(measured) == {
-        "M-SLEN-01", "M-LSF-16", "M-MTLD-02", "M-HED-14", "M-BOO-15",
-        "M-CONN-30", "M-CONN-30c", "M-CONN-30k", "M-CONN-30r", "M-AWR-03",
-        "M-PAS-09"} - {"M-NOM-10", "M-TENSE-28"}
+    # 13 of the 14 metrics are measurable for Chinese: only M-TENSE-28 stays
+    # unmeasurable, because Chinese has no tense and a number there would be
+    # fabricated. M-NOM-10 is measurable as the abstract-noun-suffix variant.
+    assert set(measured) == set(tm.METRIC_IDS) - {"M-TENSE-28"}
+    assert metrics["M-NOM-10"]["variant"] == "cjk-abstract-noun-suffix"
+    assert metrics["M-NOM-10"]["unit"] == tm._UNIT_PER_1000_CJK_UNITS
+    assert "化" in metrics["M-NOM-10"]["excluded_suffixes"]
     assert metrics["M-SLEN-01"]["unit"] == tm._UNIT_CJK_UNITS_PER_SENTENCE
     assert metrics["M-LSF-16"]["long_sentence_threshold"] == tm._LONG_SENTENCE_CJK_UNITS
     assert metrics["M-CONN-30"]["unit"] == tm._UNIT_PER_1000_CJK_UNITS
