@@ -155,7 +155,8 @@ def test_every_stream_metric_declares_scope_and_contract(model: dm.DocumentModel
     metrics = sm.stream_metrics(model)
     assert set(metrics) == {"S-CAP-01", "S-NUM-02", "S-REF-03", "S-SIZ-04",
                             "S-CAPL-05", "S-TBL-06", "S-TBL-07", "S-TBL-08",
-                            "S-TBL-09", "S-TBL-10"}
+                            "S-TBL-09", "S-TBL-10", "S-TBL-11", "S-TBL-12",
+                            "S-TBL-13"}
     required = {"value", "n", "denominator", "unit", "state", "method",
                 "metric_spec", "evidence", "warnings", "scope"}
     for metric_id, record in metrics.items():
@@ -187,7 +188,8 @@ def test_unavailable_records_are_explicit_not_silent() -> None:
     records = sm.unavailable_records("CANONICAL_UNPARSEABLE")
     assert set(records) == {"S-CAP-01", "S-NUM-02", "S-REF-03", "S-SIZ-04",
                             "S-CAPL-05", "S-TBL-06", "S-TBL-07", "S-TBL-08",
-                            "S-TBL-09", "S-TBL-10"}
+                            "S-TBL-09", "S-TBL-10", "S-TBL-11", "S-TBL-12",
+                            "S-TBL-13"}
     for metric_id, record in records.items():
         assert record["metric_spec"] == metric_id
         assert record["value"] is None and record["n"] == 0
@@ -480,3 +482,77 @@ def test_table_placement_is_null_without_a_section_mapping(tmp_path: Path) -> No
     record = sm.table_placement(no_tables, sections={0: "introduction"})
     assert record["value"] is None
     assert "NO_TABLES" in record["warnings"]
+
+
+# ---------------------------------------------------------------------------
+# 9. Table content: numeric density + LaTeX residue
+# ---------------------------------------------------------------------------
+
+_TABLE_NUM_A = ("<table><tr><td>a</td><td>1</td><td>2.5</td></tr>"
+                "<tr><td>b</td><td>3</td><td>4</td></tr></table>")
+_TABLE_NUM_B = ("<table><tr><td colspan='2'>Header</td></tr>"
+                "<tr><td>G13</td><td>522(90.0%)</td></tr></table>")
+_TABLE_NUM_C = "<table><tr><td>$r=4.5$</td><td>1</td></tr></table>"
+
+
+def _content_model(tmp_path: Path) -> dm.DocumentModel:
+    return _write(tmp_path, "p17_content_list.json", [
+        _block("table", table_body=_TABLE_NUM_A, table_caption=["Table 1", "a"]),
+        _block("table", table_body=_TABLE_NUM_B, table_caption=["Table 2", "b"]),
+        _block("table", table_body=_TABLE_NUM_C, table_caption=["Table 3", "c"]),
+    ])
+
+
+def test_numeric_cell_share_separates_strict_from_number_bearing(tmp_path: Path) -> None:
+    """S-TBL-11: 5 of 11 cells are STRICTLY numeric; 8 merely contain a number.
+
+    Both readings are reported because the difference is real: '522(90.0%)' and 'G13'
+    carry numbers but are labels/results-with-parentheses, so a single number would be
+    either misleading or useless depending on the reader.
+    """
+    record = sm.numeric_cell_share(_content_model(tmp_path))
+    assert record["metric_spec"] == "S-TBL-11"
+    assert record["scope"] == ["tables"]
+    assert record["unit"] == "ratio"
+    assert record["denominator"] == 11
+    # the product contract rounds values to 6 decimals, so compare at that resolution
+    assert record["value"] == pytest.approx(5 / 11, abs=1e-6)
+    assert record["evidence"]["numeric_bearing_cells"] == 8
+    assert record["evidence"]["numeric_bearing_share"] == pytest.approx(8 / 11)
+    first = record["evidence"]["tables"][0]
+    assert first["cells"] == 6 and first["numeric_cells"] == 4
+    assert "LATEX_IN_CELLS" in record["warnings"]
+
+
+def test_numeric_row_share_is_robust_to_merged_header_rows(tmp_path: Path) -> None:
+    """S-TBL-12: rows are counted, not reconstructed columns - colspan/rowspan make
+    column alignment unreliable, while a row's own cells are always known."""
+    record = sm.numeric_row_share(_content_model(tmp_path))
+    assert record["metric_spec"] == "S-TBL-12"
+    assert record["scope"] == ["tables"]
+    assert record["denominator"] == 5          # 2 + 2 + 1 rows
+    assert record["value"] == pytest.approx(3 / 5)
+    assert record["evidence"]["numeric_rows"] == 3
+
+
+def test_table_latex_residue_is_reported(tmp_path: Path) -> None:
+    """S-TBL-13: MinerU puts LaTeX inside table cells; that is an extraction artifact
+    worth its own number, because it silently breaks any numeric reuse of the table."""
+    record = sm.table_latex_residue(_content_model(tmp_path))
+    assert record["metric_spec"] == "S-TBL-13"
+    assert record["scope"] == ["tables"]
+    assert record["denominator"] == 11
+    assert record["value"] == pytest.approx(1 / 11, abs=1e-6)
+    tables = {item["block_index"]: item for item in record["evidence"]["tables"]}
+    assert tables[2]["latex_cells"] == 1
+    for sample in record["evidence"]["sample"]:
+        assert sample["field"] == "table_body"
+        assert sample["excerpt"].startswith("<table>")
+
+
+def test_table_content_metrics_are_null_without_tables(tmp_path: Path) -> None:
+    model = _write(tmp_path, "p18_content_list.json", [_block("text", text="prose")])
+    for record in (sm.numeric_cell_share(model), sm.numeric_row_share(model),
+                   sm.table_latex_residue(model)):
+        assert record["value"] is None and record["n"] == 0
+        assert "NO_TABLES" in record["warnings"]

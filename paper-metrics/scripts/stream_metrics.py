@@ -53,6 +53,9 @@ _SCOPE_OF_METRIC: Final[dict[str, tuple[str, ...]]] = {
     "S-TBL-08": _SCOPE_TABLES,
     "S-TBL-09": _SCOPE_DENSITY,
     "S-TBL-10": _SCOPE_TABLES,
+    "S-TBL-11": _SCOPE_TABLES,
+    "S-TBL-12": _SCOPE_TABLES,
+    "S-TBL-13": _SCOPE_TABLES,
 }
 
 #: Journal figures are printed at ~300 dpi; 800 px is roughly a 6.8 cm single-column
@@ -673,10 +676,183 @@ def table_placement(model: dm.DocumentModel,
         warnings=[])
 
 
+# ---------------------------------------------------------------------------
+# Table content: numeric density + LaTeX residue (tables only)
+# ---------------------------------------------------------------------------
+# Measured on the real corpus (2026-09-14): 77.9% of the Chinese corpus's table cells
+# are strictly numeric versus 49.7% in the English corpus (whose tables carry instance
+# labels like "G13" and compound cells like "522(90.0%)"); 1.5-2.3% of cells still
+# contain LaTeX ("$r _ { c e n } = 4 . 5$") in roughly a third of all tables.
+
+#: A cell is numeric when only a number, an optional range and an optional short unit
+#: remain (full-width digits normalised, thousands separators removed first).
+_NUMERIC_CELL_RE: Final = re.compile(r"^[+-]?\d+(?:\.\d+)?\s*[A-Za-z%]{0,6}$")
+_NUMERIC_RANGE_RE: Final = re.compile(
+    r"^[+-]?\d+(?:\.\d+)?\s*[-~\u2013\u81f3]\s*[+-]?\d+(?:\.\d+)?$")
+_NUMBER_BEARING_RE: Final = re.compile(r"\d")
+#: MinerU leaves LaTeX in table cells (e.g. "$r _ { c e n } = 4 . 5$").
+_LATEX_CELL_MARKER: Final[str] = "$"
+
+
+@dataclass(frozen=True, slots=True)
+class TableCells:
+    """Cell text of one table by row - the single scan the three content metrics share."""
+
+    rows: tuple[tuple[str, ...], ...]
+    cells: int
+    numeric_cells: int
+    numeric_bearing_cells: int
+    latex_cells: int
+    numeric_rows: int
+
+
+def _cell_text(inner: str) -> str:
+    """Normalised cell text: tags stripped, full-width digits folded, separators gone."""
+    text = _normalise_digits(dm.html_to_text(inner))
+    return text.replace(",", "").replace(" ", "").strip()
+
+
+def _is_numeric_cell(text: str) -> bool:
+    return bool(_NUMERIC_CELL_RE.match(text) or _NUMERIC_RANGE_RE.match(text))
+
+
+def table_cells(html: str) -> TableCells:
+    """Scan one table_body once: per-row cell text plus every count the metrics need.
+
+    Rows rather than reconstructed columns: colspan/rowspan are pervasive here, so
+    column alignment would be guesswork while a row's own cells are known exactly.
+    """
+    rows: list[tuple[str, ...]] = []
+    numeric_cells = numeric_bearing = latex_cells = numeric_rows = 0
+    for row_html in _TABLE_ROW_RE.findall(html):
+        texts = tuple(_cell_text(inner)
+                      for _attrs, inner in _TABLE_CELL_RE.findall(row_html))
+        if not texts:
+            continue
+        rows.append(texts)
+        row_numeric = 0
+        for text in texts:
+            if _is_numeric_cell(text):
+                numeric_cells += 1
+                row_numeric += 1
+            if _NUMBER_BEARING_RE.search(text):
+                numeric_bearing += 1
+            if _LATEX_CELL_MARKER in text:
+                latex_cells += 1
+        if row_numeric >= max(1, len(texts) // 2):
+            numeric_rows += 1
+    return TableCells(rows=tuple(rows), cells=sum(len(row) for row in rows),
+                      numeric_cells=numeric_cells,
+                      numeric_bearing_cells=numeric_bearing,
+                      latex_cells=latex_cells, numeric_rows=numeric_rows)
+
+
+def _table_cell_scan(model: dm.DocumentModel) -> tuple[list[dict[str, dm.JsonValue]],
+                                                       list[int]]:
+    """Per-table cell scan for the content metrics, plus the empty-body indices."""
+    tables: list[dict[str, dm.JsonValue]] = []
+    empty_bodies: list[int] = []
+    for _stream, index, block in _inventory_blocks(model):
+        if block.kind is not dm.Stream.TABLES:
+            continue
+        body = block.table_body or ""
+        cells = table_cells(body)
+        if not cells.cells:
+            empty_bodies.append(block.index)
+            continue
+        tables.append({"block_index": block.index, "field": "table_body",
+                       "excerpt": body[:80], "index": index,
+                       "rows": len(cells.rows), "cells": cells.cells,
+                       "numeric_cells": cells.numeric_cells,
+                       "numeric_bearing_cells": cells.numeric_bearing_cells,
+                       "numeric_rows": cells.numeric_rows,
+                       "latex_cells": cells.latex_cells})
+    return tables, empty_bodies
+
+
+def numeric_cell_share(model: dm.DocumentModel) -> dict[str, dm.JsonValue]:
+    """S-TBL-11: share of table cells that are STRICTLY numeric.
+
+    The looser "contains a number" reading is reported alongside, because the gap
+    between them is a real property of the corpus (labels like G13 and compound cells
+    like 522(90.0%)) and one number alone would mislead whichever reader it did not fit.
+    """
+    tables, empty_bodies = _table_cell_scan(model)
+    cells = sum(_as_int(item.get("cells")) for item in tables)
+    numeric = sum(_as_int(item.get("numeric_cells")) for item in tables)
+    bearing = sum(_as_int(item.get("numeric_bearing_cells")) for item in tables)
+    latex = sum(_as_int(item.get("latex_cells")) for item in tables)
+    warnings: list[str] = ["TABLE_BODY_EMPTY"] if empty_bodies else []
+    if latex:
+        warnings.append("LATEX_IN_CELLS")
+    if not cells:
+        warnings.append("NO_TABLES")
+        return _record("S-TBL-11", value=None, n=0, denominator=0, unit="ratio",
+                       evidence={"count": 0, "sample": [], "tables": [],
+                                 "numeric_cells": 0, "numeric_bearing_cells": 0,
+                                 "numeric_bearing_share": None,
+                                 "latex_cells": latex,
+                                 "empty_bodies": empty_bodies}, warnings=warnings)
+    return _record("S-TBL-11", value=numeric / cells, n=cells, denominator=cells,
+                   unit="ratio",
+                   evidence={"count": cells, "sample": tables[:_SAMPLE_LIMIT],
+                             "tables": tables, "numeric_cells": numeric,
+                             "numeric_bearing_cells": bearing,
+                             "numeric_bearing_share": round(bearing / cells, 6),
+                             "latex_cells": latex,
+                             "empty_bodies": empty_bodies}, warnings=warnings)
+
+
+def numeric_row_share(model: dm.DocumentModel) -> dict[str, dm.JsonValue]:
+    """S-TBL-12: share of rows whose cells are at least half numeric (data rows)."""
+    tables, empty_bodies = _table_cell_scan(model)
+    rows = sum(_as_int(item.get("rows")) for item in tables)
+    numeric_rows = sum(_as_int(item.get("numeric_rows")) for item in tables)
+    warnings: list[str] = ["TABLE_BODY_EMPTY"] if empty_bodies else []
+    if not rows:
+        warnings.append("NO_TABLES")
+        return _record("S-TBL-12", value=None, n=0, denominator=0, unit="ratio",
+                       evidence={"count": 0, "sample": [], "tables": [],
+                                 "numeric_rows": 0,
+                                 "empty_bodies": empty_bodies}, warnings=warnings)
+    return _record("S-TBL-12", value=numeric_rows / rows, n=rows, denominator=rows,
+                   unit="ratio",
+                   evidence={"count": rows, "sample": tables[:_SAMPLE_LIMIT],
+                             "tables": tables, "numeric_rows": numeric_rows,
+                             "empty_bodies": empty_bodies}, warnings=warnings)
+
+
+def table_latex_residue(model: dm.DocumentModel) -> dict[str, dm.JsonValue]:
+    """S-TBL-13: share of table cells that still carry LaTeX markup.
+
+    Its own metric because it silently breaks numeric reuse of the table: a cell that
+    reads "$r _ { c e n } = 4 . 5$" is not a number to any consumer, and it is an
+    extraction artifact rather than an authoring choice.
+    """
+    tables, empty_bodies = _table_cell_scan(model)
+    cells = sum(_as_int(item.get("cells")) for item in tables)
+    latex = sum(_as_int(item.get("latex_cells")) for item in tables)
+    warnings: list[str] = ["TABLE_BODY_EMPTY"] if empty_bodies else []
+    if latex:
+        warnings.append("LATEX_IN_CELLS")
+    if not cells:
+        warnings.append("NO_TABLES")
+        return _record("S-TBL-13", value=None, n=0, denominator=0, unit="ratio",
+                       evidence={"count": 0, "sample": [], "tables": [],
+                                 "latex_cells": latex,
+                                 "empty_bodies": empty_bodies}, warnings=warnings)
+    return _record("S-TBL-13", value=latex / cells, n=cells, denominator=cells,
+                   unit="ratio",
+                   evidence={"count": cells, "sample": tables[:_SAMPLE_LIMIT],
+                             "tables": tables, "latex_cells": latex,
+                             "empty_bodies": empty_bodies}, warnings=warnings)
+
+
 _METRIC_IDS: Final[tuple[str, ...]] = ("S-CAP-01", "S-NUM-02", "S-REF-03",
                                          "S-SIZ-04", "S-CAPL-05", "S-TBL-06",
                                          "S-TBL-07", "S-TBL-08", "S-TBL-09",
-                                         "S-TBL-10")
+                                         "S-TBL-10", "S-TBL-11", "S-TBL-12",
+                                         "S-TBL-13")
 
 
 def unavailable_records(warning: str) -> dict[str, dict[str, dm.JsonValue]]:
@@ -706,7 +882,9 @@ def stream_metrics(model: dm.DocumentModel,
                    reference_consistency(model), image_resolution(model),
                    caption_length(model), table_columns(model),
                    table_empty_cells(model), table_missing_body(model),
-                   table_density(model), table_placement(model, sections)):
+                   table_density(model), table_placement(model, sections),
+                   numeric_cell_share(model), numeric_row_share(model),
+                   table_latex_residue(model)):
         metric_id = record["metric_spec"]
         if isinstance(metric_id, str):
             out[metric_id] = record
