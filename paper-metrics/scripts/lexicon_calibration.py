@@ -341,6 +341,120 @@ def audit(corpus: Path, bundles: dict, lexicon: str) -> dict:
     }
 
 
+def validate(corpus: Path, bundles: dict, lexicon: str,
+             leave_out_pct: int = 20, subsets: int = 5) -> dict:
+    """Zero-annotation validity evidence for one lexicon.
+
+    Three checks that need no human labels, because for a *relative* use
+    (same lexicon on the corpus and on the draft) the question is not "is every
+    entry right" but "is the number stable and does it discriminate":
+
+    1. concentration - the share of all hits that comes from the busiest 20% of
+       entries. A lexicon whose number is dominated by one or two entries is
+       degenerate: the metric stops being about the category.
+    2. sensitivity   - drop a stride-selected `leave_out_pct` of the entries,
+       recompute the corpus mean, repeat `subsets` times. A small spread means
+       the number does not hinge on a handful of word choices.
+    3. discrimination - the same entries measured on introduction / method /
+       experiments sections. If a genre-sensitive category (hedging, boosting)
+       shows no separation at all, the list is not measuring that category.
+    """
+    import profile_papers as pp
+
+    bundle = bundles["zh"]
+    table = entries_for(bundle, lexicon)
+    flat = [entry for entries in table.values() for entry in entries]
+    scale = 1000.0 if lexicon == "connectors" else 1.0
+
+    hits_by_entry: dict = {entry: 0 for entry in flat}
+    papers: list = []
+    for paper_dir in sorted(corpus.iterdir()):
+        content_lists = sorted(paper_dir.glob("mineru/**/*content_list.json"))
+        if not content_lists:
+            continue
+        paper = pp.Paper(name=paper_dir.name, content_list_path=content_lists[0],
+                         paper_key=paper_dir.name)
+        text = paper.canonical_text()
+        if tm.detect_language(text)["language"] != "zh":
+            continue
+        papers.append((paper_dir.name, text, paper.section_texts()))
+        for span in tm.split_sentences(text):
+            for start, end, _ in tm._match_cjk_entries([span], flat):
+                token = span.text[start - span.start:end - span.start]
+                if token in hits_by_entry:
+                    hits_by_entry[token] += 1
+
+    def ratio(entries: list, text: str):
+        units = tm._zh_cjk_unit_count(text)
+        if not units:
+            return None
+        hits = len(tm._match_cjk_entries(tm.split_sentences(text), entries))
+        return hits / units * scale
+
+    baseline = [value for _, text, _ in papers if (value := ratio(flat, text)) is not None]
+    baseline_mean = statistic_mean(baseline)
+
+    # 1) concentration
+    ranked = sorted(hits_by_entry.items(), key=lambda item: (-item[1], item[0]))
+    total_hits = sum(count for _, count in ranked)
+    top_slice = max(1, int(round(len(ranked) * 0.2)))
+    top_hits = sum(count for _, count in ranked[:top_slice])
+
+    # 2) sensitivity: stride-selected leave-out subsets, no RNG
+    spread: list = []
+    for subset_index in range(subsets):
+        kept = [entry for index, entry in enumerate(sorted(flat))
+                if (index + subset_index) % max(2, int(round(100 / leave_out_pct))) != 0]
+        values = [value for _, text, _ in papers if (value := ratio(kept, text)) is not None]
+        if values:
+            spread.append(statistic_mean(values))
+
+    # 3) discrimination across the stratified sections of the same papers
+    sections: dict = {}
+    for _, _, section_texts in papers:
+        for name in ("introduction", "method", "experiments"):
+            text = section_texts.get(name)
+            if not text:
+                continue
+            value = ratio(flat, text)
+            if value is not None:
+                sections.setdefault(name, []).append(value)
+    section_means = {name: statistic_mean(values) for name, values in sections.items()}
+    ordered = sorted(section_means.items(), key=lambda item: item[1])
+    return {
+        "lexicon": lexicon,
+        "lexicon_version": bundle.version,
+        "n_entries": len(flat),
+        "n_papers": len(papers),
+        "corpus_mean": baseline_mean,
+        "concentration": {
+            "top20pct_entries": top_slice,
+            "top20pct_hit_share": (round(top_hits / total_hits, 6) if total_hits else None),
+            "strongest": [{"entry": entry, "hits": count} for entry, count in ranked[:5]],
+        },
+        "sensitivity": {
+            "leave_out_pct": leave_out_pct,
+            "subsets": len(spread),
+            "means": [round(value, 8) for value in spread],
+            "relative_spread": (round((max(spread) - min(spread)) / baseline_mean, 6)
+                                if spread and baseline_mean else None),
+        },
+        "discrimination": {
+            "section_means": {name: round(value, 8) for name, value in sorted(section_means.items())},
+            "min_section": ordered[0][0] if ordered else None,
+            "max_section": ordered[-1][0] if ordered else None,
+            "max_over_min": (round(ordered[-1][1] / ordered[0][1], 4)
+                             if ordered and ordered[0][1] else None),
+        },
+    }
+
+
+def statistic_mean(values: list):
+    if not values:
+        return None
+    return sum(values) / len(values)
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Chinese lexicon calibration harness")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -363,6 +477,13 @@ def main(argv=None) -> int:
     audit_cmd.add_argument("--corpus", required=True, type=Path)
     audit_cmd.add_argument("--out", required=True, type=Path)
     audit_cmd.add_argument("--lexicon", default="hedge", choices=CALIBRATABLE)
+
+    validate_cmd = sub.add_parser("validate", help="zero-annotation validity evidence")
+    validate_cmd.add_argument("--corpus", required=True, type=Path)
+    validate_cmd.add_argument("--out", required=True, type=Path)
+    validate_cmd.add_argument("--lexicon", default="hedge", choices=CALIBRATABLE)
+    validate_cmd.add_argument("--leave-out-pct", type=int, default=20, dest="leave_out_pct")
+    validate_cmd.add_argument("--subsets", type=int, default=5)
 
     mine_cmd = sub.add_parser("mine", help="list frequent n-grams missing from every lexicon")
     mine_cmd.add_argument("--corpus", required=True, type=Path)
@@ -429,6 +550,25 @@ def main(argv=None) -> int:
         print("[audit] top: " + ", ".join(
             "%s(%d)" % (row["entry"], row["hits"]) for row in report["top_entries"][:8]))
         print("[audit] never fired: " + ", ".join(report["never_fired"][:15]))
+        return 0
+
+    if args.command == "validate":
+        args.out.mkdir(parents=True, exist_ok=True)
+        report = validate(args.corpus, bundles, args.lexicon,
+                          args.leave_out_pct, args.subsets)
+        payload = json.dumps(report, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+        (args.out / ("_validity_%s.json" % args.lexicon)).write_text(payload, encoding="utf-8")
+        print("[validate] %s: corpus_mean=%s over %d papers, %d entries"
+              % (args.lexicon, report["corpus_mean"], report["n_papers"], report["n_entries"]))
+        print("[validate] concentration: top20%% entries hold %s of hits; strongest=%s"
+              % (report["concentration"]["top20pct_hit_share"],
+                 ", ".join("%s(%d)" % (row["entry"], row["hits"])
+                           for row in report["concentration"]["strongest"])))
+        print("[validate] sensitivity: leave-out %d%% -> relative spread %s"
+              % (args.leave_out_pct, report["sensitivity"]["relative_spread"]))
+        print("[validate] discrimination: %s (max/min=%s)"
+              % (report["discrimination"]["section_means"],
+                 report["discrimination"]["max_over_min"]))
         return 0
 
     if args.command == "mine":

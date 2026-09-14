@@ -107,6 +107,77 @@ def test_entries_for_connectors_returns_the_three_groups():
     assert table["result"] == ("结果表明",)
 
 
+def test_validate_reports_concentration_sensitivity_and_discrimination(tmp_path: Path):
+    """Zero-annotation validity evidence must be structured and deterministic."""
+    import textwrap
+    corpus = tmp_path / "zh"
+    d = corpus / "P1" / "mineru" / "p1" / "auto"
+    d.mkdir(parents=True)
+    import json as _json
+    blocks = [
+        {"type": "text", "text_level": 2, "text": "1 引言"},
+        {"type": "text", "text": "本文的方法可能有效，通常假设成立。" * 3},
+        {"type": "text", "text_level": 2, "text": "2 方法"},
+        {"type": "text", "text": "本文构建模型并求解优化问题。" * 3},
+        {"type": "text", "text_level": 2, "text": "3 实验结果"},
+        {"type": "text", "text": "结果表明该方法显著有效。" * 3},
+    ]
+    (d / "p1_content_list.json").write_text(_json.dumps(blocks, ensure_ascii=False),
+                                            encoding="utf-8")
+
+    class _L:
+        def __init__(self, entries):
+            self.entries = entries
+
+    class _Bundle:
+        version = "test-zh"
+
+        def __init__(self):
+            self.hedge = _L(("可能", "通常", "一般"))
+            self.connectors = {"contrastive": _L(("然而",)), "causal": _L(("因此",)),
+                               "result": _L(("结果表明",))}
+
+    report = lc.validate(corpus, {"zh": _Bundle()}, "hedge", leave_out_pct=20, subsets=3)
+    assert report["n_papers"] == 1 and report["n_entries"] == 3
+    assert 0.0 <= report["concentration"]["top20pct_hit_share"] <= 1.0
+    assert report["concentration"]["strongest"]
+    assert len(report["sensitivity"]["means"]) == 3
+    assert report["sensitivity"]["relative_spread"] is not None
+    assert set(report["discrimination"]["section_means"]) <= {
+        "introduction", "method", "experiments"}
+    # deterministic: same inputs -> same report
+    again = lc.validate(corpus, {"zh": _Bundle()}, "hedge", leave_out_pct=20, subsets=3)
+    assert again == report
+
+
+def test_validate_sensitivity_ignores_empty_lexicon(tmp_path: Path):
+    corpus = tmp_path / "zh"
+    d = corpus / "P1" / "mineru" / "p1" / "auto"
+    d.mkdir(parents=True)
+    import json as _json
+    # a level-2 heading is required: blocks before the first heading are
+    # front_matter and are dropped from the canonical text
+    (d / "p1_content_list.json").write_text(
+        _json.dumps([{"type": "text", "text_level": 2, "text": "1 引言"},
+                     {"type": "text", "text": "本文研究问题。" * 20}], ensure_ascii=False),
+        encoding="utf-8")
+
+    class _L:
+        def __init__(self, entries):
+            self.entries = entries
+
+    class _Bundle:
+        version = "test-zh"
+
+        def __init__(self):
+            self.hedge = _L(())
+            self.connectors = {"contrastive": _L(()), "causal": _L(()), "result": _L(())}
+
+    report = lc.validate(corpus, {"zh": _Bundle()}, "hedge", subsets=2)
+    assert report["corpus_mean"] == 0.0
+    assert report["concentration"]["top20pct_hit_share"] is None   # no hits, not 0/0
+
+
 def test_lexicon_fingerprint_changes_with_entries():
     class _Bundle:
         hedge = type("L", (), {"entries": ("可能", "或许")})()

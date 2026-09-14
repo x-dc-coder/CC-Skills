@@ -134,14 +134,20 @@ uv run python paper-metrics/scripts/lexicon_calibration.py sample \
 uv run python paper-metrics/scripts/lexicon_calibration.py score \
     --sheets <dir>/_calibration_hedge.tsv --out <dir> --lexicon hedge --method human
 
-# ④ 逐条目审计：哪些条目在真实语料里从不触发（改进词表的直接证据）
+# ④ 零人工效度证据：集中度 / 敏感性 / 区分度（不需要任何人标注）
+uv run python paper-metrics/scripts/lexicon_calibration.py validate \
+    --corpus <paper-analysis> --out <dir> --lexicon hedge --leave-out-pct 20 --subsets 5
+
+# ⑤ 逐条目审计：哪些条目在真实语料里从不触发（改进词表的直接证据）
 uv run python paper-metrics/scripts/lexicon_calibration.py audit \
     --corpus <paper-analysis> --out <dir> --lexicon booster
 
-# ⑤ 候选挖掘：高频 CJK n-gram 中不在任何词表里的串（机器提议、人确认）
+# ⑥ 候选挖掘：高频 CJK n-gram 中不在任何词表里的串（机器提议、人确认）
 uv run python paper-metrics/scripts/lexicon_calibration.py mine \
     --corpus <paper-analysis> --out <dir> --min-count 15
 ```
+
+**什么时候真的需要人工标注**：只有"把数字当绝对结论"时才需要——写进论文、对外声称某刊"hedge 密度是 X"，或要开 INFERRED 层（语步/引用功能/论证图，那些没有规则可审）。**自用的闭环（同一词表量语料和草稿）不需要**：偏差两边对称，比较自洽。`validate` 的敏感性数据正是这个设计选择的证据（见下）。
 
 **纪律**：
 
