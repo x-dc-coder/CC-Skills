@@ -457,6 +457,19 @@ def test_legacy_summary_without_scope_keeps_every_clause() -> None:
     assert contract["contract_warnings"] == []
 
 
+def test_mixed_scope_metrics_are_excluded_from_draft_contracts() -> None:
+    """A prose+tables metric (table density) is NOT draft-checkable either: a Markdown
+    draft carries no tables, so its clause could only ever come out "skipped"."""
+    summary = _summary(metrics={
+        "M-HED-14": _metric_stats(scope=["prose"]),
+        "S-TBL-09": _metric_stats(scope=["prose", "tables"], unit="per-1000-words"),
+    })
+    contract = _build(summary)
+    assert [c["metric"] for c in contract["clauses"]] == ["M-HED-14"]
+    codes = [w["code"] for w in contract["contract_warnings"]]
+    assert codes == ["NON_PROSE_METRICS_EXCLUDED"]
+
+
 def test_holdout_metadata_is_wired_through_build_contract():
     filtered = _full_corpus_summary()
     filtered["n_papers"] = 12          # what apply_holdout() hands over

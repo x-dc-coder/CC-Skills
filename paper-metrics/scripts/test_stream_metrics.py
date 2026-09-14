@@ -154,7 +154,8 @@ def test_reference_consistency_ignores_numbers_in_tables(tmp_path: Path) -> None
 def test_every_stream_metric_declares_scope_and_contract(model: dm.DocumentModel) -> None:
     metrics = sm.stream_metrics(model)
     assert set(metrics) == {"S-CAP-01", "S-NUM-02", "S-REF-03", "S-SIZ-04",
-                            "S-CAPL-05", "S-TBL-06", "S-TBL-07", "S-TBL-08"}
+                            "S-CAPL-05", "S-TBL-06", "S-TBL-07", "S-TBL-08",
+                            "S-TBL-09", "S-TBL-10"}
     required = {"value", "n", "denominator", "unit", "state", "method",
                 "metric_spec", "evidence", "warnings", "scope"}
     for metric_id, record in metrics.items():
@@ -163,8 +164,14 @@ def test_every_stream_metric_declares_scope_and_contract(model: dm.DocumentModel
         assert record["scope"], metric_id
         for name in record["scope"]:
             assert name in {s.value for s in dm.Stream}, (metric_id, name)
-        assert "prose" not in record["scope"], \
-            f"{metric_id}: stream metrics must not claim the prose stream"
+        # A stream metric is *about* a non-prose stream, so it must name one.  Prose
+        # may appear next to it only as a denominator: S-TBL-09 (table density) needs
+        # prose units, and a metric like that must never be prose-only.
+        assert ("tables" in record["scope"] or "figures" in record["scope"]), \
+            f"{metric_id}: stream metrics must read a non-prose stream"
+        if "prose" in record["scope"]:
+            assert len(record["scope"]) > 1, \
+                f"{metric_id}: prose may only appear alongside a non-prose stream"
 
 
 def test_stream_metrics_are_deterministic(model: dm.DocumentModel) -> None:
@@ -179,7 +186,8 @@ def test_unavailable_records_are_explicit_not_silent() -> None:
     reported - as explicit "not measured" records, never as absent ones."""
     records = sm.unavailable_records("CANONICAL_UNPARSEABLE")
     assert set(records) == {"S-CAP-01", "S-NUM-02", "S-REF-03", "S-SIZ-04",
-                            "S-CAPL-05", "S-TBL-06", "S-TBL-07", "S-TBL-08"}
+                            "S-CAPL-05", "S-TBL-06", "S-TBL-07", "S-TBL-08",
+                            "S-TBL-09", "S-TBL-10"}
     for metric_id, record in records.items():
         assert record["metric_spec"] == metric_id
         assert record["value"] is None and record["n"] == 0
@@ -373,3 +381,102 @@ def test_table_metrics_are_null_without_tables(tmp_path: Path) -> None:
         assert record["value"] is None and record["n"] == 0
         assert "NO_TABLES" in record["warnings"]
         assert record["scope"] == ["tables"]
+
+
+# ---------------------------------------------------------------------------
+# 7. Table density (cross-stream) + section placement
+# ---------------------------------------------------------------------------
+
+def _density_model(tmp_path: Path) -> dm.DocumentModel:
+    return _write(tmp_path, "p11_content_list.json", [
+        _block("text", text="one two three four five"),
+        _block("table", table_body=_TABLE_HTML_B, table_caption=["Table 1", "x"]),
+        _block("table", table_body=_TABLE_HTML_C, table_caption=["Table 2", "y"]),
+    ])
+
+
+def test_table_density_uses_the_frozen_tokenizer(tmp_path: Path) -> None:
+    """S-TBL-09: 2 tables over 5 prose words -> 400 per 1000 words.
+
+    The denominator comes from text_metrics (the frozen tokenizer), not from a second
+    word-splitting rule: two tokenizers would drift apart and the density would follow
+    whichever one ran.
+    """
+    record = sm.table_density(_density_model(tmp_path))
+    assert record["metric_spec"] == "S-TBL-09"
+    assert record["scope"] == ["prose", "tables"]
+    assert record["unit"] == "per-1000-words"
+    assert record["n"] == 2
+    assert record["denominator"] == 5
+    assert record["value"] == pytest.approx(400.0)
+    assert record["evidence"]["unit_basis"] == "words"
+    assert record["evidence"]["language"] == "en"
+
+
+def test_table_density_counts_cjk_units_in_chinese(tmp_path: Path) -> None:
+    model = _write(tmp_path, "p12_content_list.json", [
+        _block("text", text="本文提出方法"),
+        _block("table", table_body=_TABLE_HTML_B, table_caption=["表 1", "x"]),
+    ])
+    record = sm.table_density(model)
+    assert record["unit"] == "per-1000-cjk-units"
+    assert record["evidence"]["language"] == "zh"
+    assert record["denominator"] == 6            # 6 CJK characters, no ASCII tokens
+    assert record["value"] == pytest.approx(1000 / 6)
+
+
+def test_table_density_is_null_without_prose_or_tables(tmp_path: Path) -> None:
+    no_prose = _write(tmp_path, "p13_content_list.json", [
+        _block("text", text=""),
+        _block("table", table_body=_TABLE_HTML_B, table_caption=["Table 1", "x"]),
+    ])
+    record = sm.table_density(no_prose)
+    assert record["value"] is None
+    assert "NO_PROSE_UNITS" in record["warnings"]
+
+    no_tables = _write(tmp_path, "p14_content_list.json", [
+        _block("text", text="one two three")])
+    record = sm.table_density(no_tables)
+    assert record["value"] is None
+    assert "NO_TABLES" in record["warnings"]
+
+
+def test_table_placement_is_concentrated_where_tables_actually_sit(tmp_path: Path) -> None:
+    """S-TBL-10: top-1 section share, with the full distribution as evidence.
+
+    The value is deliberately the most-used section rather than "share in results":
+    on the real Chinese corpus many tables sit under sub-headings whose label cannot be
+    resolved ("3．1 案例构造"), so a results-only value would under-report by an unknown
+    amount.  The results share IS reported, next to the caveat that it is a lower bound.
+    """
+    model = _write(tmp_path, "p15_content_list.json", [
+        _block("text", text="body"),
+        _block("table", table_body=_TABLE_HTML_B, table_caption=["Table 1", "x"]),
+        _block("table", table_body=_TABLE_HTML_C, table_caption=["Table 2", "y"]),
+        _block("table", table_body="<table><tr><td>a</td></tr></table>",
+               table_caption=["Table 3", "z"]),
+    ])
+    sections = {0: "introduction", 1: "experiments", 2: "experiments", 3: "method"}
+    record = sm.table_placement(model, sections=sections)
+    assert record["metric_spec"] == "S-TBL-10"
+    assert record["scope"] == ["tables"]
+    assert record["n"] == 3 and record["denominator"] == 3
+    assert record["evidence"]["sections"] == {"experiments": 2, "method": 1}
+    assert record["evidence"]["top_section"] == "experiments"
+    assert record["value"] == pytest.approx(2 / 3)
+    assert record["evidence"]["results_share"] == pytest.approx(2 / 3)
+    assert "保守下界" in record["evidence"]["results_share_note"]
+    for sample in record["evidence"]["sample"]:
+        assert sample["section"] in {"experiments", "method"}
+        assert sample["field"] == "table_body"
+
+
+def test_table_placement_is_null_without_a_section_mapping(tmp_path: Path) -> None:
+    record = sm.table_placement(_density_model(tmp_path))
+    assert record["value"] is None and record["n"] == 0
+    assert "SECTIONS_UNAVAILABLE" in record["warnings"]
+
+    no_tables = _write(tmp_path, "p16_content_list.json", [_block("text", text="x")])
+    record = sm.table_placement(no_tables, sections={0: "introduction"})
+    assert record["value"] is None
+    assert "NO_TABLES" in record["warnings"]

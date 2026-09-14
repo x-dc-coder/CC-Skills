@@ -1219,7 +1219,12 @@ def _stream_metrics(paper: Paper) -> dict:
         print(f"[profile_papers] WARN: stream metrics unavailable for "
               f"'{paper.paper_key}': {exc}", file=sys.stderr)
         return stream_metrics_mod.unavailable_records("CANONICAL_UNPARSEABLE")
-    return stream_metrics_mod.stream_metrics(model)
+    # Section labels for the placement metric.  labelled_blocks() walks the same
+    # content_list, so its position IS the block index doc_model reports (doc_model
+    # rejects non-dict entries, so the two lists cannot drift apart).
+    sections = {index: section
+                for index, (section, _block) in enumerate(paper.labelled_blocks())}
+    return stream_metrics_mod.stream_metrics(model, sections)
 
 
 def compute_section_metrics(paper: Paper, bundles, text_metrics_mod,

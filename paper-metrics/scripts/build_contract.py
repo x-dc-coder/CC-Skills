@@ -504,7 +504,10 @@ def _is_draft_checkable(stats: object) -> bool:
         # rather than silently dropping a metric, because the profile already reports
         # METRIC_SCOPE_MISSING for it.
         return True
-    return "prose" in scope
+    # Exactly prose.  A mixed-scope metric (prose + tables, e.g. table density) is NOT
+    # draft-checkable either: a Markdown draft carries no tables, so its clause could
+    # only ever come out "skipped".
+    return set(scope) <= {"prose"}
 
 
 def build_contract(

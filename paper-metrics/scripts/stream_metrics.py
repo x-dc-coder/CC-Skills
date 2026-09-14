@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Final
 
 import doc_model as dm
+import text_metrics as tm
 
 #: Which streams each metric reads.  Declared per record so a consumer never has to
 #: infer whether a number came from the prose or from a table.
@@ -36,6 +37,8 @@ _INVENTORY_STREAMS: Final[tuple[dm.Stream, ...]] = (dm.Stream.FIGURES,
 
 _SCOPE_FIGURES: Final[tuple[str, ...]] = (dm.Stream.FIGURES.value,)
 _SCOPE_TABLES: Final[tuple[str, ...]] = (dm.Stream.TABLES.value,)
+#: Density reads the prose side too - the first mixed-scope metric.
+_SCOPE_DENSITY: Final[tuple[str, ...]] = (dm.Stream.PROSE.value, dm.Stream.TABLES.value)
 
 #: The stream(s) each metric reads, keyed by metric id (not by function) so a "not
 #: measured" record carries exactly the same scope as a measured one.
@@ -48,6 +51,8 @@ _SCOPE_OF_METRIC: Final[dict[str, tuple[str, ...]]] = {
     "S-TBL-06": _SCOPE_TABLES,
     "S-TBL-07": _SCOPE_TABLES,
     "S-TBL-08": _SCOPE_TABLES,
+    "S-TBL-09": _SCOPE_DENSITY,
+    "S-TBL-10": _SCOPE_TABLES,
 }
 
 #: Journal figures are printed at ~300 dpi; 800 px is roughly a 6.8 cm single-column
@@ -551,9 +556,127 @@ def table_missing_body(model: dm.DocumentModel) -> dict[str, dm.JsonValue]:
                              "missing": empty_bodies}, warnings=warnings)
 
 
+# ---------------------------------------------------------------------------
+# Table density (cross-stream) + section placement
+# ---------------------------------------------------------------------------
+# Density needs the prose side too, so its scope is ["prose", "tables"] - the first
+# mixed-scope metric.  That has a consequence the contract layer must know about: a
+# mixed-scope metric is still NOT draft-checkable (a Markdown draft has no tables), so
+# build_contract only accepts metrics whose scope is exactly prose.
+
+_UNIT_PER_1000_WORDS: Final = "per-1000-words"
+_UNIT_PER_1000_CJK_UNITS: Final = "per-1000-cjk-units"
+
+#: Sections a table is *expected* to live in.  The reported share is a documented
+#: lower bound: on the real Chinese corpus many tables sit under sub-headings whose
+#: label cannot be resolved ("3.1 案例构造"), and those are not counted as results.
+_RESULT_SECTIONS: Final[frozenset[str]] = frozenset({"experiments", "results",
+                                                     "discussion"})
+
+
+def _count_of(item: tuple[str, int]) -> int:
+    """Sort/max key for a section tally, typed for the checker."""
+    return item[1]
+
+
+def _prose_units(prose: str) -> tuple[int, str, str]:
+    """(units, unit label, language) from the FROZEN metric tokenizer.
+
+    Reused rather than re-implemented: a second word-splitting rule would drift from
+    the one every other density metric uses, and the density would then depend on
+    which rule happened to run first.
+    """
+    language = tm.detect_language(prose)
+    cjk = _as_int(language.get("cjk_chars"))
+    alpha = _as_int(language.get("ascii_alpha_tokens"))
+    name = str(language.get("language"))
+    if name == "zh":
+        return cjk + alpha, _UNIT_PER_1000_CJK_UNITS, name
+    return alpha, _UNIT_PER_1000_WORDS, name
+
+
+def table_density(model: dm.DocumentModel) -> dict[str, dm.JsonValue]:
+    """S-TBL-09: table blocks per 1000 prose units (words, or cjk-units in Chinese).
+
+    The denominator is measured on the PROSE stream only: counting the tables' own
+    text as prose would let a table-heavy paper inflate its own base and hide the very
+    density this metric exists to report.
+    """
+    tables: list[dict[str, dm.JsonValue]] = [
+        {"block_index": block.index, "field": "table_body",
+         "excerpt": (block.table_body or "")[:80], "index": index}
+        for _stream, index, block in _inventory_blocks(model)
+        if block.kind is dm.Stream.TABLES]
+    units, unit_label, language = _prose_units(model.text(dm.Stream.PROSE))
+    evidence: dict[str, dm.JsonValue] = {
+        "count": len(tables), "sample": tables[:_SAMPLE_LIMIT], "prose_units": units,
+        "unit_basis": ("cjk-units" if unit_label == _UNIT_PER_1000_CJK_UNITS
+                       else "words"),
+        "language": language}
+    warnings: list[str] = []
+    if not tables:
+        warnings.append("NO_TABLES")
+        return _record("S-TBL-09", value=None, n=0, denominator=units,
+                       unit=unit_label, evidence=evidence, warnings=warnings)
+    if not units:
+        # No prose to divide by: report "not measured", never a fabricated 0.
+        warnings.append("NO_PROSE_UNITS")
+        return _record("S-TBL-09", value=None, n=len(tables), denominator=0,
+                       unit=unit_label, evidence=evidence, warnings=warnings)
+    return _record("S-TBL-09", value=len(tables) / units * 1000, n=len(tables),
+                   denominator=units, unit=unit_label, evidence=evidence,
+                   warnings=warnings)
+
+
+def table_placement(model: dm.DocumentModel,
+                    sections: dict[int, str] | None = None) -> dict[str, dm.JsonValue]:
+    """S-TBL-10: where a paper's tables sit, summarised as a top-1 section share.
+
+    The value is the MOST-USED section rather than "share in results" on purpose: a
+    results-only value would be biased low by an unknown amount wherever the section
+    label cannot be resolved.  The results share is still reported, next to the caveat
+    that it is a lower bound.  sections maps a content_list block index to its
+    canonical section label; without it the metric reports itself as unmeasured.
+    """
+    if sections is None:
+        return _record("S-TBL-10", value=None, n=0, denominator=0, unit="ratio",
+                       evidence={"count": 0, "sample": [], "sections": {}},
+                       warnings=["SECTIONS_UNAVAILABLE"])
+    counts: dict[str, int] = {}
+    sample: list[dict[str, dm.JsonValue]] = []
+    for _stream, _index, block in _inventory_blocks(model):
+        if block.kind is not dm.Stream.TABLES:
+            continue
+        section = sections.get(block.index)
+        if not section:
+            continue
+        counts[section] = counts.get(section, 0) + 1
+        sample.append({"block_index": block.index, "field": "table_body",
+                       "excerpt": (block.table_body or "")[:80], "section": section})
+    total = sum(counts.values())
+    if not total:
+        return _record("S-TBL-10", value=None, n=0, denominator=0, unit="ratio",
+                       evidence={"count": 0, "sample": [], "sections": {}},
+                       warnings=["NO_TABLES"])
+    top_section, top_count = max(sorted(counts.items()), key=_count_of)
+    results = sum(count for name, count in counts.items() if name in _RESULT_SECTIONS)
+    return _record(
+        "S-TBL-10", value=top_count / total, n=total, denominator=total, unit="ratio",
+        evidence={"count": total, "sample": sample[:_SAMPLE_LIMIT],
+                  "sections": counts, "top_section": top_section,
+                  "top_share": round(top_count / total, 6),
+                  "results_share": round(results / total, 6),
+                  "results_sections": sorted(_RESULT_SECTIONS),
+                  "results_share_note": ("保守下界：只统计 canonical 标签 "
+                                         + ", ".join(sorted(_RESULT_SECTIONS))
+                                         + "；落在无法识别的子标题下的表不计入")},
+        warnings=[])
+
+
 _METRIC_IDS: Final[tuple[str, ...]] = ("S-CAP-01", "S-NUM-02", "S-REF-03",
                                          "S-SIZ-04", "S-CAPL-05", "S-TBL-06",
-                                         "S-TBL-07", "S-TBL-08")
+                                         "S-TBL-07", "S-TBL-08", "S-TBL-09",
+                                         "S-TBL-10")
 
 
 def unavailable_records(warning: str) -> dict[str, dict[str, dm.JsonValue]]:
@@ -570,13 +693,20 @@ def unavailable_records(warning: str) -> dict[str, dict[str, dm.JsonValue]]:
     }
 
 
-def stream_metrics(model: dm.DocumentModel) -> dict[str, dict[str, dm.JsonValue]]:
-    """All non-prose stream metrics for one paper, keyed by metric id."""
+def stream_metrics(model: dm.DocumentModel,
+                   sections: dict[int, str] | None = None
+                   ) -> dict[str, dict[str, dm.JsonValue]]:
+    """All stream metrics for one paper, keyed by metric id.
+
+    sections maps a content_list block index to its canonical section label; without
+    it the placement metric reports itself as unmeasured instead of guessing.
+    """
     out: dict[str, dict[str, dm.JsonValue]] = {}
     for record in (caption_coverage(model), numbering_consistency(model),
                    reference_consistency(model), image_resolution(model),
                    caption_length(model), table_columns(model),
-                   table_empty_cells(model), table_missing_body(model)):
+                   table_empty_cells(model), table_missing_body(model),
+                   table_density(model), table_placement(model, sections)):
         metric_id = record["metric_spec"]
         if isinstance(metric_id, str):
             out[metric_id] = record
