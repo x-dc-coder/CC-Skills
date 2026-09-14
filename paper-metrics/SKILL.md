@@ -89,6 +89,7 @@ uv run python paper-metrics/scripts/pas_spotcheck.py --corpus <paper-analysis> -
 - **bit 级复现的范围是 `Canonical Document → 指标`**：同一语料、同一路径、同一版本连跑两次，上表 ✅ 的四个文件**逐字节相同**；`--verify` 自检（重跑到临时目录逐字节比对，失败退出码 1）。
 - **PDF → Canonical 不由本技能承诺**：那条链属 paper-reader，其漂移通过各篇 `_META.json` 的 `pdf_sha256` / `engine_versions` 归因（可发现、可追责，不承诺跨引擎逐字节）。
 - **第三方复核入口**：`_domain_profile.json → corpus.profiled[].inputs[].sha256` 给出每个输入产物的哈希；`_per_paper_metrics.jsonl` 给出逐篇数值与 evidence span，可直接回指原文坐标。
+- **引擎口径冻结（issue #8 正式收口）**：OBSERVED 指标**定义在 MinerU 的 content_list.json 之上**（base_artifact 记录在产物里）；**换转换引擎 = 换输入 = 必须重锁基线**。引擎漂移（MinerU vs Marker 文本层差异）**只作为可选探针**：baseline_eval.py 的 --drift-probe N（默认关闭、报告注明为可选加分项），不进主链——中文语料 marker 覆盖为 0，进主链只会得到恒 null 列并 bump schema。
 - **词表冻结**：`data/lexicons/v1/*.json` 随发布冻结，bundle 指纹写入产物；改词表即改数值，**必须 bump 版本并重锁基线**。
 - **层红线（只做 OBSERVED）**：本技能只产出确定性规则指标（`state = OBSERVED`、`method = rule`，由 `test_profile_papers.py` / `test_determinism.py` 断言守线）。语步（move）、引用功能、论证图等 INFERRED 语义指标**未实现**，且必须同时满足 5 条准入条件才能引入（标签集冻结 + 人工标注集 κ ≥ 0.6 + 留出集 P/R/F1 + 每句可追溯输出 + 不得进 gate / 不得自报置信度）——完整检查表见 `references/metric-definitions.md`〈INFERRED 层准入检查表〉。
 - **分句前的非正文掩码（2026-09-13）**：句界只在**等长掩码副本**上判定，关键词行（`Keywords:`/`关键词：`）、行内/行间数学（`$...$`/`$$...$$`）、MinerU 的 `<sub>`/`<sup>` 标签不参与分句；掩码后不含字母的片段直接丢弃。span 仍切片回原文，语料级 before/after 差值见 `references/metric-definitions.md`〈正文口径与关键词行过滤〉。
