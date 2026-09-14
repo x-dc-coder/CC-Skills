@@ -26,6 +26,13 @@ audit, and the order of the checks is what makes the verdict diagnosable:
      versions, metric differs     -> UNEXPLAINED DRIFT.  This is the case worth
                                      investigating: determinism is broken.
 
+The same three-way comparison covers the rest of the artifact, not just the
+registered metric means: corpus_warnings (counted by code), language_supported,
+by_section and section_skeleton.  Those were outside the audit's scope until
+issue #18 - which is how a corpus-wide language false alarm survived both 400+
+tests and a "23/23 checks match" run (the audit compared values and fingerprints
+but never the warnings that explained the values).
+
 Usage
 -----
     cd ~/.claude/skills
@@ -38,9 +45,11 @@ Usage
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 import tempfile
+from collections import Counter
 from pathlib import Path
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
@@ -66,6 +75,34 @@ def find_entry(registry: dict, name: str) -> dict:
             return entry
     known = ", ".join(sorted(entry.get("name", "?") for entry in registry["corpora"]))
     raise SystemExit(f"unknown corpus {name!r}; registry has: {known}")
+
+
+def _digest(payload) -> str:
+    """Stable sha256 over a JSON payload (sorted keys, no whitespace noise)."""
+    blob = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def _warning_counts(summary: dict) -> dict:
+    """Corpus warning code -> how many entries raised it."""
+    counts = Counter(str(w.get("code")) for w in summary.get("corpus_warnings") or [])
+    return {code: counts[code] for code in sorted(counts)}
+
+
+def _by_section_means(summary: dict) -> dict:
+    """{metric_id: {section: mean}} for the stratifications that produced a value.
+
+    Only non-empty stratifications are listed, so a metric that never had a
+    by_section block does not create 30 empty expectations.
+    """
+    out: dict = {}
+    for mid, row in sorted((summary.get("metrics") or {}).items()):
+        sections = {section: round(float(stat["mean"]), 6)
+                    for section, stat in sorted((row.get("by_section") or {}).items())
+                    if isinstance(stat, dict) and stat.get("mean") is not None}
+        if sections:
+            out[mid] = sections
+    return out
 
 
 def audit(entry: dict, out_dir: Path, tolerance: float = DEFAULT_TOLERANCE) -> dict:
@@ -135,6 +172,61 @@ def audit(entry: dict, out_dir: Path, tolerance: float = DEFAULT_TOLERANCE) -> d
                             "note": note})
         record(f"metric.{metric_id}", expected, actual, ok, note)
 
+    # Beyond the metric means: the warnings that explain them, the language
+    # verdict, the section stratification and the section skeleton.  A registry
+    # entry that does not declare one of these is not compared on it (older
+    # records keep working), but a declared one must match exactly.
+    if "expected_corpus_warnings" in entry:
+        expected_warnings = entry.get("expected_corpus_warnings") or {}
+        actual_warnings = _warning_counts(summary)
+        for code in sorted(set(expected_warnings) | set(actual_warnings)):
+            expected_n = int(expected_warnings.get(code, 0))
+            actual_n = int(actual_warnings.get(code, 0))
+            record(f"corpus_warning.{code}", expected_n, actual_n, expected_n == actual_n,
+                   "" if expected_n == actual_n
+                   else ("warning no longer raised" if actual_n < expected_n
+                         else "unregistered warning raised"))
+    if "expected_language_supported" in entry:
+        expected_language = entry.get("expected_language_supported")
+        actual_language = summary.get("language_supported")
+        record("language_supported", expected_language, actual_language,
+               actual_language == expected_language,
+               "" if actual_language == expected_language
+               else "the corpus language verdict moved (languages: %s)"
+                    % json.dumps(summary.get("languages"), ensure_ascii=False, sort_keys=True))
+    if "expected_null_metrics" in entry:
+        expected_nulls = sorted(entry.get("expected_null_metrics") or [])
+        actual_nulls = sorted(metric for metric, row in summary["metrics"].items()
+                              if not row.get("n_valid"))
+        record("null_metrics", expected_nulls, actual_nulls, expected_nulls == actual_nulls,
+               "" if expected_nulls == actual_nulls
+               else "the set of metrics with no valid value changed (a metric that "
+                    "silently stopped being measurable is otherwise invisible)")
+    if "expected_by_section" in entry:
+        expected_sections = entry.get("expected_by_section") or {}
+        actual_sections = _by_section_means(summary)
+        for mid in sorted(set(expected_sections) | set(actual_sections)):
+            expected_mid = expected_sections.get(mid) or {}
+            actual_mid = actual_sections.get(mid) or {}
+            record(f"by_section.{mid}", expected_mid, actual_mid, expected_mid == actual_mid,
+                   "" if expected_mid == actual_mid
+                   else "section stratification moved for this metric")
+    if "expected_section_skeleton" in entry:
+        skeleton = profile.get("section_skeleton") or []
+        expected_skeleton = entry.get("expected_section_skeleton") or {}
+        actual_digest = _digest(skeleton)
+        expected_digest = expected_skeleton.get("digest")
+        # A digest, not the 500+ label list: the registry stays readable while any
+        # change is still caught, and the fresh _domain_profile.json is named in the
+        # finding so the difference can be located immediately.
+        record("section_skeleton.digest", expected_digest, actual_digest,
+               actual_digest == expected_digest,
+               "" if actual_digest == expected_digest
+               else "section skeleton changed; diff the fresh %s"
+                    % (out_dir / "_domain_profile.json"))
+        record("section_skeleton.n_entries", expected_skeleton.get("n_entries"), len(skeleton),
+               len(skeleton) == expected_skeleton.get("n_entries"))
+
     drifted = [item for item in findings if item["status"] == "drift"]
     # The verdict explains itself: which class of change was found.
     if not drifted:
@@ -185,6 +277,13 @@ def inspect_unregistered(corpus: Path, out_dir: Path) -> dict:
                              if row.get("n_valid") and row.get("mean") is not None},
         "null_metrics": [metric for metric, row in sorted(summary["metrics"].items())
                          if not row.get("n_valid")],
+        "expected_corpus_warnings": _warning_counts(summary),
+        "expected_language_supported": summary.get("language_supported"),
+        "expected_by_section": _by_section_means(summary),
+        "expected_section_skeleton": {
+            "n_entries": len(profile.get("section_skeleton") or []),
+            "digest": _digest(profile.get("section_skeleton") or []),
+        },
     }
 
 

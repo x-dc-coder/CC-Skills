@@ -192,6 +192,10 @@ uv run python paper-metrics/scripts/pas_spotcheck.py --corpus <paper-analysis> -
 
 理由：这三类测的是 **MinerU/抽取副本**的状态，不是作者写下的东西。把它们混进写作建议，等于把自己的解析缺陷归因给用户。
 
+> **该分类自 2026-09-15 起同时进入产物**（issue #18-9）：每条流指标记录带机器可读字段 `class`（`author_style` / `toolchain_defect`），`_domain_profile.md` 按 class **分表渲染**并标注红线，`_writing_contract.yaml` **永不接受** `toolchain_defect` 类指标。上面这张散文表与产物字段由同一份归类驱动，改一侧必须同步另一侧。
+
+> **数值口径（2026-09-15，issue #18-5）**：本文件与 `references/metric-definitions.md` 里标"池化"的实测数是**池化**口径（先合并计数再算比值），而产物 `_corpus_summary.json` 的 `metrics.<id>.mean` 是**逐篇均值的均值**（`weight_mode="equal_paper"`、`mean_basis="mean_of_per_paper_means"`）。两者可差 10% 量级（S-REF-14 实测 11%），引用时必须说明用的是哪一种，不得混用。
+
 ### 组合用法示例（可直接抄进写作计划）
 - "本语料（中文 10 篇）表格中位 8 列、数值单元格 77.9%、题注覆盖 96.7% → 建议：用三线表、数值右对齐、每表配题注"；
 - "英文语料 25.7% 的声明表未被正文引用 → 建议：每张表在正文至少引用一次，并说明它支撑哪个结论"；

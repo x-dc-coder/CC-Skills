@@ -489,14 +489,38 @@ def apply_holdout(summary: dict, summary_path: Path, holdout: list[str]) -> tupl
     return filtered, jsonl_sha
 
 
-def _is_draft_checkable(stats: object) -> bool:
+#: Metrics a Markdown draft can recompute, declared by id instead of inferred from
+#: scope.  scope == ["prose"] is the right proxy for most metrics, but it is WRONG
+#: for the reference metrics (scope ["prose","references"]): a draft has a reference
+#: list, so M-REFAGE-53 / M-REFLINK-54 are recomputable despite a non-prose scope.
+#: This allow-list is the single source of truth for that exception.
+DRAFT_CHECKABLE_METRICS: frozenset[str] = frozenset({
+    "M-REFAGE-53", "M-REFLINK-54",
+})
+
+
+def _is_toolchain_defect(stats: object) -> bool:
+    """Does this metric measure the extraction chain rather than the writing?
+
+    class == "toolchain_defect" (LaTeX residue, a missing table body, an unusable
+    extracted raster) is never a writing target: promoting one into a contract
+    would tell the author to imitate our parser's defect (issue #18-9).
+    """
+    return isinstance(stats, dict) and stats.get("class") == "toolchain_defect"
+
+
+def _is_draft_checkable(metric_id: str, stats: object) -> bool:
     """May this metric appear in a DRAFT contract?
 
-    Only prose-stream metrics can be computed from a Markdown draft.  A summary
-    written before scope existed carries no scope field; those are treated as prose
-    so old contracts stay buildable.
+    Draft-checkability is declared per metric id, not inferred from scope alone:
+    prose metrics (scope == ["prose"]) are checkable, the reference metrics are
+    checkable via DRAFT_CHECKABLE_METRICS, and anything with a table/figure scope is
+    not.  A summary written before scope existed carries no scope field; those are
+    treated as prose so old contracts stay buildable.
     """
-    if not isinstance(stats, dict):
+    if metric_id in DRAFT_CHECKABLE_METRICS:
+        return True
+    if not isinstance(stats, dict) or _is_toolchain_defect(stats):
         return False
     scope = stats.get("scope")
     if not isinstance(scope, list) or not scope:
@@ -533,11 +557,18 @@ def build_contract(
     if not isinstance(metrics_block, dict) or not metrics_block:
         raise BuildContractError("summary has no non-empty 'metrics' object")
     excluded: list[str] = []
+    defects: list[str] = []
     if metrics is not None:
         missing = [mid for mid in metrics if mid not in metrics_block]
         if missing:
             raise BuildContractError(
                 "requested metrics not present in summary: " + ", ".join(sorted(missing))
+            )
+        defects = sorted(mid for mid in metrics if _is_toolchain_defect(metrics_block[mid]))
+        if defects:
+            raise BuildContractError(
+                "class=toolchain_defect metrics are never accepted by a writing "
+                "contract (they measure the extraction chain): " + ", ".join(defects)
             )
         ids = list(metrics)
     else:
@@ -545,8 +576,10 @@ def build_contract(
         # a Markdown draft has no block inventory, so such a clause could only ever
         # come out "skipped".  They stay in the profile and out of the contract.
         ids = sorted(mid for mid in metrics_block
-                     if _is_draft_checkable(metrics_block[mid]))
+                     if _is_draft_checkable(mid, metrics_block[mid]))
         excluded = sorted(set(metrics_block) - set(ids))
+        defects = sorted(mid for mid in excluded
+                         if _is_toolchain_defect(metrics_block.get(mid)))
 
     clauses: list[dict] = []
     contract_warnings: list[dict] = []
@@ -557,6 +590,15 @@ def build_contract(
         contract_warnings.append({
             "code": "NON_PROSE_METRICS_EXCLUDED", "metric": None,
             "detail": "kept in the profile, not draft-checkable: " + ", ".join(excluded),
+        })
+    if defects:
+        # A separate code, not folded into the one above: "no block inventory in a
+        # Markdown draft" and "this measures our converter, not the writing" are
+        # different statements, and only the second is a red line (issue #18-9).
+        contract_warnings.append({
+            "code": "TOOLCHAIN_DEFECT_METRICS_EXCLUDED", "metric": None,
+            "detail": ("never draft-checkable (class=toolchain_defect, they measure the "
+                       "extraction chain): " + ", ".join(defects)),
         })
 
     corpus_id = _summary_corpus_id(summary)

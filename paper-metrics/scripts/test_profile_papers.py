@@ -1279,3 +1279,190 @@ def test_supported_metric_languages_mirror_the_metrics_module() -> None:
     Chinese corpus shipped "unsupported, all metrics null" (cross-review B1)."""
     text_metrics = pp._import_sibling("text_metrics")
     assert tuple(pp.SUPPORTED_METRIC_LANGUAGES) == tuple(text_metrics.SUPPORTED_LANGUAGES)
+
+
+# ---------------------------------------------------------------------------
+# Appendix attribution (issue #17): the appendix is a CONTEXT, not a letter prefix
+# ---------------------------------------------------------------------------
+
+def _appendix_paper(tmp_path: Path, blocks: list[dict]) -> pp.Paper:
+    corpus = tmp_path / "paper-analysis"
+    _write_paper(corpus, "Appendix Paper", "p-app", blocks)
+    return pp.discover_papers_detailed(corpus).papers[0]
+
+
+def test_lettered_appendix_children_stay_out_of_the_body(tmp_path: Path) -> None:
+    """A lettered subheading under an explicit appendix inherits the appendix.
+
+    Measured on vrp-en: 'A. Numerical results' under 'Appendix. Other results'
+    (AILS-II) was attributed to its own body section, so appendix text entered
+    every canonical-text metric.
+    """
+    paper = _appendix_paper(tmp_path, [
+        _make_block("text", "Title", level=1),
+        _make_block("text", "1 Introduction", level=2),
+        _make_block("text", "Body paragraph."),
+        _make_block("text", "Appendix. Other results", level=2),
+        _make_block("text", "A. Numerical results", level=2),
+        _make_block("text", "The appendix-only table reports 12 runs."),
+    ])
+    labels = [sec for sec, b in paper.labelled_blocks() if not pp._is_title_block(b)]
+    assert labels[-1] == "appendix"
+    assert "appendix-only table" not in paper.canonical_text()
+    assert paper.non_prose_dropped.get("appendix", {}).get("blocks") == 1
+
+
+def test_ieee_body_subsection_is_not_mistaken_for_an_appendix(tmp_path: Path) -> None:
+    """The negative case that makes a bare '^[a-z][.] ' rule unusable.
+
+    IEEE papers number body subsections 'A. Accuracy study' exactly like appendix
+    children; with no appendix above them they are body text and must stay in the
+    canonical text (the 2018 GPU-Ising paper in vrp-en is shaped exactly so).
+    """
+    paper = _appendix_paper(tmp_path, [
+        _make_block("text", "Title", level=1),
+        _make_block("text", "V. EXPERIMENTAL RESULTS", level=2),
+        _make_block("text", "A. Accuracy study", level=2),
+        _make_block("text", "We compare the max-cut value against the baseline."),
+    ])
+    assert "max-cut value" in paper.canonical_text()
+    assert "a. accuracy study" in paper.section_texts()
+
+
+def test_appendix_heading_wins_over_a_body_keyword_inside_it(tmp_path: Path) -> None:
+    """'A Appendix: ... Summary ...' mapped to 'conclusion' because the summary
+    keyword matched before the appendix was considered, so a whole appendix was
+    measured as a conclusion section (2025 Robust Features paper in vrp-en)."""
+    title = ("A Appendix: The Global Feature Importance (left) and Local "
+             "Explanation Summary (right) Plots for Every Scenario")
+    assert pp.canonical_section_label(pp.normalize_section_title(title)) == "appendix"
+    paper = _appendix_paper(tmp_path, [
+        _make_block("text", "Title", level=1),
+        _make_block("text", "5 Conclusion", level=2),
+        _make_block("text", "Body conclusion."),
+        _make_block("text", title, level=2),
+        _make_block("text", "A.1 Scenario 1", level=2),
+        _make_block("text", "Appendix-only numbers."),
+    ])
+    assert "Appendix-only numbers" not in paper.canonical_text()
+
+
+def test_appendix_prefix_beats_the_formulation_keyword(tmp_path: Path) -> None:
+    """'Appendix A. CVRP mathematical formulation' mapped to 'method' through the
+    'formulation' keyword, pulling a real appendix into the body metrics
+    (TRACE-VNS paper in vrp-en)."""
+    title = "Appendix A. CVRP mathematical formulation"
+    assert pp.canonical_section_label(pp.normalize_section_title(title)) == "appendix"
+    paper = _appendix_paper(tmp_path, [
+        _make_block("text", "Title", level=1),
+        _make_block("text", "4 Results", level=2),
+        _make_block("text", "Body results."),
+        _make_block("text", title, level=2),
+        _make_block("text", "B.2.1. Graph metrics", level=2),
+        _make_block("text", "Appendix formulation detail."),
+    ])
+    assert "Appendix formulation detail" not in paper.canonical_text()
+    assert "b.2.1. graph metrics" not in paper.section_texts()
+
+
+def test_body_section_after_the_appendix_ends_the_context(tmp_path: Path) -> None:
+    """A real body heading after the appendix must end the context: a 'Conclusion'
+    following it is body text and may not be swallowed by appendix inheritance."""
+    paper = _appendix_paper(tmp_path, [
+        _make_block("text", "Title", level=1),
+        _make_block("text", "1 Introduction", level=2),
+        _make_block("text", "Body paragraph."),
+        _make_block("text", "Appendix A. Proofs", level=2),
+        _make_block("text", "A.1 Lemma", level=2),
+        _make_block("text", "Appendix-only proof."),
+        _make_block("text", "Conclusion", level=2),
+        _make_block("text", "A closing body paragraph that is prose."),
+    ])
+    body = paper.canonical_text()
+    assert "appendix-only proof" not in body.lower()
+    assert "closing body paragraph" in body
+
+
+def test_md_report_renders_reference_freshness(tmp_path: Path) -> None:
+    """reference_freshness existed only in the JSON: the human report lost the one
+    absolute reading of reference recency (issue #20-4), and the anchor year is the
+    evidence that the reading is trustworthy."""
+    corpus = tmp_path / "paper-analysis"
+    _write_paper(corpus, "Fresh Paper", "p-fr", [
+        _make_block("text", "Title", level=1),
+        _make_block("text", "1 Introduction", level=2),
+        _make_block("text", "Prior work [1] and [2] and [3]."),
+        _make_block("text", "References", level=2),
+        _make_block("text", "[1] A. Author. Work one. 2020."),
+        _make_block("text", "[2] B. Author. Work two. 2024."),
+        _make_block("text", "[3] C. Author. Work three. 2023."),
+    ])
+    out = tmp_path / "out"
+    pp.run_profile(corpus, out)
+    summary = json.loads((out / "_corpus_summary.json").read_text(encoding="utf-8"))
+    freshness = summary.get("reference_freshness")
+    assert freshness, "fixture must produce a corpus-wide freshness anchor"
+    md = (out / "_domain_profile.md").read_text(encoding="utf-8")
+    assert "参考文献绝对新鲜度" in md
+    assert str(freshness["anchor_year"]) in md
+
+def test_figure_image_bytes_are_fingerprinted_as_inputs(tmp_path: Path) -> None:
+    """S-SIZ-04 opens image files, so edited image bytes must move the corpus id.
+    While images stayed out of `inputs`, such a change kept the id and the audit
+    could only call it UNEXPLAINED DRIFT (issue #18-6)."""
+    corpus = tmp_path / "paper-analysis"
+    paper_dir = _write_paper(corpus, "Image Paper", "p-img", [
+        _make_block("text", "Title", level=1),
+        _make_block("text", "1 Introduction", level=2),
+        _make_block("text", "Body text [1]."),
+        _make_block("image", "fig1", caption=["Figure 1. A plot"]),
+    ])
+    image = paper_dir / "mineru" / "p-img" / "auto" / "images" / "fig1.jpg"
+    image.parent.mkdir(parents=True, exist_ok=True)
+    image.write_bytes(_PNG(900, 600))
+    first = pp.discover_papers_detailed(corpus).papers[0]
+    assert "figure_image:images/fig1.jpg" in {i["artifact"] for i in first.inputs}
+    recorded = next(i for i in first.inputs if i["artifact"] == "figure_image:images/fig1.jpg")
+    assert recorded["sha256"] == pp.sha256_file(image)
+    image.write_bytes(_PNG(320, 200))
+    second = pp.discover_papers_detailed(corpus).papers[0]
+    assert second.inputs != first.inputs, "an edited image must change the inputs"
+    assert pp._corpus_fingerprint([
+        {"paper_key": "p-img", "inputs": second.inputs}]) != pp._corpus_fingerprint([
+        {"paper_key": "p-img", "inputs": first.inputs}])
+
+
+def _PNG(width: int, height: int) -> bytes:
+    """Minimal PNG header: signature + IHDR carrying real dimensions.
+
+    Enough for both the sha256 provenance test and stream_metrics' header reader
+    (which reads width/height without decoding the image)."""
+    return (b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\x0d" + b"IHDR"
+            + width.to_bytes(4, "big") + height.to_bytes(4, "big"))
+
+
+
+
+def test_md_report_splits_metrics_by_class(tmp_path: Path) -> None:
+    """The class reached the per-paper record but not the corpus summary, so the human
+    report still printed toolchain defects next to author habits in one table, and
+    Mode B could not tell "this journal writes long sentences" from "the converter ate
+    the table" (issue #18-9)."""
+    corpus = tmp_path / "paper-analysis"
+    paper_dir = _write_paper(corpus, "Image Paper", "p-cls", [
+        _make_block("text", "Title", level=1),
+        _make_block("text", "1 Introduction", level=2),
+        _make_block("text", "Body text with a claim."),
+        _make_block("image", "fig1", caption=["Figure 1. A plot"]),
+    ])
+    image = paper_dir / "mineru" / "p-cls" / "auto" / "images" / "fig1.jpg"
+    image.parent.mkdir(parents=True, exist_ok=True)
+    image.write_bytes(_PNG(400, 300))
+    out = tmp_path / "out"
+    pp.run_profile(corpus, out)
+    summary = json.loads((out / "_corpus_summary.json").read_text(encoding="utf-8"))
+    assert summary["metrics"]["S-SIZ-04"]["class"] == "toolchain_defect"
+    assert summary["metrics"]["M-SLEN-01"]["class"] == "author_style"
+    md = (out / "_domain_profile.md").read_text(encoding="utf-8")
+    assert "工具链缺陷类 (toolchain_defect)" in md
+    assert "写作特征指标 · 作者风格类 (author_style)" in md

@@ -51,6 +51,10 @@ def _entry_from_inspect(corpus: Path, out: Path) -> dict:
             "lexicon_fingerprint": (report["lexicon_releases"] or {}).get("zh", {}).get("fingerprint"),
         },
         "expected_metrics": report["expected_metrics"],
+        "expected_corpus_warnings": report["expected_corpus_warnings"],
+        "expected_language_supported": report["expected_language_supported"],
+        "expected_by_section": report["expected_by_section"],
+        "expected_section_skeleton": report["expected_section_skeleton"],
     }
 
 
@@ -95,6 +99,45 @@ def test_audit_reports_unexplained_drift_for_a_wrong_metric(tmp_path: Path):
     assert report["verdict"] == "drift"
     # corpus id and versions are unchanged -> this is the case worth chasing
     assert report["cause"] == "unexplained_drift"
+
+
+def test_audit_compares_corpus_warnings_by_code(tmp_path: Path):
+    """The blind spot behind issue #18: every metric mean can match while a corpus
+    warning appears or disappears, and the audit still reports "all checks match".
+    The audit compared values and fingerprints but never the warnings that explain
+    the values, which is how a corpus-wide language false alarm stayed invisible."""
+    corpus = _tiny_corpus(tmp_path / "corpus")
+    entry = _entry_from_inspect(corpus, tmp_path / "probe")
+    assert ac.audit(entry, tmp_path / "audit-before")["verdict"] == "match"
+    code = next(iter(entry["expected_corpus_warnings"]), "NO_VALID_VALUES")
+    expected = dict(entry["expected_corpus_warnings"])
+    expected[code] = expected.get(code, 0) + 1          # one paper too many
+    entry["expected_corpus_warnings"] = expected
+    report = ac.audit(entry, tmp_path / "audit-after")
+    assert report["verdict"] == "drift"
+    finding = [f for f in report["findings"] if f["check"] == f"corpus_warning.{code}"]
+    assert finding and finding[0]["status"] == "drift", report["findings"]
+
+
+def test_audit_compares_language_supported_and_section_evidence(tmp_path: Path):
+    """language_supported / by_section / section_skeleton are part of the artifact
+    and were outside the comparison, so the audit's "N/N match" overstated what had
+    actually been verified (issue #18-2)."""
+    corpus = _tiny_corpus(tmp_path / "corpus")
+    entry = _entry_from_inspect(corpus, tmp_path / "probe")
+    base = ac.audit(entry, tmp_path / "audit-base")
+    assert base["verdict"] == "match", base["findings"]
+    actual_language = entry["expected_language_supported"]
+    assert actual_language is not None, "fixture must have a decidable language"
+    entry["expected_language_supported"] = not actual_language
+    entry["expected_by_section"] = {"M-SLEN-01": {"introduction": 123.0}}
+    entry["expected_section_skeleton"] = {"n_entries": 0, "digest": "0" * 64}
+    report = ac.audit(entry, tmp_path / "audit-moved")
+    drifted = {f["check"] for f in report["findings"] if f["status"] == "drift"}
+    assert "language_supported" in drifted, report["findings"]
+    assert "by_section.M-SLEN-01" in drifted, report["findings"]
+    assert "section_skeleton.digest" in drifted, report["findings"]
+    assert report["verdict"] == "drift"
 
 
 def test_find_entry_unknown_name_exits():

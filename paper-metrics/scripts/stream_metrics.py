@@ -30,8 +30,27 @@ import text_metrics as tm
 _SCOPE_INVENTORY: Final[tuple[str, ...]] = (dm.Stream.FIGURES.value,
                                             dm.Stream.TABLES.value)
 
-_FIGURE_REF_RE: Final = re.compile(r"(?:figure|fig\.?|图)\s*(\d+)", re.IGNORECASE)
-_TABLE_REF_RE: Final = re.compile(r"(?:table|表)\s*(\d+)", re.IGNORECASE)
+#: One reference instance: an optional letter prefix plus digits ("4", "A1").  A
+#: purely numeric range ("13-15") is ONE expression that expands to several keys;
+#: letter-numbered references are single keys and never expand (there is no safe
+#: "A1..A3" arithmetic, so the metric would have to invent one to do it).
+_REF_TOKEN: Final[str] = r"[A-Za-z]?\d+"
+_REF_EXPR: Final[str] = rf"{_REF_TOKEN}(?:\s*[-–—]\s*\d+)?"
+#: A range between two pure numeric tokens, for expansion in _expand_ref_expr.
+_REF_RANGE_RE: Final = re.compile(r"(\d+)\s*[-–—]\s*(\d+)")
+
+#: Word boundaries are explicit lookarounds, not \b: "tablet" and "figure of merit"
+#: must not read as references, while "Table 3" and the Chinese "图 2" must.  The
+#: English label needs a non-letter on both sides; the CJK label has no word
+#: boundaries, so it is matched bare exactly as before.
+_FIGURE_REF_RE: Final = re.compile(
+    rf"(?:(?<![A-Za-z])(?:figures|figs\.?|figure|fig\.?)(?![A-Za-z])|图)\s*"
+    rf"({_REF_EXPR})",
+    re.IGNORECASE)
+_TABLE_REF_RE: Final = re.compile(
+    rf"(?:(?<![A-Za-z])(?:tables?)(?![A-Za-z])|表)\s*"
+    rf"({_REF_EXPR})",
+    re.IGNORECASE)
 
 _INVENTORY_STREAMS: Final[tuple[dm.Stream, ...]] = (dm.Stream.FIGURES,
                                                     dm.Stream.TABLES)
@@ -62,6 +81,23 @@ _SCOPE_OF_METRIC: Final[dict[str, tuple[str, ...]]] = {
     "S-REF-14": _SCOPE_PROSE_TABLES,
 }
 
+#: Whether a metric measures the author's writing or the extraction toolchain's
+#: output.  LaTeX residue (S-TBL-13), missing table bodies (S-TBL-08) and image
+#: resolution (S-SIZ-04) describe the MinerU copy, not the paper, so they must not
+#: be turned into "author habits" (SKILL.md red line: 作者风格 vs 工具链缺陷);
+#: everything else is author_style.  The default keeps a future metric author_style
+#: unless it is explicitly listed here.
+_METRIC_CLASS: Final[dict[str, str]] = {
+    "S-SIZ-04": "toolchain_defect",
+    "S-TBL-08": "toolchain_defect",
+    "S-TBL-13": "toolchain_defect",
+}
+
+
+def _metric_class(metric_spec: str) -> str:
+    """author_style unless the metric is one of the three extraction defects."""
+    return _METRIC_CLASS.get(metric_spec, "author_style")
+
 #: Journal figures are printed at ~300 dpi; 800 px is roughly a 6.8 cm single-column
 #: figure at that density.  Below it a raster is not expected to survive print, which
 #: is the fact this threshold makes measurable.
@@ -90,6 +126,7 @@ def _record(metric_spec: str, *, value: float | None, n: int, denominator: int,
         "unit": unit,
         "state": "OBSERVED",
         "method": "rule",
+        "class": _metric_class(metric_spec),
         "metric_spec": metric_spec,
         "scope": list(scope if scope is not None
                       else _SCOPE_OF_METRIC.get(metric_spec, _SCOPE_INVENTORY)),
@@ -120,8 +157,58 @@ def _normalise_digits(text: str) -> str:
                                        "0123456789"))
 
 
-def _numbers(text: str, pattern: re.Pattern[str]) -> list[int]:
-    return [int(match) for match in pattern.findall(_normalise_digits(text))]
+#: A reference range wider than this is dropped whole (and flagged) instead of
+#: expanding: "Tables 1-10000" must not balloon the evidence or the memory it uses.
+_REF_RANGE_CAP: Final[int] = 50
+_REF_RANGE_WARNING: Final[str] = "REFERENCE_RANGE_TOO_LARGE"
+
+
+def _expand_ref_expr(expr: str) -> tuple[list[str], list[str]]:
+    """(keys, dropped) for one captured reference expression.
+
+    "13-15" -> (["13", "14", "15"], []); "A1" -> (["A1"], []).  Only a purely
+    numeric range expands; a letter-numbered token is a single key.  Leading zeros
+    and case are not identity ("007" == "7", "a1" == "A1"), so keys normalise both
+    away.  A range wider than _REF_RANGE_CAP is dropped whole into the second slot
+    so the caller can surface it as a warning instead of silently under-counting.
+    """
+    match = _REF_RANGE_RE.fullmatch(expr)
+    if match is None:
+        if expr.isdigit():
+            return [str(int(expr))], []
+        return [expr.upper()], []
+    start, end = int(match.group(1)), int(match.group(2))
+    if start > end:
+        start, end = end, start
+    if end - start + 1 > _REF_RANGE_CAP:
+        return [], [expr]
+    return [str(number) for number in range(start, end + 1)], []
+
+
+def _ref_keys(text: str, pattern: re.Pattern[str],
+              dropped: list[str] | None = None) -> list[str]:
+    """Reference keys mentioned in text, ranges expanded, in document order.
+
+    Keys are strings so a numeric reference ("13") and a letter-numbered one ("A1")
+    share one set representation.  Oversized ranges are appended to `dropped` (when
+    given) rather than expanded, so a caller can raise _REF_RANGE_WARNING.
+    """
+    keys: list[str] = []
+    for expr in pattern.findall(_normalise_digits(text)):
+        expanded, oversized = _expand_ref_expr(expr)
+        keys.extend(expanded)
+        if oversized and dropped is not None:
+            dropped.extend(oversized)
+    return keys
+
+
+def _ref_sort_key(key: str) -> tuple[int, int | str]:
+    """Numeric keys sort numerically, letter-numbered keys after them.
+
+    Without this a mixed set sorts "10" before "2" (lexicographic), which would make
+    the evidence look wrong while the Jaccard value itself is order-independent.
+    """
+    return (0, int(key)) if key.isdigit() else (1, key.upper())
 
 
 def _inventory_blocks(model: dm.DocumentModel) -> list[tuple[dm.Stream, int, dm.Block]]:
@@ -160,7 +247,11 @@ def caption_coverage(model: dm.DocumentModel) -> dict[str, dm.JsonValue]:
         return _record("S-CAP-01", value=None, n=0, denominator=0, unit="ratio",
                        evidence={"count": 0, "sample": [], "uncaptioned": []},
                        warnings=["NO_FIGURES_OR_TABLES"])
-    return _record("S-CAP-01", value=(total - len(uncaptioned)) / total, n=total,
+    # n is the NUMERATOR: the contract is value == n / denominator
+    # (metric-definitions §1).  Filling n with the denominator made every ratio
+    # metric fail its own identity (issue #18-3).
+    return _record("S-CAP-01", value=(total - len(uncaptioned)) / total,
+                   n=total - len(uncaptioned),
                    denominator=total, unit="ratio",
                    evidence={"count": total, "sample": sample,
                              "uncaptioned": uncaptioned,
@@ -169,29 +260,31 @@ def caption_coverage(model: dm.DocumentModel) -> dict[str, dm.JsonValue]:
 
 
 def _declared_observations(model: dm.DocumentModel
-                             ) -> tuple[dict[str, list[int]],
-                                        list[dict[str, dm.JsonValue]]]:
-    """(numbers per stream, one observation per declared number) in document order."""
-    declared: dict[str, list[int]] = {dm.Stream.FIGURES.value: [],
-                                     dm.Stream.TABLES.value: []}
+                             ) -> tuple[dict[str, list[str]],
+                                        list[dict[str, dm.JsonValue]],
+                                        list[str]]:
+    """(reference keys per stream, observations, dropped ranges) in document order."""
+    declared: dict[str, list[str]] = {dm.Stream.FIGURES.value: [],
+                                      dm.Stream.TABLES.value: []}
     observed: list[dict[str, dm.JsonValue]] = []
+    dropped: list[str] = []
     for stream, index, block in _inventory_blocks(model):
         pattern = (_FIGURE_REF_RE if stream is dm.Stream.FIGURES
                    else _TABLE_REF_RE)
-        for number in _numbers(block.caption, pattern):
-            declared[stream.value].append(number)
+        for key in _ref_keys(block.caption, pattern, dropped):
+            declared[stream.value].append(key)
             # block_index/field/excerpt are the evidence contract's form B: they must
             # re-open the exact block and field the number came from.
             observed.append({"block_index": block.index,
                              "field": block.caption_field,
                              "excerpt": block.caption[:80],
                              "kind": stream.value, "index": index,
-                             "number": number})
-    return declared, observed
+                             "number": key})
+    return declared, observed, dropped
 
 
-def _declared_numbers(model: dm.DocumentModel) -> dict[str, list[int]]:
-    """Caption numbers per stream, in document order."""
+def _declared_numbers(model: dm.DocumentModel) -> dict[str, list[str]]:
+    """Caption reference keys per stream, in document order."""
     return _declared_observations(model)[0]
 
 
@@ -202,29 +295,36 @@ def numbering_consistency(model: dm.DocumentModel) -> dict[str, dm.JsonValue]:
     declared one (1.0 = no duplicates).  Gaps and duplicates are both evidence, so
     a reader can see which number is wrong instead of only that something is.
     """
-    declared, observed = _declared_observations(model)
-    gaps: dict[str, list[int]] = {}
-    duplicates: dict[str, list[int]] = {}
+    declared, observed, dropped = _declared_observations(model)
+    gaps: dict[str, list[str]] = {}
+    duplicates: dict[str, list[str]] = {}
     extra = 0
-    for stream_name, numbers in declared.items():
-        seen = set(numbers)
-        top = max(numbers) if numbers else 0
-        gaps[stream_name] = sorted(set(range(1, top + 1)) - seen)
-        duplicates[stream_name] = sorted({n for n in numbers if numbers.count(n) > 1})
-        extra += len(numbers) - len(seen)
-    total = sum(len(numbers) for numbers in declared.values())
+    for stream_name, keys in declared.items():
+        seen = set(keys)
+        numeric = [int(key) for key in seen if key.isdigit()]
+        top = max(numeric) if numeric else 0
+        # Gaps only exist for purely numeric keys: "A1" has no implied predecessor,
+        # so it can never be a "missing number" in the 1..max scan (#18.8).
+        gaps[stream_name] = [str(number) for number in range(1, top + 1)
+                             if str(number) not in seen]
+        duplicates[stream_name] = sorted(
+            {key for key in keys if keys.count(key) > 1}, key=_ref_sort_key)
+        extra += len(keys) - len(seen)
+    total = sum(len(keys) for keys in declared.values())
     warnings: list[str] = []
     if not total:
         # No captions carry a number at all.  Without this code the metric is simply
         # "null" and the reader cannot tell "nothing to number" from "not measured"
         # (cross-review M6); the corpus-level small-n noise is not a reason.
         warnings.append("NO_DECLARED_NUMBERS")
+    if dropped:
+        warnings.append(_REF_RANGE_WARNING)
     if any(gaps.values()):
         warnings.append("NUMBER_GAPS")
     if any(duplicates.values()):
         warnings.append("DUPLICATE_NUMBERS")
     value = None if not total else (total - extra) / total
-    return _record("S-NUM-02", value=value, n=total, denominator=total,
+    return _record("S-NUM-02", value=value, n=total - extra, denominator=total,
                    unit="ratio",
                    evidence={"count": len(observed),
                              "sample": observed[:_SAMPLE_LIMIT],
@@ -245,11 +345,19 @@ def _citation_text(model: dm.DocumentModel, canonical_text: str | None) -> str:
     return canonical_text if canonical_text is not None else model.text(dm.Stream.PROSE)
 
 
-def _referenced_numbers(model: dm.DocumentModel,
-                        canonical_text: str | None = None) -> dict[str, list[int]]:
-    """Numbers cited in the body only (cell values are not references)."""
-    return {stream: sorted(counts)
-            for stream, counts in _reference_counts(model, canonical_text).items()}
+def _unit_basis(canonical_text: str | None) -> tuple[str, list[str]]:
+    """(which text supplied the search space, warning) for the reference metrics.
+
+    S-REF-03 / S-REF-14 search citations in the canonical BODY when the caller
+    supplies it and fall back to the whole prose stream otherwise; the two bases
+    differ by ~50% of characters on the Chinese corpus (measured).  S-TBL-09 already
+    ships this pair, so a consumer can tell which basis a value came from instead of
+    comparing two different denominators (issue #20 顺带项).
+    """
+    if canonical_text is None:
+        return ("prose_stream_incl_headings_and_references",
+                ["UNIT_BASIS_NOT_CANONICAL"])
+    return "canonical_body", []
 
 
 def reference_consistency(model: dm.DocumentModel,
@@ -264,28 +372,34 @@ def reference_consistency(model: dm.DocumentModel,
     conclusion (2026-09-14 cross-review, blocker B2).  Dangling = cited but never
     declared; uncited = declared but never cited.  Both are reported per stream.
     """
-    declared_numbers, observed = _declared_observations(model)
-    declared = {stream: sorted(set(numbers))
-                for stream, numbers in declared_numbers.items()}
-    referenced = _referenced_numbers(model, canonical_text)
-    dangling: dict[str, list[int]] = {}
-    uncited: dict[str, list[int]] = {}
+    declared_numbers, observed, declared_dropped = _declared_observations(model)
+    counts, referenced_dropped = _reference_counts(model, canonical_text)
+    declared = {stream: sorted(set(keys), key=_ref_sort_key)
+                for stream, keys in declared_numbers.items()}
+    referenced = {stream: sorted(numbers, key=_ref_sort_key)
+                  for stream, numbers in counts.items()}
+    dangling: dict[str, list[str]] = {}
+    uncited: dict[str, list[str]] = {}
     shared = 0
-    for stream_name, numbers in declared.items():
-        declared_set = set(numbers)
+    for stream_name, keys in declared.items():
+        declared_set = set(keys)
         referenced_set = set(referenced[stream_name])
-        dangling[stream_name] = sorted(referenced_set - declared_set)
-        uncited[stream_name] = sorted(declared_set - referenced_set)
+        dangling[stream_name] = sorted(referenced_set - declared_set, key=_ref_sort_key)
+        uncited[stream_name] = sorted(declared_set - referenced_set, key=_ref_sort_key)
         shared += len(declared_set & referenced_set)
     # Jaccard denominator: |A ∪ B| = |A| + |B| - |A ∩ B|.  n carries the numerator,
     # so value == n / denominator holds (the metric contract, cross-review M2).
     denominator = (sum(len(v) for v in declared.values())
                    + sum(len(v) for v in referenced.values()) - shared)
     warnings: list[str] = []
+    unit_basis, basis_warnings = _unit_basis(canonical_text)
+    warnings.extend(basis_warnings)
     if not denominator:
         # Neither a declared number nor a reference was found: say so instead of
         # leaving the metric null with no cause (same contract as NO_DECLARED_NUMBERS).
         warnings.append("NO_DECLARED_NUMBERS")
+    if declared_dropped or referenced_dropped:
+        warnings.append(_REF_RANGE_WARNING)
     if any(dangling.values()):
         warnings.append("DANGLING_REFERENCES")
     if any(uncited.values()):
@@ -296,7 +410,8 @@ def reference_consistency(model: dm.DocumentModel,
                    evidence={"count": len(observed),
                              "sample": observed[:_SAMPLE_LIMIT],
                              "declared": declared, "referenced": referenced,
-                             "dangling": dangling, "uncited": uncited},
+                             "dangling": dangling, "uncited": uncited,
+                             "unit_basis_text": unit_basis},
                    warnings=warnings)
 
 
@@ -396,7 +511,7 @@ def image_resolution(model: dm.DocumentModel) -> dict[str, dm.JsonValue]:
                        warnings=warnings)
     widths = sorted(_as_int(item.get("width")) for item in images)
     adequate = sum(1 for width in widths if width >= _MIN_IMAGE_WIDTH)
-    return _record("S-SIZ-04", value=adequate / len(widths), n=len(widths),
+    return _record("S-SIZ-04", value=adequate / len(widths), n=adequate,
                    denominator=len(widths), unit="ratio",
                    evidence={"count": len(images), "sample": images[:_SAMPLE_LIMIT],
                              "images": images, "unreadable": unreadable,
@@ -564,8 +679,11 @@ def table_empty_cells(model: dm.DocumentModel) -> dict[str, dm.JsonValue]:
                        evidence={"count": 0, "sample": [], "tables": [], "cells": 0,
                                  "empty_cells": 0, "empty_bodies": empty_bodies},
                        warnings=warnings)
-    return _record("S-TBL-07", value=empty / cells, n=len(observations),
-                   denominator=len(observations), unit="ratio",
+    # n/denominator are CELLS, not tables: value is a cell ratio, and the old
+    # denominator (observation count) matched neither the numerator nor the
+    # denominator of the formula the docstring states (issue #18-3).
+    return _record("S-TBL-07", value=empty / cells, n=empty,
+                   denominator=cells, unit="ratio",
                    evidence={"count": cells, "sample": observations[:_SAMPLE_LIMIT],
                              "tables": observations, "cells": cells,
                              "empty_cells": empty, "empty_bodies": empty_bodies},
@@ -586,7 +704,7 @@ def table_missing_body(model: dm.DocumentModel) -> dict[str, dm.JsonValue]:
         return _record("S-TBL-08", value=None, n=0, denominator=0, unit="ratio",
                        evidence={"count": 0, "sample": [], "missing": []},
                        warnings=warnings)
-    return _record("S-TBL-08", value=len(empty_bodies) / total, n=total,
+    return _record("S-TBL-08", value=len(empty_bodies) / total, n=len(empty_bodies),
                    denominator=total, unit="ratio",
                    evidence={"count": total, "sample": observations[:_SAMPLE_LIMIT],
                              "missing": empty_bodies}, warnings=warnings)
@@ -709,7 +827,7 @@ def table_placement(model: dm.DocumentModel,
     top_section, top_count = max(sorted(counts.items()), key=_count_of)
     results = sum(count for name, count in counts.items() if name in _RESULT_SECTIONS)
     return _record(
-        "S-TBL-10", value=top_count / total, n=total, denominator=total, unit="ratio",
+        "S-TBL-10", value=top_count / total, n=top_count, denominator=total, unit="ratio",
         evidence={"count": total, "sample": sample[:_SAMPLE_LIMIT],
                   "sections": counts, "top_section": top_section,
                   "top_share": round(top_count / total, 6),
@@ -838,7 +956,7 @@ def numeric_cell_share(model: dm.DocumentModel) -> dict[str, dm.JsonValue]:
                                  "numeric_bearing_share": None,
                                  "latex_cells": latex,
                                  "empty_bodies": empty_bodies}, warnings=warnings)
-    return _record("S-TBL-11", value=numeric / cells, n=cells, denominator=cells,
+    return _record("S-TBL-11", value=numeric / cells, n=numeric, denominator=cells,
                    unit="ratio",
                    evidence={"count": cells, "sample": tables[:_SAMPLE_LIMIT],
                              "tables": tables, "numeric_cells": numeric,
@@ -860,7 +978,7 @@ def numeric_row_share(model: dm.DocumentModel) -> dict[str, dm.JsonValue]:
                        evidence={"count": 0, "sample": [], "tables": [],
                                  "numeric_rows": 0,
                                  "empty_bodies": empty_bodies}, warnings=warnings)
-    return _record("S-TBL-12", value=numeric_rows / rows, n=rows, denominator=rows,
+    return _record("S-TBL-12", value=numeric_rows / rows, n=numeric_rows, denominator=rows,
                    unit="ratio",
                    evidence={"count": rows, "sample": tables[:_SAMPLE_LIMIT],
                              "tables": tables, "numeric_rows": numeric_rows,
@@ -886,7 +1004,7 @@ def table_latex_residue(model: dm.DocumentModel) -> dict[str, dm.JsonValue]:
                        evidence={"count": 0, "sample": [], "tables": [],
                                  "latex_cells": latex,
                                  "empty_bodies": empty_bodies}, warnings=warnings)
-    return _record("S-TBL-13", value=latex / cells, n=cells, denominator=cells,
+    return _record("S-TBL-13", value=latex / cells, n=latex, denominator=cells,
                    unit="ratio",
                    evidence={"count": cells, "sample": tables[:_SAMPLE_LIMIT],
                              "tables": tables, "latex_cells": latex,
@@ -903,15 +1021,19 @@ _UNIT_CITATIONS_PER_TABLE: Final = "citations-per-declared-table"
 
 
 def _reference_counts(model: dm.DocumentModel,
-                      canonical_text: str | None = None) -> dict[str, dict[int, int]]:
-    """Mentions of each figure/table number in the body.
+                      canonical_text: str | None = None
+                      ) -> tuple[dict[str, dict[str, int]], list[str]]:
+    """(mentions per stream, dropped ranges) of each figure/table reference.
 
     A "表 2" written inside a cell is not a citation - otherwise tables would cite
-    themselves - so cell text never contributes, exactly as in _referenced_numbers.
+    themselves - so cell text never contributes, exactly as for the declared side.
     """
     prose = _citation_text(model, canonical_text)
-    return {dm.Stream.FIGURES.value: dict(Counter(_numbers(prose, _FIGURE_REF_RE))),
-            dm.Stream.TABLES.value: dict(Counter(_numbers(prose, _TABLE_REF_RE)))}
+    dropped: list[str] = []
+    figures = dict(Counter(_ref_keys(prose, _FIGURE_REF_RE, dropped)))
+    tables = dict(Counter(_ref_keys(prose, _TABLE_REF_RE, dropped)))
+    return {dm.Stream.FIGURES.value: figures,
+            dm.Stream.TABLES.value: tables}, dropped
 
 
 def reference_depth(model: dm.DocumentModel,
@@ -923,30 +1045,38 @@ def reference_depth(model: dm.DocumentModel,
     distribution (median / max / single- vs multi-mention shares) ships as evidence:
     "how often is a table discussed" is a different question from "is it cited at all".
     """
-    declared_numbers, observed = _declared_observations(model)
-    declared = sorted(set(declared_numbers[dm.Stream.TABLES.value]))
+    unit_basis, basis_warnings = _unit_basis(canonical_text)
+    declared_numbers, observed, declared_dropped = _declared_observations(model)
+    declared = sorted(set(declared_numbers[dm.Stream.TABLES.value]), key=_ref_sort_key)
     if not declared:
         return _record("S-REF-14", value=None, n=0, denominator=0,
                        unit=_UNIT_CITATIONS_PER_TABLE,
                        evidence={"count": 0, "sample": [], "depths": {},
-                                 "uncited": []}, warnings=["NO_TABLES"])
+                                 "uncited": [], "unit_basis_text": unit_basis},
+                       warnings=["NO_TABLES"] + basis_warnings)
     if not _citation_text(model, canonical_text).strip():
         # No prose means the citation search could not run: "not measured", not zero.
         return _record("S-REF-14", value=None, n=len(declared),
                        denominator=len(declared), unit=_UNIT_CITATIONS_PER_TABLE,
                        evidence={"count": len(declared),
                                  "sample": observed[:_SAMPLE_LIMIT], "depths": {},
-                                 "uncited": declared}, warnings=["NO_PROSE_TEXT"])
-    counts = _reference_counts(model, canonical_text)[dm.Stream.TABLES.value]
-    depths = {number: counts.get(number, 0) for number in declared}
+                                 "uncited": declared, "unit_basis_text": unit_basis},
+                       warnings=["NO_PROSE_TEXT"] + basis_warnings)
+    counts, referenced_dropped = _reference_counts(model, canonical_text)
+    table_counts = counts[dm.Stream.TABLES.value]
+    depths = {key: table_counts.get(key, 0) for key in declared}
     values = sorted(depths.values())
-    uncited = sorted(number for number, depth in depths.items() if depth == 0)
+    uncited = sorted((key for key, depth in depths.items() if depth == 0),
+                     key=_ref_sort_key)
     warnings: list[str] = ["UNCITED_TABLES"] if uncited else []
+    warnings.extend(basis_warnings)
+    if declared_dropped or referenced_dropped:
+        warnings.append(_REF_RANGE_WARNING)
     return _record(
         "S-REF-14", value=float(values[len(values) // 2]), n=len(values),
         denominator=len(values), unit=_UNIT_CITATIONS_PER_TABLE,
         evidence={"count": len(values), "sample": observed[:_SAMPLE_LIMIT],
-                  "depths": {str(number): depth for number, depth in depths.items()},
+                  "depths": {key: depth for key, depth in depths.items()},
                   "median_depth": values[len(values) // 2],
                   # mean and the shares stay in evidence: citation depth is long-tailed
                   # (one table is often discussed many times), so the headline is the
@@ -959,7 +1089,8 @@ def reference_depth(model: dm.DocumentModel,
                       sum(1 for value in values if value == 1) / len(values), 6),
                   "multi_mention_share": round(
                       sum(1 for value in values if value >= 2) / len(values), 6),
-                  "uncited": uncited}, warnings=warnings)
+                  "uncited": uncited, "unit_basis_text": unit_basis},
+        warnings=warnings)
 
 
 #: Every metric unit, including the non-ratio ones: a not-measured record used to

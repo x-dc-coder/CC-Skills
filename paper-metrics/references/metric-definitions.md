@@ -187,6 +187,9 @@ text_metrics.compute_text_metrics(text, bundle) 的返回值为 {metric_id: metr
 - **span 坐标系**：`[start, end]` 是相对**本次入参 text**（单篇论文全文拼接串）的 char 偏移，不是文件偏移、不是块内偏移。第三方回指原文的方法：把该篇 `_per_paper_metrics.jsonl` 对应行的 `inputs[].artifact` 原文按同一条拼接规则（按块序、块间以换行连接）重建字符串，再按下面的截断规则切片比对。
 - `warnings`：例如 `mtld_short_text`、`no_evidence`、`unresolved_tense`。告警**不改变** `value`，只声明解释边界。
 - **分层值（`_corpus_summary.json` → `metrics.<id>.by_section.<section>`）不携带证据指针**：每个分层显式带 `"evidence": null`（issue #6——缺省键与「没有证据」无法区分，故改为显式）。逐条回指原文请用 `_per_paper_metrics.jsonl`：分层只是把同一批 per-paper 值按 section 重新聚合，样本仍在该文件的 `metrics.<id>.evidence.sample`。
+- **`mean` 的聚合口径（2026-09-15，issue #18-5）**：`_corpus_summary.json` 里 `metrics.<id>.mean` 是**逐篇均值的均值**（`weight_mode = "equal_paper"`、`mean_basis = "mean_of_per_paper_means"`），**不是**把各篇原始计数池化后的比值。两者会差：S-REF-14 的 mean-of-means 与池化值实测相差 11%。本文件里凡标"池化"的实测数字都**不可**直接与产物 `mean` 比较；比较时必须说明用的是哪一种。
+- **混合单位护栏（2026-09-15，issue #18-7）**：同一指标在同一语料里出现**多于一个** `unit`（只统计**有值**的记录，未测量记录的占位 unit 不计）时，`_corpus_summary.json` 的 `mean` 置 `null` + 告警 **`MIXED_UNIT_AGGREGATION`**，并列出 `units_measured`。理由：`S-TBL-09` 英文是 per-1000-words、中文是 per-1000-cjk-units，混合语料直接平均等于把两种量纲相加；单语言语料各自运行时不触发。
+- **`class`：作者风格 vs 工具链缺陷（2026-09-15，issue #18-9）**：每条指标记录带机器可读 `class`——`author_style`（反映作者/期刊的写作选择）或 `toolchain_defect`（由转换链造成：LaTeX 残留、表格正文缺失、抽取图分辨率不足）。`_domain_profile.md` 按 class 分表渲染并标注红线；**契约层（`_writing_contract.yaml`）永不接受 `toolchain_defect` 类指标**——工具链缺陷不是可学习、可模仿的写作规范。实现上：`build_contract._is_toolchain_defect()` 令这类指标`_is_draft_checkable` 直接返回 False，它们从 clauses 中剔除并给 **`TOOLCHAIN_DEFECT_METRICS_EXCLUDED`** 告警（与"草稿没有块结构"的 `NON_PROSE_METRICS_EXCLUDED` 分开：后者是能力边界，前者是红线）；若调用方`--metrics`**显式点名**一个 `toolchain_defect` 指标则直接报错，不做静默剔除。
 
 ### 1.1 证据抽样与复现规则（冻结，v1.1）
 
@@ -195,6 +198,7 @@ text_metrics.compute_text_metrics(text, bundle) 的返回值为 {metric_id: metr
 - **截断规则（易错点）**：`excerpt == text[start:end][:80]`，即**先切片、后截断 80 字符**。**不得**用 `text[start:end] == excerpt` 全切片比较——长 span 会被合法截断，全切片比较会把正确数据判成错误（曾导致回指率被误报为 0.769）。
 - **块索引型证据**（`M-PCNT-25`）：形态为 `{block_index, section, words, excerpt}`，**没有 span**；核验方式 = 该论文 content_list.json 的 `blocks[block_index]` 存在且其文本以 `excerpt` 开头。两种形态**合并**计算回指率。
 - **证据本身必须可复现**：`evidence.count == n`，且每条证据必须能由原文逐字符重放（span 型用上面的截断规则，块索引型用块文本前缀）。**无法回指的数值不得通过 OBSERVED 层验收**：基线报告以回指率为 gate（目标 >= 0.95，真实语料实测 1.000）。
+- **`inputs` 现在含图片哈希（2026-09-15，issue #18-6）**：每篇论文的 `inputs` 除 content_list / marker markdown / paper_reader meta 外，还逐张登记 `figure_image:<img_path>` 的 sha256（文件集取自 `doc_model` 的 FIGURES 流，即 `S-SIZ-04` 实际打开的那批）。原因是该指标读图片字节：图片不进 `inputs`，换一张图会改变数值却不改变 `corpus_id`，审计只能判 `unexplained_drift`——而那是留给"确定性被破坏"的判决。**副作用**：`corpus_id` 因此变化，旧记录必须重登记（`audit_corpus.py --corpus <path>` 会打印新身份）。
 - **语言自查（先做这一步，再看任何数值）**：唯一事实源是 `text_metrics.detect_language(text)`，返回 `{language, cjk_ratio, supported}`；`cjk_ratio > 0.10` ⇒ 不支持。复算命令：
   `cd ~/.claude/skills && uv run python -c "import sys; sys.path.insert(0,'paper-metrics/scripts'); import text_metrics as t; print(t.detect_language(open('<canonical_text.txt>').read()))"`
   语言不支持时**不要解读任何数值**：依 §0 契约，此时每指标为 `null` + `LANGUAGE_NOT_SUPPORTED`、计入 `n_missing`，语料级报 `CORPUS_LANGUAGE_UNSUPPORTED`。契约与中文语料实测对照见 **§0.2**。
@@ -273,7 +277,7 @@ text_metrics.compute_text_metrics(text, bundle) 的返回值为 {metric_id: metr
 - **公式**：value = 词数 / 句数 = denominator / n
 - **分子 / 分母 / 单位**：分子 = 词数（记为字段 `denominator`）；分母 = 合格句数（记为字段 `n`）；单位 `words/sentence`。
 - **分位口径**：语料级 p25 / median / p75 用 nearest-rank、不插值（§2 总表）；n=34 时 median = v[16]（下中位数），**不是** `statistics.median` 的插值结果。
-- **口径陷阱（必读）**：本条是本契约中**唯一** value 不等于 n/denominator 的指标——字段语义被冻结为 n = 句数、denominator = 词数，故复算必须用 denominator/n。第三方若按「分子除以分母」的直觉读 n/denominator，会得到句/词（约 0.02 而非约 50）。这是 INTERFACES.md §3 表列的既定语义，不在实现层纠正，只在此显式声明。
+- **口径陷阱（必读）**：本条是本契约中**唯一倒置**（value = denominator / n）的指标——字段语义被冻结为 n = 句数、denominator = 词数，故复算必须用 denominator/n。第三方若按「分子除以分母」的直觉读 n/denominator，会得到句/词（约 0.02 而非约 50）。这是 INTERFACES.md §3 表列的既定语义，不在实现层纠正，只在此显式声明。另有两类指标同样**不满足** value == n/denominator：**计数/分位型**（`S-CAPL-05` 字符中位、`S-TBL-06` 列数中位、`S-REF-14` 被引深度中位——没有"分子"）与**按每千单位缩放型**（`S-TBL-09`，value = n/denominator × 1000），详见 §4.6 的恒等式适用范围。
 - **依赖与版本**：`split_sentences()`（缩写保护表：et al. / Fig. / Eq. / i.e. / e.g. / vs. / cf. / approx. / no. / Sec. / Ref.、方括号编号、小数、单字母缩写）+ `tokenize()`；二者随 `TEXT_METRICS_VERSION` 冻结。丢弃无字母 token 的碎片。
 - **反映什么写作行为**：句子平均信息打包量，以及长短交替的节奏（配合 std 与 p75-p25 的离散度一起看）。
 - **不能推断什么**：不能推断句子更难/更易读（句长与难度非线性）；不能推断作者水平；不能跨语言或跨领域直接比较（术语长度天然不同）。
@@ -532,6 +536,9 @@ text_metrics.compute_text_metrics(text, bundle) 的返回值为 {metric_id: metr
 
 **口径先于公式**：这三条**不读 prose canonical**，只读 `doc_model` 的非正文流，产物里 `scope = ["figures","tables"]` 已写明。理由与证据见 SKILL〈指标基座〉：同一篇论文的"数字丢失"可以是 2.1%/25%/55.5%/78.2%，取决于拿什么跟什么比；把表格塞进正文会污染句长/密度类指标，而"看不见表格"又让损坏无法归因。
 **草稿契约不含这三条**：Markdown 草稿没有块结构，无法从草稿复算；`build_contract` 会以 `NON_PROSE_METRICS_EXCLUDED` 明确说明"留在画像里、不进契约"。
+**恒等式适用范围（2026-09-15，issue #18-3）**：本节**比值型**指标必须满足 `value == n / denominator`（`n` = 分子计数，`denominator` = 分母计数）；**计数/分位型**（`S-CAPL-05` 字符中位数、`S-TBL-06` 列数中位数、`S-REF-14` 被引深度中位数）恒等式**不适用**（其 `n`/`denominator` 只是参与统计的样本数）；**按每千单位缩放型**（`S-TBL-09`）为 `value == n / denominator × 1000`。除这三类外，任何 `value ≠ n/denominator` 的读数都是契约违规（此前 8 个比值指标的 `n` 误填分母，其中 S-TBL-07 连分母都是表数而非单元格数，issue #18-3）。
+
+**引用键的表示（2026-09-15，issue #18-8）**：`declared` / `referenced` / `dangling` / `uncited` / `depths` 的键现在是**字符串**（JSON 对象键本就只能是字符串；此前内部用 int 再转字符串，现在是显式字符串键，`"007"` 与 `"7"`、`"a1"` 与 `"A1"` 归一为同一键）。引用解析新增：**复数**（`Figures` / `Tables`）、**数字区间**（`Tables 13-15`→`"13","14","15"`）、**字母前缀编号**（`Figure A1`→`"A1"`），并用显式 lookaround 做词边界（`tablet`、`figure of merit` 不误命中）。单段区间超过 **50** 个键时整段丢弃并给 `REFERENCE_RANGE_TOO_LARGE`（宁可少计且可见，不静默截断）。搜索空间仍限 prose 流。**仍不支持**：后缀字母子图（`Figure 6a` 折叠为 `"6"` 与父图同键）、`and` 枚举（`Figures 4 and 5` 只取 `"4"`）、全角字母。
 
 #### `S-CAP-01` 图表题注覆盖率
 
@@ -545,17 +552,17 @@ text_metrics.compute_text_metrics(text, bundle) 的返回值为 {metric_id: metr
 
 - **公式**：`value = (声明编号总数 - 重复出现次数) / 声明编号总数`；单位 `ratio`。
 - **分母**：题注中解析出的编号总数（`Figure N` / `Fig. N` / `图 N` / `Table N` / `表 N`；解析前把全角数字归一为 ASCII）。
-- **证据坐标**：`declared`（逐流编号）/ `gaps`（1..max 中缺失）/ `duplicates`（重复）/ `sample`。
-- **不能推断什么**：编号连续 ≠ 图表被正确引用；`表 3a` 这类复合编号不在本版规则内，会体现为 `gaps`。
+- **证据坐标**：`declared`（逐流编号，**字符串键**）/ `gaps`（1..max 中缺失，只在纯数字键上算——`"A1"` 没有隐含前驱）/ `duplicates`（重复）/ `sample`。
+- **不能推断什么**：编号连续 ≠ 图表被正确引用。前缀字母编号（`Figure A1`）已支持且不进 1..max 的 gaps 扫描；**后缀**字母子图（`Figure 6a`）仍折叠为父编号 `"6"`（与父图同键合并），`and` 枚举（`Figures 4 and 5`）只取第一个——这两类漏计会同时抬高本指标的 seeming 一致性与 `S-REF-03` 的 dangling，见 §4.6 引用键说明。
 - **实测**：均值 **0.98**。
 
 #### `S-REF-03` 正文引用一致性
 
 - **公式**：`|declared ∩ referenced| / |declared ∪ referenced|`（**Jaccard**，1.0 = 完全一致），按 figures/tables 分别求交后汇总；单位 `ratio`。
   **2026-09-14 修正（交叉审查 blocker B2）**：旧分母 `|declared| + |referenced|` **理论上限恒为 0.5**，中文均值 0.4829 曾被文档反读成"约一半对不上"——实际是 **96.6% 重合**。已改 Jaccard，并令 `n = 交集编号数`、`denominator = |并集|`，使契约的 `value = n / denominator` 成立。
-- **分子 / 分母**：分子 = 既被声明（有题注编号）又被正文引用的编号数；分母 = 声明编号数 + 引用编号数。
+- **分子 / 分母**：分子 = 既被声明（有题注编号）又被正文引用的编号数；分母 = **并集** `|declared ∪ referenced|`（= 声明数 + 引用数 − 交集），故 `value = n / denominator` 成立。**2026-09-15 修正**：本行此前仍写"分母 = 声明编号数 + 引用编号数"（旧口径，理论上限 0.5），与上方的 Jaccard 公式自相矛盾（issue #20-1）。
 - **引用只在 prose 流里搜**：表格单元格里的 `Figure 2` 不会被当作引用（有测试锁定）。
-- **证据坐标**：`declared` / `referenced` / `dangling`（引了不存在）/ `uncited`（声明了没引）/ `sample`。
+- **证据坐标**：`declared` / `referenced` / `dangling`（引了不存在）/ `uncited`（声明了没引）/ `sample`，全部是**字符串键**；另有 `unit_basis_text`(`canonical_body` / `prose_stream_incl_headings_and_references`)——搜索空间不是 canonical 正文时给 `UNIT_BASIS_NOT_CANONICAL` 告警，与 `S-TBL-09` 同形（issue #20 顺带项）。
 - **不能推断什么**：低值既可能来自 MinerU 漏题注，也可能来自作者书写不规范——必须同时看 `dangling`/`uncited` 与 `S-CAP-01` 才能归因，**不得**单凭本条断言"该刊图表管理混乱"。
 - **实测（Jaccard 口径，2026-09-14 修正）**：中文 mean **0.9417**（median 1.0）、英文 mean **0.7331**（median 0.7391）。旧口径的 0.4829 曾被读成「约一半对不上」，实际是 96.6% 重合——差异请读 dangling/uncited，不要反推。
 
@@ -625,7 +632,7 @@ text_metrics.compute_text_metrics(text, bundle) 的返回值为 {metric_id: metr
 
 - **公式**：`严格数值单元格 / 单元格总数`；单位 `ratio`。判定：把单元格文本去标签、**全角数字归一**、去掉千分位逗号与空格后，仅剩"数字 + 可选范围 + 可选短单位（≤6 个字母/百分号）"才算严格数值。
 - **同时给两个读数**：`value` 是**严格**口径；证据里给 `numeric_bearing_share`（只要含数字）。二者差距是本语料的真实属性（`G13` 这类实例名、`522(90.0%)` 这类复合结果），只报一个必误导其中一类读者。
-- **证据坐标**：`evidence.tables[]` 逐表给 `block_index`/`field="table_body"`/`excerpt`/`rows`/`cells`/`numeric_cells`/`numeric_bearing_cells`/`numeric_rows`/`latex_cells`；`n == denominator == 单元格数`。
+- **证据坐标**：`evidence.tables[]` 逐表给 `block_index`/`field="table_body"`/`excerpt`/`rows`/`cells`/`numeric_cells`/`numeric_bearing_cells`/`numeric_rows`/`latex_cells`；`denominator` == 单元格数、`n` == **严格数值单元格数**（故 value = n / denominator）。
 - **不能推断什么**：数值占比高 ≠ 表格质量高（也可能是"表格里只剩数字、文字被抽掉了"）；**必须与 `S-TBL-13` 联看**——LaTeX 残留会把本该是数字的单元格算成非数值，从而**拉低**本指标。
 - **实测**：中文 池化 **77.9%**（逐篇 0.563–0.936）；英文 池化 **49.7%**（逐篇 0.0–0.789）；含数字口径 中文 85.3% / 英文 72.6%。
 
@@ -633,7 +640,7 @@ text_metrics.compute_text_metrics(text, bundle) 的返回值为 {metric_id: metr
 
 - **公式**：`数值行 / 行数`，其中"数值行"= 该行**至少一半**单元格是严格数值（至少 1 个）；单位 `ratio`。
 - **为什么按行而不是列**：真实语料 `colspan/rowspan` 极普遍，重建列网格是猜测；而一行的单元格是确定的，所以按行统计是**稳健**的。
-- **证据**：`evidence.numeric_rows` + 逐表计数；`n == denominator == 行数`。
+- **证据**：`evidence.numeric_rows` + 逐表计数；`denominator` == 行数、`n` == **数值行数**（故 value = n / denominator）。
 - **不能推断什么**：表头行天然不是数值行，所以本指标**上限低于 1** 且随表头行数变化；跨语言比较时要注意表头结构差异。
 - **实测**：中文 池化均值 **0.778**；英文 **0.538**。
 
@@ -692,18 +699,19 @@ text_metrics.compute_text_metrics(text, bundle) 的返回值为 {metric_id: metr
 - **名不副实的历史（交叉审查 M3）**：该值以**该篇最新文献年**为锚，测的是"列表近端集中度"，**不是绝对新旧**。所以：① 改名"近端集中度"；② 语料摘要新增 `reference_freshness`（锚 = 语料最大文献年，给**绝对**近 5 年占比）；③ `evidence.anchor` 写明 `self_newest`、`evidence.years` 供第三方换锚复算。
 - **不能推断什么**：近端集中度低 ≠ 该刊保守；**跨语料比较前必须先看 `reference_freshness` 的绝对读数**；`year_coverage < 1` 时给 `REFERENCE_YEARS_INCOMPLETE` 告警，此时该值只覆盖可解析部分。
 - **实测（2026-09-14）**：中文 10 篇 mean **0.618**（median 0.625，年份可解析率 **100%**）；英文 34 篇 mean **0.490**（median 0.429，可解析率 99.0%）。
+- **锚年对单条误解析年份没有防护（2026-09-15 实测）**：`reference_freshness.anchor_year` = 语料内**所有**文献年份的**最大值**。vrp-en 里 2023 Parallel MCTS 一篇有 1 条被解析成 **2041**，锚年因此变成 2041，`absolute_recent_share` 从真实量级塌到 **0.000731（0.07%）**；同一规则在 ycgl-zh 上锚年 2024、读数 **0.452703**。**跨语料比较前必须核对 `anchor_year`**：大于该语料发表年的锚年应视为可疑。本版**未修复**该锚点规则（属新缺陷，见 §10 第 6 条待办）。
 
 ### 5.4 `M-REFLINK-54` 引用 ↔ 列表双向一致性
 
-- **公式**：`|正文引用编号 ∩ 1..N| / (|正文引用编号| + N)`，N = 参考文献条目数（与 `S-REF-03` 同形，便于对照阅读）；单位 `ratio`。
+- **公式**：`|正文引用编号 ∩ 1..N| / |正文引用编号 ∪ 1..N|`（**Jaccard**；N = 参考文献条目数，与 `S-REF-03` 同形，便于对照阅读）；单位 `ratio`。**2026-09-15 修正**：本行此前写 `/(|正文引用编号| + N)`（旧口径，理论上限 0.5），实现早已改为 Jaccard，纯属文档滞后（issue #20-2）。
 - **引用来源 = canonical text（正文）**：参考文献段本身被 `_NON_PROSE_SECTIONS` 排除，所以"条目自带的 [N]"不会自证被引用。
 - **数学区间不算引用**：`[0,1]`、`[-1,1]` 在本领域满篇都是。规则：**单编号括号一律算**（越界正是要抓的 dangling），**区间/列表只有全部编号落在 1..N 内才算**（因此 `[0,1]` 被拒、`[3-5]` 在 N=5 时被接受）。
 - **引文风格分流（关键）**：风格只在**正文**上判定（若用全文，编号式的参考文献列表会让每篇都"看起来是数字制"）。作者-年份制（如 `Desaulniers et al. (2018)`）下本指标**给 `null` + `CITATION_STYLE_NOT_NUMERIC`**——否则会报出**假的 100% 未引用**（英文语料实测有 11/34 篇属于这一类，见 `HIGH_MISSING` 汇总告警）。
-- **证据坐标**：`evidence.sample[]` 用 **form A**（正文引用的精确 `span` + `excerpt`），无引用时回落到参考文献的块坐标（form B）；另有 `cited_count`、`cited`、`dangling`、`uncited`（截断 50）、`uncited_count`、`citation_style`。
+- **证据坐标**：`evidence.sample[]` 用 **form A**（正文引用的精确 `span` + `excerpt`），无引用时回落到参考文献的块坐标（form B）；另有 `cited_count`、`cited`、`dangling`、`uncited`（截断 50）、`uncited_count`、`citation_style` 与 `unit_basis_text`（搜索空间基准，非 canonical 时给 `UNIT_BASIS_NOT_CANONICAL`）。
 - **不能推断什么**：`uncited` 多也可能是"作者-年份制论文被误读成数字制"（本文档的规则已尽量排除，但仍建议先看 `citation_style`）；"未引用"也不等于该文献不重要（可能是背景综述式引用）。
-- **实测**：中文 10/10 篇可测，mean **0.496**（未引用条目极少）；英文 **23/34 篇可测**（11 篇作者-年份制报未测量），mean **0.419**。
+- **实测（Jaccard 口径，2026-09-15 复核）**：中文 **10/10 篇可测，mean 0.984127**（median 1.0，`IQR_ZERO`）；英文 **23/34 篇可测**（11 篇作者-年份制报未测量，`HIGH_MISSING`），**mean 0.781811**（median 0.935484）。旧文档写的 0.496 / 0.419 是 Jaccard 之前的旧口径值，不得再引用（issue #20-3）。
 
-**变更控制**：这两条的口径（"近"的锚点、每年取首个年份、区间/列表的接受规则、风格判定只读正文）属定义变更，按 §10 第 1 条 bump `metric_spec_version`；其 `scope = ["prose","references"]` 不是恰好 prose，因此**不进草稿契约**（草稿侧引用编号检查由 thesis-writing 的 check_markdown_spec 覆盖）。
+**变更控制**：这两条的口径（"近"的锚点、每年取首个年份、区间/列表的接受规则、风格判定只读正文）属定义变更，按 §10 第 1 条 bump `metric_spec_version`。其 `scope = ["prose","references"]` 虽然不是恰好 prose，但**草稿里同样有正文段与参考文献段，可以从 Markdown 复算**，因此自 2026-09-15 起按**逐指标显式声明**进入草稿契约（issue #18-10）；真正的非正文流指标（`scope` 含 figures/tables 的 S-*）仍不进契约。草稿侧正文↔文献表双向核验目前由 thesis-writing 的 `check_markdown_spec` 覆盖，本层不重复实现。
 
 ## 6. 恒等式与交叉校验清单（测试必须断言）
 
@@ -742,6 +750,7 @@ INTERFACES.md §3 为适应「纯 stdlib、无 NLP 依赖」，对 01-指标契�
 | `M-SLEN-01` | 分母「不适用」（分布） | n = 句数、denominator = 词数，故 value = denominator / n | 唯一倒置指标，见 §3.1 |
 | `M-CITSTYLE-50` | 字段名 confidence | 语义为**分离度**，建议改名 separation 或 margin | 不得读作校准概率 |
 | `M-REFCNT-51` | 只认方括号数字与 N. 的 text 块 | 增加 list 块、author-year、detected_format 与告警 | 修复前真实语料 median 恒为 0（I2 缺陷） |
+| `M-*` 全文口径（issue #17） | —（契约卡未定义附录处理） | **附录子节（`A.` / `A.1` / `B.1.` 等）随其所属附录一起移出正文**（附录上下文继承，见 §10.6） | vrp-en **9/34 篇正文变短**（合计 **−57,714 字符**），14 条登记指标全部小幅移动 → 已重登记；ycgl-zh **0/10 篇变化**。仅按字母编号判定附录的旧提案**已否决**：它会把 IEEE 正文子节（`A. Accuracy study`）一并移出正文 |
 
 ---
 
@@ -815,3 +824,6 @@ INTERFACES.md §3 为适应「纯 stdlib、无 NLP 依赖」，对 01-指标契�
 3. **改匹配规则**（最长匹配策略、大小写归一、缩写保护表）视为定义变更，按第 1 条处理。
 4. **禁止**在任何指标定义中引入 LLM 产出的词表、标签或数值；一经发现，该指标必须从 OBSERVED 层移除。
 5. **禁止**新增第三方依赖而不重新立项（违反 INTERFACES.md §0 红线 1）。
+6. **2026-09-15（issue #17）正文口径加入"附录上下文继承"**：`labelled_blocks()` 在显式附录标题之后，把 `A.` / `A.1` / `B.1.` 形式的子标题归入 `appendix`；遇到非正文段（references/acknowledgments/…）或规范标题即退出该上下文。这是**测量范围变更**而非标签修正，故按第 1 条在 §7 追加了差异行，并 bump `profiler_version` 2.4 → 2.5、重登记 vrp-en 的 14 条期望值。
+   **待办（本批未做）**：`reference_freshness` 的锚年取全语料文献年份最大值，对单条误解析年份无防护（vrp-en 实测被 1 条 2041 拉到 0.07%）；修它属定义变更，需另开 issue 走第 1 条流程。
+7. **2026-09-15（issue #18 + #20）审计与契约一致性批次**：审计范围扩到 `corpus_warnings`（按 code 计数）、`language_supported`、`by_section`、`section_skeleton`（在此之前只比 14 条指标均值——语料语言告警正是从这条缝里漏过去的）；比值型指标的 `n` 改为**分子**并新增恒等式测试；`_corpus_summary.json` 增加 `mean_basis`；新增 `MIXED_UNIT_AGGREGATION` 护栏；指标记录增加 `class` 并在 md 分表渲染；`M-REFAGE-53`/`M-REFLINK-54` 改为可进草稿契约；文档侧修正 `S-REF-03`/`M-REFLINK-54` 的旧口径残留与 `M-REFLINK-54` 的实测值。**未改任何指标公式**，故不 bump `metric_spec_version`。

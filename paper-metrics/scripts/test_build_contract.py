@@ -686,3 +686,50 @@ def test_contract_yaml_header_documents_non_additivity():
     except ImportError:  # pragma: no cover
         return
     assert yaml.safe_load(text) == contract
+
+
+# ---------------------------------------------------------------------------
+# 12. #18.10 draft-checkability is declared per metric, not inferred from scope
+# ---------------------------------------------------------------------------
+
+def test_reference_metrics_are_draft_checkable() -> None:
+    """M-REFAGE-53 / M-REFLINK-54 read prose + references.  A Markdown draft HAS a
+    reference section, so they are recomputable even though their scope is not exactly
+    prose (issue #18.10); a true non-prose metric (S-SIZ-04, figures) stays excluded."""
+    summary = _summary(metrics={
+        "M-REFAGE-53": _metric_stats(scope=["prose", "references"]),
+        "M-REFLINK-54": _metric_stats(scope=["prose", "references"]),
+        "S-SIZ-04": _metric_stats(scope=["figures"]),
+    })
+    contract = _build(summary)
+    assert [c["metric"] for c in contract["clauses"]] == ["M-REFAGE-53", "M-REFLINK-54"]
+    codes = [w["code"] for w in contract["contract_warnings"]]
+    assert codes == ["NON_PROSE_METRICS_EXCLUDED"]
+
+
+def test_draft_checkable_is_declared_per_metric_not_inferred_from_scope() -> None:
+    """The allow-list decides: reference metrics are draft-checkable despite a
+    non-prose scope, and a figures-only metric is not despite having a scope field."""
+    assert bc._is_draft_checkable("M-REFAGE-53", {"scope": ["prose", "references"]})
+    assert bc._is_draft_checkable("M-REFLINK-54", {"scope": ["prose", "references"]})
+    assert bc._is_draft_checkable("M-HED-14", {"scope": ["prose"]})
+    assert not bc._is_draft_checkable("S-SIZ-04", {"scope": ["figures"]})
+    assert not bc._is_draft_checkable("S-TBL-09", {"scope": ["prose", "tables"]})
+
+
+
+def test_toolchain_defect_metrics_are_never_accepted_by_a_contract() -> None:
+    """class=toolchain_defect measures the extraction chain, not the writing, so a
+    clause built from it would tell the author to imitate our parser (issue #18-9)."""
+    summary = _summary({
+        "M-HED-14": _metric_stats(),
+        "S-TBL-13": _metric_stats(scope=["prose"], **{"class": "toolchain_defect"}),
+    })
+    contract = _build(summary)
+    assert [c["metric"] for c in contract["clauses"]] == ["M-HED-14"]
+    assert [w["code"] for w in contract["contract_warnings"]] == [
+        "NON_PROSE_METRICS_EXCLUDED", "TOOLCHAIN_DEFECT_METRICS_EXCLUDED"]
+    assert not bc._is_draft_checkable(
+        "S-TBL-13", {"scope": ["prose"], "class": "toolchain_defect"})
+    with pytest.raises(bc.BuildContractError):
+        _build(summary, metrics=["S-TBL-13"])

@@ -53,7 +53,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 # Algorithm version — bump when metric *semantics* change.
-PROFILER_VERSION = "2.4"  # 2.4: toolchain records the metric-layer version (auditability)
+PROFILER_VERSION = "2.5"  # 2.5: appendix context inheritance (issue #17) — canonical scope changed
 # Output contract version — bump when the JSON *schema* changes.
 SCHEMA_VERSION = "2.4"  # 2.4: + toolchain.text_metrics_version
 # Version of the written metric definitions (references/metric-definitions.md).
@@ -91,6 +91,16 @@ _KEYWORDS_MARKER_RE = re.compile(
     re.IGNORECASE,
 )
 
+#: An appendix heading may carry a letter prefix and a long title that mentions a
+#: word a body-section keyword also matches.  Without this check, "A Appendix: The
+#: Global Feature Importance ... Summary ..." was classified as 'conclusion' (the
+#: summary keyword matched first) and "Appendix A. CVRP mathematical formulation"
+#: as 'method', so two real appendices were measured as body text.  Anchored at the
+#: start: an appendix is recognised by what it is CALLED, not by what it mentions.
+_APPENDIX_PREFIX_RE = re.compile(
+    r"^\s*(?:[a-z]\.?\s+)?(?:appendix|appendices|supplementary\s+material|附录|补充材料)\b"
+)
+
 
 def sha256_file(path: Path) -> str:
     """sha256 of the raw bytes of a file (hex). Used for input provenance."""
@@ -99,6 +109,35 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: fh.read(1 << 20), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def _figure_image_inputs(content_list_path: Path) -> list[dict]:
+    """sha256 of every figure image this paper's metrics will open.
+
+    S-SIZ-04 measures image headers, so replacing an image moves a metric value.
+    While the images were absent from `inputs` the corpus id stayed the same, so
+    audit_corpus reported that movement as UNEXPLAINED DRIFT - the one verdict the
+    audit exists to reserve for a determinism break (issue #18-6).  The file set is
+    taken from doc_model's own stream classification, so it cannot drift from the
+    set image_resolution() actually opens.
+    """
+    try:
+        doc_model = _import_sibling("doc_model")
+        model = doc_model.parse_document(content_list_path)
+    except Exception:  # noqa: BLE001 - an unparseable paper is reported by the metrics layer
+        return []
+    base = content_list_path.parent
+    by_artifact: dict[str, dict] = {}
+    for block in model.blocks:
+        if block.kind is not doc_model.Stream.FIGURES or not block.image_path:
+            continue
+        path = base / block.image_path
+        if not path.is_file():
+            continue
+        by_artifact.setdefault(
+            f"figure_image:{block.image_path}",
+            {"artifact": f"figure_image:{block.image_path}", "sha256": sha256_file(path)})
+    return [by_artifact[key] for key in sorted(by_artifact)]
 
 
 @dataclass
@@ -153,10 +192,26 @@ class Paper:
             return self._labelled_cache
         out: list[tuple[str, dict]] = []
         current = "front_matter"
+        # The appendix is a CONTEXT, not a letter pattern: IEEE body subsections are
+        # lettered exactly like appendix children ("A. Accuracy study" next to
+        # "A. Numerical results"), so a lettered heading is inherited into the
+        # appendix only while an explicit appendix heading is in force - and a real
+        # body heading (a non-prose section or a canonical title) ends that context.
+        in_appendix = False
         for b in self.load_blocks():
             t = _is_title_block(b)
             if t and t[1] == 2:
-                current = canonical_section_label(normalize_section_title(t[0]))
+                norm = normalize_section_title(t[0])
+                label = canonical_section_label(norm)
+                if label == "appendix":
+                    in_appendix = True
+                    current = "appendix"
+                elif (in_appendix and label not in _NON_PROSE_SECTIONS
+                        and norm not in _CANONICAL_MAP):
+                    current = "appendix"
+                else:
+                    in_appendix = False
+                    current = label
             elif b.get("type") == "header":
                 # MinerU sometimes emits the section title as a running head
                 # (type="header") instead of a heading with text_level. Only the
@@ -166,6 +221,7 @@ class Paper:
                     normalize_section_title(str(b.get("text") or "")))
                 if header_label in ("references", "bibliography"):
                     current = "references"
+                    in_appendix = False
             out.append((current, b))
         self._labelled_cache = out
         return out
@@ -293,6 +349,7 @@ def discover_papers_detailed(corpus_dir: Path) -> Discovery:
         inputs = [{"artifact": "mineru_content_list", "sha256": sha256_file(cl_path)}]
         if marker_md is not None:
             inputs.append({"artifact": "marker_markdown", "sha256": sha256_file(marker_md)})
+        inputs.extend(_figure_image_inputs(cl_path))
         upstream: dict = {}
         meta_path = paper_dir / "_META.json"
         if meta_path.is_file():
@@ -464,7 +521,9 @@ _CANONICAL_MAP: dict[str, str] = {
 def canonical_section_label(normalized_title: str) -> str:
     """Map a normalized section title to its canonical label.
 
-    Three-stage resolution:
+    Four-stage resolution:
+      0. Anchored appendix prefix ("appendix", "A Appendix: ..."), so a long
+         appendix title cannot be re-routed by a keyword it happens to contain.
       1. Exact match in _CANONICAL_MAP (handles canonical forms + common synonyms).
       2. Keyword-based substring match (handles numbered subsection variants
          like '3.1 reformulating kd', '4.4 comparison with state-of-the-arts'
@@ -477,6 +536,8 @@ def canonical_section_label(normalized_title: str) -> str:
     by its characteristic keywords (experiment/ablation/baseline → experiments,
      distillation/architecture/method → method, etc.).
     """
+    if _APPENDIX_PREFIX_RE.match(normalized_title):
+        return "appendix"
     exact = _CANONICAL_MAP.get(normalized_title)
     if exact:
         return exact
@@ -1412,6 +1473,11 @@ def compute_paper_metrics(paper: Paper, bundles, text_metrics_mod) -> dict:
     # that field, which is how the scope stayed implicit until 2026-09-14.
     for record in metrics.values():
         record.setdefault("scope", list(_BASE_ARTIFACT["scope"]))
+        # class travels with EVERY metric record, not only the stream ones: it is a
+        # pure function of the metric, and a missing class would read as "unknown" in
+        # the report and in the contract layer.  The text metrics measure the author's
+        # own prose by definition (issue #18-9).
+        record.setdefault("class", "author_style")
     return metrics
 
 
@@ -1835,6 +1901,13 @@ def aggregate_corpus(records: list[dict], corpus_id: str | None = None) -> dict:
     for mid in sorted(metric_ids):
         per_paper: dict[str, float] = {}
         unit = ""
+        # Units of the MEASURED values only: a not-measured record carries a
+        # placeholder unit and must not look like a second scale (issue #18-7).
+        units_measured: set[str] = set()
+        # author_style vs toolchain_defect travels with the summary, otherwise the
+        # human report cannot split the tables and the contract layer cannot refuse
+        # a defect metric (issue #18-9).
+        metric_class = ""
         scope_seen: set[str] = set()
         section_values: dict[str, list[float]] = defaultdict(list)
         for r in records:
@@ -1843,6 +1916,10 @@ def aggregate_corpus(records: list[dict], corpus_id: str | None = None) -> dict:
                 per_paper[r["paper_key"]] = None
                 continue
             per_paper[r["paper_key"]] = m.get("value")
+            if m.get("value") is not None and m.get("unit"):
+                units_measured.add(str(m["unit"]))
+            if not metric_class and m.get("class"):
+                metric_class = str(m["class"])
             metric_record_codes[mid].update(m.get("warnings") or ())
             for code in (m.get("warnings") or ()):
                 record_warning_counts[mid][str(code)] += 1
@@ -1852,6 +1929,17 @@ def aggregate_corpus(records: list[dict], corpus_id: str | None = None) -> dict:
                 if smap.get(mid) is not None:
                     section_values[section].append(float(smap[mid]))
         summary = _aggregate_metric(per_paper, unit, section_values)
+        if metric_class:
+            summary["class"] = metric_class
+        if len(units_measured) > 1:
+            # S-TBL-09 is per-1000-words for English and per-1000-cjk-units for
+            # Chinese; a corpus mixing both would average two different scales.
+            # Null (never 0) plus a named warning, and the colliding units are
+            # listed so a reader sees WHICH two scales met (issue #18-7).
+            summary["mean"] = None
+            summary["units_measured"] = sorted(units_measured)
+            summary["warnings"] = sorted(set(summary.get("warnings") or ())
+                                         | {"MIXED_UNIT_AGGREGATION"})
         causes = record_warning_counts.get(mid)
         if causes:
             summary["record_warning_counts"] = dict(sorted(causes.items()))
@@ -2060,6 +2148,10 @@ def aggregate_corpus(records: list[dict], corpus_id: str | None = None) -> dict:
         "block_census": _census_totals(records),
         "non_prose_dropped": {k: dropped_totals[k] for k in sorted(dropped_totals)},
         "weight_mode": "equal_paper",
+        # metrics[id].mean is the mean of the per-paper means, NOT a pooled
+        # statistic.  The documented headline numbers of S-REF-14 were pooled
+        # counts and disagreed with the product by 11% (issue #18-5).
+        "mean_basis": "mean_of_per_paper_means",
         "languages": {k: lang_counts[k] for k in sorted(lang_counts)},
         "language_supported": language_supported,
         # Median/p25/p75 are nearest-rank at index round(p * (n-1)) with round-half-even,
@@ -2330,23 +2422,60 @@ def _render_md(profile: dict) -> str:
     summary = profile.get("corpus_summary") or {}
     metrics = summary.get("metrics") or {}
     if metrics:
-        lines.append("## 写作特征指标 (Style Metrics, OBSERVED)")
-        lines.append("")
-        lines.append("| 指标 | 单位 | n | 中位数 | IQR | 95% CI | 告警 |")
-        lines.append("|------|------|---|--------|-----|--------|------|")
-        for mid, m in metrics.items():
-            ci = ""
-            if m.get("ci95_low") is not None and m.get("ci95_high") is not None:
-                ci = f"[{m['ci95_low']}, {m['ci95_high']}]"
-            warn = ", ".join(m.get("warnings") or [])
-            med = m.get("median")
-            iqr = m.get("iqr")
-            lines.append(
-                f"| {mid} | {m.get('unit') or ''} | {m.get('n_valid')} | "
-                f"{'' if med is None else med} | {'' if iqr is None else iqr} | {ci} | {warn} |")
-        lines.append("")
+        # Split by class when the records carry one: a toolchain defect (LaTeX
+        # residue, an empty table body, an unusable extracted raster) and an author
+        # habit are the same three numbers in one table, so Mode B could not tell
+        # "this journal writes long sentences" from "the converter ate the table"
+        # (issue #18-9).  Records written before the field keep the old rendering.
+        classes = {m.get("class") for m in metrics.values()}
+        grouped: list[tuple[str, list[tuple[str, dict]]]] = []
+        if classes == {None}:
+            grouped.append(("写作特征指标 (Style Metrics, OBSERVED)", list(metrics.items())))
+        else:
+            for cls, title in (("author_style", "写作特征指标 · 作者风格类 (author_style)"),
+                               (None, "写作特征指标 · 未分类 (class 缺失)"),
+                               ("toolchain_defect",
+                                "工具链缺陷类 (toolchain_defect) — 不是写作风格，不得作为规范")):
+                rows = [(mid, m) for mid, m in metrics.items() if m.get("class") == cls]
+                if rows:
+                    grouped.append((title, rows))
+        for title, rows in grouped:
+            lines.append(f"## {title}")
+            lines.append("")
+            lines.append("| 指标 | 单位 | n | 中位数 | IQR | 95% CI | 告警 |")
+            lines.append("|------|------|---|--------|-----|--------|------|")
+            for mid, m in rows:
+                ci = ""
+                if m.get("ci95_low") is not None and m.get("ci95_high") is not None:
+                    ci = f"[{m['ci95_low']}, {m['ci95_high']}]"
+                warn = ", ".join(m.get("warnings") or [])
+                med = m.get("median")
+                iqr = m.get("iqr")
+                lines.append(
+                    f"| {mid} | {m.get('unit') or ''} | {m.get('n_valid')} | "
+                    f"{'' if med is None else med} | {'' if iqr is None else iqr} | {ci} | {warn} |")
+            lines.append("")
         lines.append("注：分析单位为**论文**（n 为有效论文数），不是句子；缺失值保持空缺、从不填 0。"
                      "n_valid < 5 的指标只作参考，不得据此得出期刊级结论。")
+        lines.append("")
+        if "toolchain_defect" in classes:
+            lines.append("> **红线**：" + _TICK + "toolchain_defect" + _TICK
+                         + " 类指标测的是**转换链缺陷**（LaTeX 残留 / 表格正文缺失 / 抽取图分辨率），"
+                           "不是该作者或该刊的写作风格，**不得**作为写作规范或生成目标。")
+            lines.append("")
+    freshness = summary.get("reference_freshness")
+    if freshness:
+        # The md report used to drop this field, so the only ABSOLUTE reading of
+        # reference recency existed in the JSON alone while M-REFAGE-53 (per-paper
+        # anchor) was the one a human saw.  The anchor year is printed WITH the
+        # reading: one mis-parsed year poisons the corpus anchor (vrp-en reads
+        # 0.000731 against a 2041 anchor), and a silent number would hide that.
+        lines.append("## 参考文献绝对新鲜度 (Reference Freshness)")
+        lines.append("")
+        lines.append(f"- 锚年（{freshness.get('anchor_kind')}）: {freshness.get('anchor_year')}")
+        lines.append(f"- 近 {freshness.get('window_years')} 年文献占比（绝对口径）: "
+                     f"{freshness.get('absolute_recent_share')}"
+                     f"（有年份的文献 {freshness.get('entries_with_year')} 条）")
         lines.append("")
     warns = summary.get("corpus_warnings") or []
     if warns:
