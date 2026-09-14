@@ -466,6 +466,9 @@ text_metrics.compute_text_metrics(text, bundle) 的返回值为 {metric_id: metr
 - **反映什么写作行为**：该领域论文的章节组织惯例（哪些章几乎必写、写在相对什么位置、占多少篇幅）。
 - **不能推断什么**：不能推断期刊强制模板（只是本语料的经验分布）；不能推断「缺某章 = 论文差」；标题归一化可能把自定义章节归错类。
 - **已知失效场景**：① `_CANONICAL_MAP` 覆盖不足时，未见章节以原始小写串出现，分散成大量 frequency=1 的键；② MinerU 缺 text_level 字段则整篇无章节起点、被静默跳过；③ 关键词子串顺序错会让 ablation study 落入分类之外（已在模式表中固定顺序规避）；④ 中英文标题混排时子串模式需分别覆盖。
+- **2026-09-14 映射扩展与不变性**：补充了中文正文类标题（数学建模/建模/算子/分段函数/数值实验/结果对比/案例/算例/问题描述/假设/参数说明/变量定义…）与英文 `problem description|setting(s)`、`sensitivity analysis`、`case study`、`computational results` 等。**映射变更只允许影响章节派生字段**（`section_skeleton`、`by_section`、`S-TBL-10`）；在真实语料上用"非章节派生字段指纹"验证：改前改后 `n_tokens`、`non_prose_dropped`、`block_census` 与**所有 M-* 指标值零变动**（S-TBL-10 的 4 处中文变动属设计如此）。
+- **刻意未做**：英文 `a./b.` 附录式子标题未映射为 `appendix`——那会把**附录文本移出正文流**（实测占英文语料正文+附录字符的 **10.79%**，203 块 97694 字符、影响 7/34 篇），使所有正文指标变动，必须走一次显式重登记。见 issue #17。
+- **不能推断什么（补充）**：`references`/`appendix` 这类**非正文**标签决定哪些文本被丢弃，因此**它们的中英文映射不得随手改**——改了就是改数值，必须 bump 版本并重锁基线。
 - **复算路径**：第三方直接数 `_content_list.json` 中 text_level == 2 的块，用同一 canonical 映射与模式表复算；抽检 5 篇。
 - **依据文献**：01-指标契约 M-SECSKEL-48；**Kanoksilapatham 2005** "Rhetorical structure of biochemistry research articles", *English for Specific Purposes*, DOI `10.1016/j.esp.2004.08.003`（结构描述的标准范例）；**Crookes 1986**, DOI `10.1093/applin/7.1.57`。
 
@@ -609,7 +612,8 @@ text_metrics.compute_text_metrics(text, bundle) 的返回值为 {metric_id: metr
 #### `S-TBL-10` 表格章节落位（集中度）
 
 - **公式**：`该篇表最多的那个章节的表数 / 有章节归属的表数`；单位 `ratio`。
-- **为什么用"最多章节"而不是"结果段占比"**：中文语料里有大量表落在**无法解析成 canonical 标签的子标题**下（如 `3．2 决策者偏好的影响`、`数值实验`），若只认 `experiments/results/discussion` 会**系统性低估**且低估量未知。所以值取稳健统计量，同时把 `results_share` 作为**保守下界**放进证据并标注说明。
+- **为什么用"最多章节"而不是"结果段占比"**：本指标上线时中文语料里有大量表落在**无法解析成 canonical 标签的子标题**下（如 `3．2 决策者偏好的影响`、`数值实验`），若只认 `experiments/results/discussion` 会**系统性低估**且低估量未知。所以值取稳健统计量，同时把 `results_share` 作为**保守下界**放进证据并标注说明。
+  **2026-09-14 补映射后**：中文正文类子标题（数学建模/数值实验/结果对比/案例/问题描述/参数说明…）与英文 `problem description`/`sensitivity analysis` 等已能解析，**中文语料表格落在结果类章节的池化比例由 40.0% 升至 73.3%**（英文 20.9% → 22.0%，英文剩余缺口主要是 `a./b.` 附录式子标题，见 issue #17）。因此该指标仍按"保守下界"表述——但下界的偏低程度已可量化。
 - **证据坐标**：`evidence.sections`（章节 → 表数）、`top_section`、`top_share`、`results_share`、`results_share_note`、`sample[]`（含 `section`，可回指块）。
 - **章节标签来源**：调用方传入 `block_index → canonical 标签` 映射（来自 `labelled_blocks()`）；**没有映射时给 `null` + `SECTIONS_UNAVAILABLE`**，不猜位置。
 - **不能推断什么**：集中度高只是"表集中在少数章节"，不等于该刊规定如此；章节标签无法解析时该表不计入任何章节（已在证据里可见）。
