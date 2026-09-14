@@ -169,6 +169,22 @@ uv run python paper-metrics/scripts/lexicon_calibration.py mine \
 cd ~/.claude/skills && uv run pytest paper-metrics/scripts -q
 ```
 
+## 语料登记与结果审计
+
+指标值只有在能说清"**哪份输入 + 哪版代码**"时才可审计。两个语料已登记，审计随时可跑：
+
+```bash
+cd ~/.claude/skills
+uv run python paper-metrics/scripts/audit_corpus.py --name vrp-en  --out /tmp/audit-en   # 英文基线
+uv run python paper-metrics/scripts/audit_corpus.py --name ycgl-zh --out /tmp/audit-zh   # 中文语料
+```
+
+- 登记表：`data/test-corpora.json`（机器可读）+ `references/test-corpora.md`（获取方式与已知缺陷）；
+- 审计比对三样：**corpus_id**（输入内容哈希）、**expected_metrics**（语料均值）、**recorded_with**（profiler / schema / 指标层 / 词表 release 版本与指纹）；
+- 退出码 0 = 逐项 match，1 = drift，并给出归因：`inputs_changed`（输入变了，旧结论作废）/ `code_or_word_list_changed`（语料没变，版本或词表变了，数值移动可解释）/ **`unexplained_drift`（都没变数值却变了 → 确定性被破坏，必须查）**；
+- 当前状态：英文 **22/22 match**、中文 **23/23 match**；
+- `toolchain.text_metrics_version` 记录指标层版本（此前缺失，数字无法归属版本）；非英文语料的词表 release 记录在 `toolchain.lexicon_releases[lang]`，注意 `toolchain.lexicon_version` 这个历史字段记的**是英文 release**。
+
 ## 文件
 
 ```
@@ -176,7 +192,13 @@ paper-metrics/
 ├── SKILL.md                     # 本文
 ├── scripts/                     # profile_papers / text_metrics / lexicon_loader / build_contract
 │                                # validate_draft / baseline_eval / run_pipeline / pas_spotcheck
-├── data/lexicons/v1/            # 8 个冻结词表
-├── references/metric-definitions.md
+│                                # lexicon_calibration（词表校准+效度）/ audit_corpus（语料审计）
+├── data/
+│   ├── lexicons/v1/             # 英文 8 个冻结词表（release 1.1）
+│   ├── lexicons/v2-zh/          # 中文 8 个冻结词表（release 2.1-zh，策展）
+│   └── test-corpora.json        # 测试语料登记表（审计入口）
+├── references/
+│   ├── metric-definitions.md    # 指标定义/口径/证据坐标系/不能推断什么
+│   └── test-corpora.md          # 语料获取方式、已知缺陷、复现命令
 └── .venv -> ../.venv            # A 类共享环境
 ```

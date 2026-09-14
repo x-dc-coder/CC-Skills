@@ -1,0 +1,130 @@
+{
+  "registry_version": "1.0",
+  "updated": "2026-09-14",
+  "note": "真实测试语料的登记表：每条记录一个语料的身份（corpus_id = 输入产物的内容哈希）、期望指标值、录制时的工具链版本，以及已知缺陷。审计入口：uv run python paper-metrics/scripts/audit_corpus.py --name <name>审计会重新 profile 并逐项比对；corpus_id 不同 = 输入变了（结论不可比），corpus_id 相同但数值不同 = 代码或词表变了（看 toolchain/lexicon 指纹定位）。",
+  "corpora": [
+    {
+      "name": "vrp-en",
+      "language": "en",
+      "path": "/mnt/e/AllProjects202601/M-PCA/VRP-GPU课题分析/paper-analysis",
+      "corpus_id": "a95e790e481b01e9cb6bca83a80bcf020f02929c630f3c77cf1ae1673950dfb3",
+      "n_papers": 34,
+      "skipped": 2,
+      "source": "paper-reader 用 MinerU + Marker 双引擎转换的英文 VRP 研究语料（33 篇 arXiv/期刊论文 + 综述）",
+      "purpose": [
+        "英文基线自证：baseline_eval 8/8 PASS（字节级确定性 + A-observed-only 红线）",
+        "英文逐字节零回归对照：中文化改造后 _per_paper_metrics.jsonl 必须与本记录一致"
+      ],
+      "recorded_with": {
+        "profiler_version": "2.4",
+        "schema_version": "2.4",
+        "metric_spec_version": "1.0",
+        "text_metrics_version": "1.4",
+        "lexicon_version": "1.1",
+        "lexicon_language": "en"
+      },
+      "expected_metrics": {
+        "M-SLEN-01": 26.204688,
+        "M-LSF-16": 0.117239,
+        "M-MTLD-02": 72.965438,
+        "M-HED-14": 0.005773,
+        "M-BOO-15": 0.00548,
+        "M-CONN-30": 5.971164,
+        "M-CONN-30c": 3.398045,
+        "M-CONN-30k": 0.860298,
+        "M-CONN-30r": 1.712821,
+        "M-AWR-03": 0.045025,
+        "M-PAS-09": 0.286149,
+        "M-NOM-10": 0.024609,
+        "M-TENSE-28": 0.497912,
+        "M-PCNT-25": 89.989009
+      },
+      "known_defects": [
+        "2 篇无 content_list.json，被跳过（详情见产物 corpus.skipped）",
+        "语料目录内不含源 PDF（只有 marker/ 与 mineru/ 产物）→ 无法在此语料上跑阶段 1.5 文本层探针",
+        "英文语料的 citation_style 由 marker_markdown 参与判定，缺 marker 路径时会退化"
+      ],
+      "reproduce": [
+        "cd ~/.claude/skills && uv run python paper-metrics/scripts/profile_papers.py --corpus \"<path>\" --out \"<out>\"",
+        "cd ~/.claude/skills && uv run python paper-metrics/scripts/baseline_eval.py --corpus \"<path>\" --out \"<out>\""
+      ]
+    },
+    {
+      "name": "ycgl-zh",
+      "language": "zh",
+      "path": "/mnt/e/AllProjects202601/M-PCA/_paper-metrics-run/运筹与管理/corpus_ycgl_pdf/paper-conversion",
+      "corpus_root": "/mnt/e/AllProjects202601/M-PCA/_paper-metrics-run/运筹与管理",
+      "corpus_id": "da93384bfdbef4583a32dcf4ad39104175fe9156d974a646d2fcbf2420f4d750",
+      "n_papers": 10,
+      "skipped": 1,
+      "source": "《运筹与管理》10 篇中文核心期刊（CNKI 下载 PDF → MinerU 转换）；11 篇里 1 篇无 content_list.json",
+      "purpose": [
+        "中文指标的唯一天真语料：13/14 条可测、契约区间（p25/p75）与草稿校验的基准",
+        "中文回归：M-SLEN-01 / M-LSF-16 / M-CONN-30 / M-NOM-10 等期望值见下",
+        "词表校准与效度检验（concentration / sensitivity / discrimination）的取样池"
+      ],
+      "recorded_with": {
+        "profiler_version": "2.4",
+        "schema_version": "2.4",
+        "metric_spec_version": "1.0",
+        "text_metrics_version": "1.4",
+        "lexicon_version": "1.1",
+        "lexicon_language": "zh",
+        "lexicon_release_version": "2.1-zh",
+        "lexicon_fingerprint": "cb0634e20034048ce39312931d9e818a2b7038b8f45b0757c14f376d6b82b7b6"
+      },
+      "expected_metrics": {
+        "M-SLEN-01": 54.315777,
+        "M-LSF-16": 0.139163,
+        "M-MTLD-02": 54.224568,
+        "M-HED-14": 0.002337,
+        "M-BOO-15": 0.003069,
+        "M-CONN-30": 3.85959,
+        "M-CONN-30c": 0.528143,
+        "M-CONN-30k": 2.809077,
+        "M-CONN-30r": 0.522371,
+        "M-AWR-03": 0.040208,
+        "M-PAS-09": 0.094728,
+        "M-NOM-10": 7.875584,
+        "M-PCNT-25": 153.532586
+      },
+      "null_metrics": {
+        "M-TENSE-28": "CAPABILITY_NOT_SUPPORTED（中文无时态，给数字就是编造）"
+      },
+      "units_by_metric": {
+        "M-SLEN-01": "cjk-units/sentence",
+        "M-LSF-16": "ratio",
+        "M-MTLD-02": "index（字符级：cjk-char+ascii-token，与英文词级值不可比）",
+        "M-HED-14": "ratio（分母 cjk-units）",
+        "M-BOO-15": "ratio（分母 cjk-units）",
+        "M-CONN-30/c/k/r": "per-1000-cjk-units",
+        "M-AWR-03": "ratio（分母 cjk-units）",
+        "M-PAS-09": "ratio（分母 = 句数）",
+        "M-NOM-10": "per-1000-cjk-units（variant=cjk-abstract-noun-suffix）",
+        "M-PCNT-25": "cjk-units/paragraph"
+      },
+      "known_defects": [
+        "只跑了 MinerU：各篇 _META.json 的 engines=\"mineru\"，没有 Marker 对照 → 本语料上引擎漂移（V7）是 N/A，不是\"已测量\"",
+        "CNKI 数字/标点静默丢失 73%–90%（10/11 篇，textlayer_probe 实测；MinerU issue #5330 至今 open）",
+        "英文段空格丢失：canonical 侧 58 条 15+ 字母长串，PDF 侧 0 条 → 是转换引入的（8 篇命中）",
+        "corpus_ycgl/ 是空目录：实际语料在 corpus_ycgl_pdf/paper-conversion/，两层之间的映射见 corpus_ycgl_pdf/paper-merged/*/_META.json",
+        "1 篇（考虑渔业生产区布局…）无 content_list.json → 只能作为转换失败样本",
+        "_draft_validation*.json 与 _writing_contract.cn.yaml 是历史产物，口径早于 2026-09-13 的中文化改造，不可当基线"
+      ],
+      "reproduce": [
+        "cd ~/.claude/skills && uv run python paper-metrics/scripts/profile_papers.py --corpus \"<path>\" --out \"<out>\"",
+        "cd ~/.claude/skills && uv run python paper-metrics/scripts/build_contract.py --summary \"<out>/_corpus_summary.json\" --out \"<out>/_writing_contract.zh.yaml\"",
+        "cd ~/.claude/skills && uv run python paper-metrics/scripts/validate_draft.py --contract \"<out>/_writing_contract.zh.yaml\" --draft \"<draft.md>\"",
+        "cd ~/.claude/skills && uv run python paper-metrics/scripts/lexicon_calibration.py validate --corpus \"<path>\" --out \"<out>\" --lexicon hedge"
+      ]
+    }
+  ],
+  "draft_samples": [
+    {
+      "name": "zh-draft-real",
+      "path": "/tmp/zh_draft_real.md（易失，按下面配方重建）",
+      "recipe": "取 ycgl-zh 语料中排序第一的论文，canonical_text() 的前 6000 字，按空行分段后用空行连接",
+      "purpose": "验证 validate_draft 在真实中文正文上的行为（pass/warn/skip 分布与证据行号）"
+    }
+  ]
+}

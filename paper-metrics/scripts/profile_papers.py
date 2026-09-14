@@ -53,9 +53,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 # Algorithm version — bump when metric *semantics* change.
-PROFILER_VERSION = "2.3"  # 2.3: per-language lexicon bundles + cjk paragraph caliber (issue #13)
+PROFILER_VERSION = "2.4"  # 2.4: toolchain records the metric-layer version (auditability)
 # Output contract version — bump when the JSON *schema* changes.
-SCHEMA_VERSION = "2.3"  # 2.3: per-language lexicon releases + zh calibers (issue #13)
+SCHEMA_VERSION = "2.4"  # 2.4: + toolchain.text_metrics_version
 # Version of the written metric definitions (references/metric-definitions.md).
 METRIC_SPEC_VERSION = "1.0"
 
@@ -1051,7 +1051,8 @@ def _bundle_for(bundles: dict, language: str | None):
 
 
 def _toolchain(bundle, bundles_used: tuple[str, ...] = ("en",),
-               releases: dict | None = None) -> dict:
+               releases: dict | None = None,
+               text_metrics_version: str | None = None) -> dict:
     """Versions that a third party needs in order to reproduce a number."""
     toolchain = {
         "python": platform.python_version(),
@@ -1060,6 +1061,10 @@ def _toolchain(bundle, bundles_used: tuple[str, ...] = ("en",),
         "profiler_version": PROFILER_VERSION,
         "schema_version": SCHEMA_VERSION,
         "metric_spec_version": METRIC_SPEC_VERSION,
+        # Which metric layer produced these numbers. Without it a result cannot
+        # be attributed to a version, which is exactly what an audit needs
+        # (see data/test-corpora.json).
+        "text_metrics_version": text_metrics_version,
         # Text is normalised to NFC before any counting (see Paper.canonical_text).
         "unicode_norm": "NFC",
         "lexicon_version": bundle.version,
@@ -1625,7 +1630,8 @@ def run_profile(corpus_dir: Path, out_dir: Path,
         "schema_version": SCHEMA_VERSION,
         "metric_spec_version": METRIC_SPEC_VERSION,
         "toolchain": _toolchain(bundles["en"], tuple(sorted(releases_used)) or ("en",),
-                                bundles),
+                                bundles,
+                                getattr(text_metrics_mod, "TEXT_METRICS_VERSION", None)),
         "meta": {
             "profiler_version": PROFILER_VERSION,
             "schema_version": SCHEMA_VERSION,
