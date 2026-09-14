@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -29,7 +30,10 @@ from typing import Final, NoReturn
 # ---------------------------------------------------------------------------
 
 JsonScalar = str | int | float | bool | None
-JsonValue = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
+#: Covariant containers on purpose: a nested literal like {"figures": [1]} must be
+#: assignable where JsonValue is expected, and list/dict are invariant in their
+#: parameter while Sequence/Mapping are not.
+JsonValue = JsonScalar | Sequence["JsonValue"] | Mapping[str, "JsonValue"]
 
 
 class DocumentParseError(Exception):
