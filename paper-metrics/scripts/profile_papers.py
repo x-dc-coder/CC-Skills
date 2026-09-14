@@ -1468,110 +1468,35 @@ _BASE_ARTIFACT = {
              "are censused but are never merged into the prose text"),
 }
 
-#: Which stream a block type belongs to.  Anything unknown lands in "other",
-#: which is reported rather than silently dropped.
-_STREAM_OF_TYPE = {
-    "text": "prose",
-    "table": "tables",
-    "equation": "equations",
-    "image": "figures",
-    "chart": "figures",
-    "list": "lists",
-    "page_footnote": "footnotes",
-    "header": "running_heads",
-    "footer": "running_heads",
-    "page_number": "page_numbers",
-    "aside_text": "asides",
-    "code": "code",
-}
+# The per-stream rules (which field holds the text, how table markup and LaTeX
+# are normalised) live in doc_model.py: one parser for the base artifact, typed
+# records for every consumer.  A second copy here is how the census once counted
+# lists as "0 characters" - the field name differs per block type, and a local copy
+# of the mapping is exactly what drifts.
 
-_HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.S)
-_HTML_TAG_RE = re.compile(r"<[^>]+>")
-_HTML_CELL_BREAK_RE = re.compile(r"</(?:td|th|tr)>|<br\s*/?>", re.I)
-_HTML_ENTITY_RE = re.compile(r"&(#x?[0-9a-fA-F]+|[a-zA-Z]+);")
-_LATEX_CMD_RE = re.compile(r"\\[A-Za-z]+")
-_LATEX_NOISE_RE = re.compile(r"[\u0024{}\\]")
-_DIGIT_RE = re.compile("\u005b0-9\uFF10-\uFF19\u005d")
-
-_ENTITY_MAP = {"amp": "&", "lt": "<", "gt": ">", "quot": '"', "apos": "'",
-               "nbsp": " "}
-
-
-def _decode_entity(match: re.Match) -> str:
-    body = match.group(1)
-    try:
-        if body[:2].lower() == "#x":
-            return chr(int(body[2:], 16))
-        if body[0] == "#":
-            return chr(int(body[1:]))
-    except (ValueError, IndexError):
-        return match.group(0)
-    return _ENTITY_MAP.get(body.lower(), match.group(0))
-
-
-def html_to_text(raw: str) -> str:
-    """Cell text of a MinerU table_body with the markup taken out.
-
-    This has to exist before any table metric: on the real corpus the raw HTML is
-    51.8% markup by character count, and its attributes carry ~2600 "digits" that
-    are not content at all (colspan, widths, style numbers).
-    """
-    text = _HTML_COMMENT_RE.sub(" ", raw or "")
-    text = _HTML_CELL_BREAK_RE.sub(" ", text)
-    text = _HTML_TAG_RE.sub(" ", text)
-    text = _HTML_ENTITY_RE.sub(_decode_entity, text)
-    return re.sub(r"\s+", " ", text).strip()
-
-
-def latex_to_text(raw: str) -> str:
-    """LaTeX with its scaffolding removed; variables and digits survive."""
-    text = _LATEX_CMD_RE.sub(" ", raw or "")
-    text = _LATEX_NOISE_RE.sub(" ", text)
-    return re.sub(r"\s+", " ", text).strip()
 
 
 def block_census(paper: "Paper") -> dict:
     """Per-stream census of one paper's canonical input.
 
-    Counts are taken on the NORMALISED text (markup stripped for tables, commands
-    stripped for equations), because that is what a metric would actually read.
-    raw_chars is kept next to chars so the markup share stays visible.
+    doc_model owns the parsing and the per-stream rules; this function only turns
+    the typed census into the JSON shape the products carry.  Streams the metrics
+    do not read are declared as such instead of being silently absent.
     """
-    streams: dict[str, dict] = {}
-    for block in paper.load_blocks():
-        bucket = _STREAM_OF_TYPE.get(str(block.get("type") or ""), "other")
-        rec = streams.setdefault(bucket, {"blocks": 0, "chars": 0, "digits": 0,
-                                          "raw_chars": 0, "caption_chars": 0,
-                                          "caption_digits": 0})
-        rec["blocks"] += 1
-        if bucket == "tables":
-            raw = str(block.get("table_body") or "")
-            plain = html_to_text(raw)
-        elif bucket == "equations":
-            raw = str(block.get("text") or "")
-            plain = latex_to_text(raw)
-        elif bucket == "lists":
-            items = block.get("list_items")
-            raw = plain = (" ".join(str(i) for i in items)
-                           if isinstance(items, list) else "")
-        else:
-            raw = plain = str(block.get("text") or "")
-        rec["raw_chars"] += len(raw)
-        rec["chars"] += len(plain)
-        rec["digits"] += len(_DIGIT_RE.findall(plain))
-        # Every *_caption key counts: the real corpus uses four of them
-        # (image_/table_/chart_/code_caption, 1056 blocks on 21 papers), so a
-        # fixed pair of names would silently drop most captions.
-        captions = " ".join(
-            str(item) for key, value in block.items() if key.endswith("_caption")
-            for item in (value if isinstance(value, list) else [value]) if item)
-        rec["caption_chars"] += len(captions)
-        rec["caption_digits"] += len(_DIGIT_RE.findall(captions))
-    for rec in streams.values():
-        rec["dropped_by_metrics"] = True
-    if "prose" in streams:
-        streams["prose"]["dropped_by_metrics"] = False
-    return {key: streams[key] for key in sorted(streams)}
+    doc_model = _import_sibling("doc_model")
+    model = doc_model.parse_document(paper.content_list_path)
+    return {
+        stream.value: {
+            "blocks": census.blocks,
+            "chars": census.chars,
+            "digits": census.digits,
+            "raw_chars": census.raw_chars,
+            "caption_chars": census.caption_chars,
+            "caption_digits": census.caption_digits,
+            "dropped_by_metrics": census.dropped_by_metrics,
+        }
+        for stream, census in model.census().items()
+    }
 
 
 def _census_totals(records: list[dict]) -> dict:

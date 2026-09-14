@@ -499,28 +499,6 @@ def test_one_mismatch_names_only_the_mismatching_paper(tmp_path: Path) -> None:
     assert "Paper 0" not in hits[0]["detail"], "an agreeing paper must never be named"
 
 
-def test_html_to_text_strips_markup_and_attribute_digits() -> None:
-    """Table markup must not become content: on the real corpus it is 51.8% of the
-    raw characters and its attributes carry thousands of digits that are not data."""
-    html = ('<table><tr><td colspan="3">12.73</td>'
-            '<td style="width:5%">0.982</td></tr>'
-            "<tr><td>A&amp;B</td><td>&#39;q&#39;</td><td>x</td><td>y</td></tr></table>")
-    text = pp.html_to_text(html)
-    assert "12.73" in text and "0.982" in text
-    assert "A&B" in text and "'q'" in text
-    # the attribute digits (colspan="3", width:5%) must not survive
-    digits = len(pp._DIGIT_RE.findall(text))
-    assert digits == 8, f"attribute digits leaked into the text: {text!r}"
-    assert "<" not in text and ">" not in text
-
-
-def test_latex_to_text_keeps_variables_and_digits() -> None:
-    """Only the scaffolding goes: variables and digits are the content."""
-    text = pp.latex_to_text("$$ \\frac{12}{34} \\alpha x $$")
-    assert len(pp._DIGIT_RE.findall(text)) == 4
-    assert "frac" not in text and "alpha" not in text
-    assert "x" in text
-
 
 def test_block_census_separates_streams_and_flags_dropped(tmp_path: Path) -> None:
     """One census per stream; nothing is merged, and 'ignored' is a stated fact."""
