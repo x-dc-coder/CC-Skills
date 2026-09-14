@@ -900,6 +900,43 @@ def test_aggregate_flags_unsupported_and_undetermined_language() -> None:
     assert en["metrics"]["M-SLEN-01"]["n_valid"] == 1
 
 
+def test_mixed_units_null_the_corpus_mean_instead_of_averaging_scales() -> None:
+    """S-TBL-09 is per-1000-words in English and per-1000-cjk-units in Chinese.  A corpus
+    mixing both would average two different scales, so the mean must go null with a named
+    warning and the units must be listed (issue #18-7, Gemini review NOTE).  Only measured
+    records count: a not-measured record's placeholder unit is not a second scale."""
+    def _rec(key: str, unit: str, value, warning: str | None = None):
+        return {
+            "paper_key": key, "inputs": [], "sections": [], "n_tokens": 10,
+            "language": "en", "cjk_ratio": 0.0, "language_supported": True,
+            "section_metrics": {}, "upstream": {}, "warnings": [],
+            "metrics": {"S-TBL-09": {
+                "value": value, "n": 1, "denominator": 1000,
+                "unit": unit, "state": "OBSERVED", "method": "rule",
+                "metric_spec": "S-TBL-09",
+                "evidence": {"count": 1, "sample": []},
+                "warnings": [warning] if warning else []}},
+        }
+
+    mixed = pp.aggregate_corpus([
+        _rec("en", "per-1000-words", 1.2),
+        _rec("zh", "per-1000-cjk-units", 0.6),
+    ], "cid")
+    row = mixed["metrics"]["S-TBL-09"]
+    assert row["mean"] is None
+    assert row["units_measured"] == ["per-1000-cjk-units", "per-1000-words"]
+    assert "MIXED_UNIT_AGGREGATION" in row["warnings"]
+
+    uniform = pp.aggregate_corpus([
+        _rec("en1", "per-1000-words", 1.2),
+        _rec("en2", "per-1000-words", 1.4),
+        _rec("en3", "per-1000-words-or-cjk-units", None, "NO_PROSE_UNITS"),
+    ], "cid")
+    row = uniform["metrics"]["S-TBL-09"]
+    assert row["mean"] == pytest.approx(1.3)
+    assert "MIXED_UNIT_AGGREGATION" not in row["warnings"]
+
+
 def test_chinese_paragraph_stats_use_the_cjk_caliber(tmp_path: Path) -> None:
     """M-PCNT-25 for Chinese counts cjk-units, not whitespace chunks.
 
