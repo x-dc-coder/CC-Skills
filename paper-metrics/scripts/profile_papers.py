@@ -1626,12 +1626,12 @@ def aggregate_corpus(records: list[dict], corpus_id: str | None = None) -> dict:
     }
     for kind, code, why in (
             ("mismatch", "LANGUAGE_METADATA_MISMATCH",
-             "differs from the language detected here; the two layers read different "
-             "artifacts, so the labels are allowed to differ - but a consumer must not "
-             "treat them as interchangeable"),
+             ("differs from the language detected here; the two layers read different "
+              "artifacts, so the labels are allowed to differ - but a consumer must "
+              "not treat them as interchangeable")),
             ("detect_missing", "LANGUAGE_DETECT_MISSING",
-             "could not be detected here at all; a missing measurement is not "
-             "agreement")):
+             ("could not be detected here at all; a missing measurement is not "
+              "agreement"))):
         # No default kind.  A record without the key made no claim at all, and
         # defaulting it to "mismatch" (the earlier bug) made every AGREEING corpus
         # report every one of its papers as a mismatch - a deterministic false
