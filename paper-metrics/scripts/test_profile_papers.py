@@ -524,7 +524,7 @@ def test_block_census_separates_streams_and_flags_dropped(tmp_path: Path) -> Non
 
     assert census["prose"]["blocks"] == 1
     assert census["prose"]["dropped_by_metrics"] is False
-    assert census["tables"]["dropped_by_metrics"] is True
+    assert census["tables"]["dropped_by_metrics"] is False   # S-TBL-* read tables
     assert census["tables"]["digits"] == 8, "cell digits only, never attributes"
     assert census["tables"]["raw_chars"] > census["tables"]["chars"]
     assert census["tables"]["caption_chars"] > 0
@@ -538,7 +538,8 @@ def test_block_census_separates_streams_and_flags_dropped(tmp_path: Path) -> Non
     assert census["figures"]["caption_digits"] == 1
     assert census["footnotes"]["digits"] == 8
     # every stream except prose is declared as not read by the metrics
-    assert [k for k, v in census.items() if not v["dropped_by_metrics"]] == ["prose"]
+    assert [k for k, v in census.items() if not v["dropped_by_metrics"]] == [
+        "figures", "prose", "tables"]
 
 
 def test_base_artifact_and_metric_scopes_are_declared(synthetic_corpus: Path,
@@ -782,7 +783,13 @@ def test_corpus_summary_flags_small_n(synthetic_corpus: Path, tmp_path: Path) ->
     assert summary["corpus_warnings"], "3-paper corpus must raise N_LT_5"
     assert {w["code"] for w in summary["corpus_warnings"]} >= {"N_LT_5"}
     for mid, m in summary["metrics"].items():
-        assert "N_LT_5" in m["warnings"], mid
+        codes = set(m.get("warnings") or ())
+        if any(pp._is_missingness_cause(code) for code in codes):
+            # Structurally unmeasurable on this corpus (this fixture has no
+            # bibliography), so the cause is the actionable signal, not a sample-size
+            # flag.  Demanding N_LT_5 here would hide the reason behind noise.
+            continue
+        assert "N_LT_5" in codes, mid
 
 
 def test_metrics_carry_the_full_evidence_contract(synthetic_corpus: Path,
@@ -914,8 +921,14 @@ def test_chinese_paragraph_stats_use_the_cjk_caliber(tmp_path: Path) -> None:
     out = tmp_path / "out"
     pp.run_profile(corpus, out)
     summary = json.loads((out / "_corpus_summary.json").read_text(encoding="utf-8"))
-    assert summary["language_supported"] is False
-    assert "CORPUS_LANGUAGE_UNSUPPORTED" in {w["code"] for w in summary["corpus_warnings"]}
+    # 2026-09-14 cross-review (B1): this used to assert the OPPOSITE and locked an
+    # artifact that contradicted itself - the same summary declared Chinese
+    # "unsupported, metrics reported as null" while measuring most of them.  Chinese
+    # is a language this layer has rules for (text_metrics.SUPPORTED_LANGUAGES); the
+    # per-metric gaps are the capability matrix's job, not a corpus-level claim.
+    assert summary["language_supported"] is True
+    assert "CORPUS_LANGUAGE_UNSUPPORTED" not in {
+        w["code"] for w in summary["corpus_warnings"]}
     # Issue #13 changed the shape of this guarantee: Chinese now measures the
     # subset whose rules need no lexicon, so the small-n trio may legitimately
     # appear for a *measured* metric. What must never happen is an unmeasurable
@@ -928,7 +941,10 @@ def test_chinese_paragraph_stats_use_the_cjk_caliber(tmp_path: Path) -> None:
     for mid, m in unmeasured.items():
         codes = set(m.get("warnings") or [])
         assert not (codes & {"NO_VALID_VALUES", "N_LT_5", "N_VALID_LT_3"}), (mid, codes)
-        assert codes & {"LANGUAGE_NOT_SUPPORTED", "CAPABILITY_NOT_SUPPORTED"}, (mid, codes)
+        # An unmeasured metric must name WHY it is unmeasured: the language /
+        # capability layer, or a structural cause (this fixture has no
+        # bibliography, so M-REFAGE-53 is null for NO_REFERENCE_ENTRIES).
+        assert any(pp._is_missingness_cause(code) for code in codes), (mid, codes)
     rec = json.loads((out / "_per_paper_metrics.jsonl").read_text(encoding="utf-8").splitlines()[0])
     pm = rec["metrics"]["M-PCNT-25"]
     assert pm["unit"] == "cjk-units/paragraph"
@@ -1231,3 +1247,26 @@ def test_reference_metrics_evidence_is_traceable(tmp_path: Path) -> None:
         assert isinstance(sample["block_index"], int)
         assert sample["field"] in {"text", "list_items"}
         assert sample["excerpt"] and sample["entry"]
+
+
+def test_census_metric_streams_match_the_metrics_layer() -> None:
+    """The census states which streams NO metric reads.  That statement drifted the day
+    the S-* table/figure metrics shipped (it kept claiming tables and figures were
+    unread and the md report printed it).  Locked against the metrics layer's own
+    scope table so a new metric cannot silently falsify it again."""
+    doc_model = pp._import_sibling("doc_model")
+    stream_metrics = pp._import_sibling("stream_metrics")
+    valid = {stream.value for stream in doc_model.Stream}
+    declared = {doc_model.Stream(name)
+                for scope in stream_metrics._SCOPE_OF_METRIC.values()
+                for name in scope if name in valid}
+    assert doc_model._METRIC_STREAMS == declared, (doc_model._METRIC_STREAMS, declared)
+
+
+def test_supported_metric_languages_mirror_the_metrics_module() -> None:
+    """profile_papers keeps its own copy of the supported languages and the comment on
+    it claims a test locks the two together.  It said ("en",) for a while after the
+    metrics module already declared ("en", "zh") and measured Chinese - which is how a
+    Chinese corpus shipped "unsupported, all metrics null" (cross-review B1)."""
+    text_metrics = pp._import_sibling("text_metrics")
+    assert tuple(pp.SUPPORTED_METRIC_LANGUAGES) == tuple(text_metrics.SUPPORTED_LANGUAGES)

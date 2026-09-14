@@ -1011,10 +1011,10 @@ def _reference_entry_sources(paper: Paper) -> list[dict]:
     third in a block would never match.  The parsed entry travels beside it as "entry".
     """
     out: list[dict] = []
-    for block_index, field, chunk in _reference_chunks_with_source(paper):
+    for block_index, field_name, chunk in _reference_chunks_with_source(paper):
         prefix = chunk[:80]
         for entry in _split_reference_entries([chunk]):
-            out.append({"block_index": block_index, "field": field,
+            out.append({"block_index": block_index, "field": field_name,
                         "excerpt": prefix, "entry": entry})
     return out
 
@@ -1566,23 +1566,49 @@ def _aggregate_metric(per_paper_values: dict[str, float], unit: str,
     }
 
 
-# Languages whose text metrics this layer can actually compute. Anything else
-# must be reported as "not measured", never as 0 (see the project issues: a
-# Chinese corpus silently produced all-zero metrics before this guard existed).
-SUPPORTED_METRIC_LANGUAGES = ("en",)
+# Languages this layer has validated rules for.  MUST mirror
+# text_metrics.SUPPORTED_LANGUAGES (the single source of truth); a test asserts the
+# two agree so this cannot drift again.  Until 2026-09-14 it said ("en",) while the
+# metrics module already declared ("en", "zh") and measured Chinese - which is how a
+# Chinese corpus ended up shipping "unsupported, all metrics null" next to real
+# numbers (cross-review B1).
+SUPPORTED_METRIC_LANGUAGES = ("en", "zh")
+
+
+#: Sample-size noise, not a reason.  A metric can be null because the corpus is
+#: small (these codes) or because the artifact genuinely has nothing to measure
+#: (the cause codes below) - and only the second kind should be shown to a reader.
+_MISSINGNESS_SMALL_N = frozenset({"NO_VALID_VALUES", "N_LT_5", "N_VALID_LT_3"})
+
+
+def _is_missingness_cause(code: str) -> bool:
+    """Does this warning code EXPLAIN why a metric has no value?
+
+    A rule, not a hand-maintained list: every previous list missed a member the day
+    a new metric introduced one (NO_FIGURES_OR_TABLES was the last miss), which is
+    how small-n noise kept drowning the real cause.  NO_* / *_NOT_SUPPORTED are the
+    naming conventions for "nothing to measure here"; the small-n trio is excluded
+    because it is noise, and METRIC_SCOPE_MISSING names a declaration gap.
+    """
+    if code in _MISSINGNESS_SMALL_N:
+        return False
+    return (code.startswith("NO_") or code.endswith("_NOT_SUPPORTED")
+            or code in {"CANONICAL_UNPARSEABLE", "SECTIONS_UNAVAILABLE",
+                        "METRIC_SCOPE_MISSING"})
 
 
 def _suppress_language_dependent_paragraph_stats(metrics: dict) -> None:
-    """Apply the language guard to M-PCNT-25, which is computed here (from block
-    structure) rather than by text_metrics, so it has to be guarded explicitly.
+    """Language guard for M-PCNT-25 when its rules do NOT cover the language.
 
-    Everything is suppressed, including the count. The count is NOT
-    language-independent in practice either: the paragraph filter is
-    "len(text.split()) >= 15", and CJK paragraphs often carry no whitespace at
-    all, so real Chinese paragraphs get filtered out (measured: a Chinese corpus
-    reported ~62 "words"/paragraph for the ones that survived, and dropped the
-    rest). A proper CJK paragraph metric is part of the Chinese-support work
-    (issue #10); until then this layer reports "not measured".
+    Still needed for languages outside SUPPORTED_METRIC_LANGUAGES, and it keeps the
+    "suppress everything, including the count" behaviour: the paragraph filter is
+    "len(text.split()) >= 15", which silently drops CJK paragraphs, so a
+    whitespace-based count is not meaningful there either.
+
+    NOTE (2026-09-14, cross-review M8): this docstring used to say Chinese was
+    suppressed outright.  Since issue #13 the Chinese paragraph caliber is measured
+    (cjk-units/paragraph) and this function is not reached for zh; the text above
+    describes the remaining, genuinely unsupported languages.
     """
     pm = metrics.get("M-PCNT-25")
     if not isinstance(pm, dict):
@@ -1606,14 +1632,33 @@ def _language_facts(text_metrics_mod, text: str, metrics: dict) -> dict:
     corpus it would let an artifact declare "language verified" while the
     numbers in it are all zeros.
     """
+    declared = tuple(str(item) for item in
+                     (getattr(text_metrics_mod, "SUPPORTED_LANGUAGES", None) or ()))
     detect = getattr(text_metrics_mod, "detect_language", None)
     if callable(detect):
         info = detect(text) or {}
-        supported = info.get("supported")
+        language = str(info.get("language", "unknown"))
+        detector_flag = info.get("supported")
+        if language == "unknown":
+            # Not assessed is never True: an artifact must not claim "language
+            # verified" when the detector could not decide.
+            supported = None
+        elif declared:
+            # "Does this layer have rules for that language?" - the same question
+            # validate_draft asks through _rule_languages().
+            supported = language in declared
+        else:
+            supported = None if detector_flag is None else bool(detector_flag)
         return {
-            "language": info.get("language", "unknown"),
+            "language": language,
             "cjk_ratio": info.get("cjk_ratio", 0.0),
-            "language_supported": None if supported is None else bool(supported),
+            "language_supported": supported,
+            # The detector's own flag is the Round-A "is the text predominantly
+            # English" contract, NOT a capability verdict.  Kept for audit under a
+            # name that says what it is, because conflating the two is exactly how
+            # the false "Chinese unsupported" statement was produced.
+            "detector_english_contract": (None if detector_flag is None
+                                          else bool(detector_flag)),
         }
     for m in metrics.values():
         if isinstance(m, dict) and "language" in m:
@@ -1766,6 +1811,12 @@ def aggregate_corpus(records: list[dict], corpus_id: str | None = None) -> dict:
     # and loses whether the cause was the language or a metric-specific
     # capability gap (issue #13).
     metric_record_codes: dict[str, set[str]] = defaultdict(set)
+    # How many papers raised each warning code, per metric.  The corpus summary used
+    # to keep only NO_VALID_VALUES / N_LT_5 / N_VALID_LT_3, which answered "how many
+    # were measured" but not "why not" (cross-review: an unmeasured M-REFAGE-53 said
+    # nothing about NO_REFERENCE_ENTRIES).  Cause codes travel in the same dict the
+    # consumer already reads, so the question is answered where it is asked.
+    record_warning_counts: dict[str, Counter] = defaultdict(Counter)
     for mid in sorted(metric_ids):
         per_paper: dict[str, float] = {}
         unit = ""
@@ -1778,12 +1829,23 @@ def aggregate_corpus(records: list[dict], corpus_id: str | None = None) -> dict:
                 continue
             per_paper[r["paper_key"]] = m.get("value")
             metric_record_codes[mid].update(m.get("warnings") or ())
+            for code in (m.get("warnings") or ()):
+                record_warning_counts[mid][str(code)] += 1
             unit = unit or m.get("unit", "")
             scope_seen.update(m.get("scope") or ())
             for section, smap in (r.get("section_metrics") or {}).items():
                 if smap.get(mid) is not None:
                     section_values[section].append(float(smap[mid]))
         summary = _aggregate_metric(per_paper, unit, section_values)
+        causes = record_warning_counts.get(mid)
+        if causes:
+            summary["record_warning_counts"] = dict(sorted(causes.items()))
+            if not summary.get("n_valid"):
+                # Nothing was measured: name every cause that any paper reported,
+                # otherwise the summary only says "no valid values" and the real
+                # reason stays buried in the per-paper records.
+                summary["warnings"] = sorted(set(summary.get("warnings") or ())
+                                             | set(causes))
         # Scope travels with the metric: a table metric that reached the corpus
         # summary labelled "prose" would be the very confusion this field prevents.
         # Records written before the field existed fall back to the corpus default
@@ -1898,31 +1960,41 @@ def aggregate_corpus(records: list[dict], corpus_id: str | None = None) -> dict:
                        f"(language layer unavailable or text undecidable); "
                        f"language_supported is null meaning \"not assessed\", not \"supported\"."),
         })
+    _small_n_codes = _MISSINGNESS_SMALL_N
     if language_supported is False:
         # Every text metric is null for the same reason, so 13x NO_VALID_VALUES +
         # 13x N_LT_5 + 13x N_VALID_LT_3 is pure noise that hides the real cause.
         # Collapse them into the single, actionable LANGUAGE_NOT_SUPPORTED code.
-        _small_n_codes = {"NO_VALID_VALUES", "N_LT_5", "N_VALID_LT_3"}
         # CAPABILITY_NOT_SUPPORTED (issue #13) is the per-metric sibling of
         # LANGUAGE_NOT_SUPPORTED: a Chinese corpus now measures the subset whose
         # rules are language-independent and reports the rest as unmeasurable, so
         # both codes have to count as "explained" before the small-n noise is
         # collapsed away.
-        _explained_codes = {"LANGUAGE_NOT_SUPPORTED", "CAPABILITY_NOT_SUPPORTED"}
-        for mid, msum in metrics.items():
-            codes = set(msum.get("warnings") or [])
-            if msum.get("n_valid") == 0 and codes and codes <= _small_n_codes | _explained_codes:
-                explanation = (metric_record_codes.get(mid, set()) & _explained_codes) \
-                    or {"LANGUAGE_NOT_SUPPORTED"}
-                msum["warnings"] = sorted((codes - _small_n_codes) | explanation)
-        corpus_warnings = [w for w in corpus_warnings if w["code"] not in _small_n_codes]
+        corpus_warnings = [w for w in corpus_warnings
+                           if w["code"] not in _small_n_codes]
+    # A per-metric cause survives wherever it exists, not only when the whole corpus
+    # language is unsupported: a metric can be null for its own reason (no
+    # bibliography, no tables, no figures), and NO_VALID_VALUES + N_LT_5 +
+    # N_VALID_LT_3 would then be the only thing a consumer sees.  Cross-review found
+    # exactly this: an unmeasured M-REFAGE-53 never mentioned NO_REFERENCE_ENTRIES.
+    for mid, msum in metrics.items():
+        if msum.get("n_valid"):
+            continue
+        codes = set(msum.get("warnings") or ())
+        causes = {code for code in metric_record_codes.get(mid, set())
+                  if _is_missingness_cause(code)}
+        if not causes:
+            continue
+        msum["warnings"] = sorted((codes - _small_n_codes) | causes)
     if unsupported:
         corpus_warnings.append({
             "code": "CORPUS_LANGUAGE_UNSUPPORTED", "metric": "",
-            "detail": (f"{unsupported}/{n_papers} paper(s) are outside the supported "
-                       f"metric languages {list(SUPPORTED_METRIC_LANGUAGES)}; their metrics are "
-                       f"reported as null and counted as missing, never as 0. "
-                       f"Chinese support is tracked in issue #10."),
+            "detail": (f"{unsupported}/{n_papers} paper(s) are in a language this "
+                       f"layer has no validated rules for "
+                       f"{list(SUPPORTED_METRIC_LANGUAGES)}; the metrics that need "
+                       f"those rules are reported as null and counted as missing, "
+                       f"never as 0. Language-independent metrics may still carry "
+                       f"values - check their warnings per metric."),
         })
     # How much text was kept out of the canonical body, and why (issue: 前置页
     # 混入正文). Aggregated over papers so the filtering rule is auditable.

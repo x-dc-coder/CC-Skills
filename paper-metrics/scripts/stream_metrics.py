@@ -214,6 +214,11 @@ def numbering_consistency(model: dm.DocumentModel) -> dict[str, dm.JsonValue]:
         extra += len(numbers) - len(seen)
     total = sum(len(numbers) for numbers in declared.values())
     warnings: list[str] = []
+    if not total:
+        # No captions carry a number at all.  Without this code the metric is simply
+        # "null" and the reader cannot tell "nothing to number" from "not measured"
+        # (cross-review M6); the corpus-level small-n noise is not a reason.
+        warnings.append("NO_DECLARED_NUMBERS")
     if any(gaps.values()):
         warnings.append("NUMBER_GAPS")
     if any(duplicates.values()):
@@ -256,6 +261,10 @@ def reference_consistency(model: dm.DocumentModel) -> dict[str, dm.JsonValue]:
     denominator = (sum(len(v) for v in declared.values())
                    + sum(len(v) for v in referenced.values()))
     warnings: list[str] = []
+    if not denominator:
+        # Neither a declared number nor a reference was found: say so instead of
+        # leaving the metric null with no cause (same contract as NO_DECLARED_NUMBERS).
+        warnings.append("NO_DECLARED_NUMBERS")
     if any(dangling.values()):
         warnings.append("DANGLING_REFERENCES")
     if any(uncited.values()):

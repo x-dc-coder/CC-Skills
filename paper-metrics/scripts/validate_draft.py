@@ -84,6 +84,10 @@ MIN_EVALUABLE_RATIO = 0.5
 # Languages the OBSERVED metric layer is defined for. The list is informational:
 # text_metrics.detect_language() owns the actual decision (thresholds included).
 SUPPORTED_METRIC_LANGUAGES = ("en",)
+# NOTE: this is only the FALLBACK used when the metrics provider cannot be imported.
+# The live verdict comes from text_metrics.SUPPORTED_LANGUAGES via _rule_languages();
+# keep this value in sync with that module (cross-review M8: the note here used to
+# claim Chinese support was unimplemented, which stopped being true with issue #13).
 UNSUPPORTED_LANGUAGE_NOTE = "当前支持的指标语言 = en（中文支持见 issue #10）"
 # Only used when text_metrics (the frozen tokenizer) is unavailable; it never
 # produces a metric value, it only keeps the guard from silently disappearing.

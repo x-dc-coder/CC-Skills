@@ -83,9 +83,14 @@ _STREAM_OF_TYPE: Final[dict[str, Stream]] = {
     "code": Stream.CODE,
 }
 
-#: The only stream the frozen metrics read.  Everything else is censused and
-#: declared as unread, so "we never looked at the tables" is a stated fact.
-_METRIC_STREAMS: Final[frozenset[Stream]] = frozenset({Stream.PROSE})
+#: Streams the metrics layer reads.  Everything else is censused and declared as
+#: unread, so "we never looked at the equations" is a stated fact - and it has to stay
+#: true: this set still said {PROSE} after the S-* table/figure metrics shipped, so the
+#: human-readable report told readers that tables and figures were unread while
+#: S-TBL-* and S-SIZ-04 read exactly those streams (2026-09-14 cross-review).  A test
+#: locks it against stream_metrics._SCOPE_OF_METRIC, the metrics layer's own table.
+_METRIC_STREAMS: Final[frozenset[Stream]] = frozenset({Stream.PROSE, Stream.FIGURES,
+                                                       Stream.TABLES})
 
 _HTML_COMMENT_RE: Final = re.compile(r"<!--.*?-->", re.DOTALL)
 _HTML_TAG_RE: Final = re.compile(r"<[^>]+>")

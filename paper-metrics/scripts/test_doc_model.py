@@ -107,7 +107,9 @@ def test_census_counts_each_stream_separately(tmp_path: Path) -> None:
 
     assert census[dm.Stream.PROSE].blocks == 1
     assert census[dm.Stream.PROSE].dropped_by_metrics is False
-    assert census[dm.Stream.TABLES].dropped_by_metrics is True
+    # S-TBL-* read the tables stream (cross-review H2) - this used to assert True,
+    # which made the product claim it never looked at them.
+    assert census[dm.Stream.TABLES].dropped_by_metrics is False
     assert census[dm.Stream.TABLES].digits == 8, "cell digits only, never attributes"
     assert census[dm.Stream.TABLES].raw_chars > census[dm.Stream.TABLES].chars
     assert census[dm.Stream.TABLES].caption_digits == 5   # "Table 1" + "Results 2026"
@@ -116,7 +118,8 @@ def test_census_counts_each_stream_separately(tmp_path: Path) -> None:
     assert census[dm.Stream.LISTS].digits == 4
     assert census[dm.Stream.FIGURES].caption_digits == 1
     assert census[dm.Stream.FOOTNOTES].digits == 8
-    assert [s for s, c in census.items() if not c.dropped_by_metrics] == [dm.Stream.PROSE]
+    assert [s for s, c in census.items() if not c.dropped_by_metrics] == [
+        dm.Stream.FIGURES, dm.Stream.PROSE, dm.Stream.TABLES]
 
 
 def test_census_is_recomputable_and_keeps_block_order(tmp_path: Path) -> None:
