@@ -72,7 +72,8 @@ def test_caption_coverage_counts_uncaptioned_figures(model: dm.DocumentModel) ->
     assert record["unit"] == "ratio"
     assert record["state"] == "OBSERVED" and record["method"] == "rule"
     assert record["scope"] == ["figures", "tables"]
-    assert record["evidence"]["uncaptioned"] == [{"kind": "figures", "index": 1}]
+    assert record["evidence"]["uncaptioned"] == [
+        {"kind": "figures", "index": 1, "block_index": 3}]
     assert "CAPTION_MISSING" in record["warnings"]
 
 
@@ -152,8 +153,8 @@ def test_reference_consistency_ignores_numbers_in_tables(tmp_path: Path) -> None
 
 def test_every_stream_metric_declares_scope_and_contract(model: dm.DocumentModel) -> None:
     metrics = sm.stream_metrics(model)
-    assert set(metrics) == {"S-CAP-01", "S-NUM-02", "S-REF-03",
-                            "S-SIZ-04", "S-CAPL-05"}
+    assert set(metrics) == {"S-CAP-01", "S-NUM-02", "S-REF-03", "S-SIZ-04",
+                            "S-CAPL-05", "S-TBL-06", "S-TBL-07", "S-TBL-08"}
     required = {"value", "n", "denominator", "unit", "state", "method",
                 "metric_spec", "evidence", "warnings", "scope"}
     for metric_id, record in metrics.items():
@@ -177,8 +178,8 @@ def test_unavailable_records_are_explicit_not_silent() -> None:
     """When the base artifact cannot be parsed, every stream metric must still be
     reported - as explicit "not measured" records, never as absent ones."""
     records = sm.unavailable_records("CANONICAL_UNPARSEABLE")
-    assert set(records) == {"S-CAP-01", "S-NUM-02", "S-REF-03",
-                            "S-SIZ-04", "S-CAPL-05"}
+    assert set(records) == {"S-CAP-01", "S-NUM-02", "S-REF-03", "S-SIZ-04",
+                            "S-CAPL-05", "S-TBL-06", "S-TBL-07", "S-TBL-08"}
     for metric_id, record in records.items():
         assert record["metric_spec"] == metric_id
         assert record["value"] is None and record["n"] == 0
@@ -293,3 +294,82 @@ def test_caption_length_is_null_without_captions(tmp_path: Path) -> None:
         _block("image", img_path="a.png")]))
     assert record["value"] is None and record["n"] == 0
     assert "NO_CAPTIONS" in record["warnings"]
+
+
+# ---------------------------------------------------------------------------
+# 6. Table structure (D-1, tables only)
+# ---------------------------------------------------------------------------
+
+_TABLE_HTML_A = ('<table><tr><td colspan="3">Totals 2026</td></tr>'
+                 '<tr><td>1</td><td></td><td>3</td></tr></table>')
+_TABLE_HTML_B = "<table><tr><td>x</td><td>y</td></tr></table>"
+_TABLE_HTML_C = "<table><tr><td>a</td><td>b</td><td>c</td><td>d</td></tr></table>"
+
+
+def _table_model(tmp_path: Path) -> dm.DocumentModel:
+    return _write(tmp_path, "p9_content_list.json", [
+        _block("text", text="Table 1 summarises the results."),
+        _block("table", table_body=_TABLE_HTML_A, table_caption=["表 1", "汇总"]),
+        _block("table", table_body=_TABLE_HTML_B, table_caption=["表 2", "对比"]),
+        _block("table", table_body=_TABLE_HTML_C, table_caption=["表 3", "明细"]),
+        _block("table", table_body="", table_caption=["表 4", "缺失正文"]),
+    ])
+
+
+def test_table_columns_metric_counts_colspan(tmp_path: Path) -> None:
+    """S-TBL-06: declared columns must sum colspan per row.
+
+    On the real corpus colspan appears ~19 times per table, so counting <td> would
+    understate every wide table.
+    """
+    record = sm.table_columns(_table_model(tmp_path))
+    assert record["metric_spec"] == "S-TBL-06"
+    assert record["scope"] == ["tables"]
+    assert record["unit"] == "columns"
+    assert record["n"] == 3                       # the empty-body table is not measured
+    columns = sorted(item["declared_columns"] for item in record["evidence"]["tables"])
+    assert columns == [2, 3, 4]
+    assert record["value"] == pytest.approx(3.0)  # nearest-rank median of [2, 3, 4]
+    assert record["evidence"]["empty_bodies"] == [4]
+    first = record["evidence"]["tables"][0]
+    assert first["block_index"] == 1
+    assert first["rows"] == 2 and first["cells"] == 4
+    assert first["colspan_merges"] == 1
+    assert first["excerpt"].startswith("<table>")
+    assert "TABLE_BODY_EMPTY" in record["warnings"]
+
+
+def test_table_empty_cell_ratio_pools_cells(tmp_path: Path) -> None:
+    """S-TBL-07: 1 empty cell out of 4 + 2 + 4 = 10 measurable cells."""
+    record = sm.table_empty_cells(_table_model(tmp_path))
+    assert record["metric_spec"] == "S-TBL-07"
+    assert record["scope"] == ["tables"]
+    assert record["unit"] == "ratio"
+    assert record["evidence"]["cells"] == 10
+    assert record["evidence"]["empty_cells"] == 1
+    assert record["value"] == pytest.approx(0.1)
+    assert record["n"] == 3
+
+
+def test_table_missing_body_ratio_is_reported(tmp_path: Path) -> None:
+    """S-TBL-08: a table with no body is missing DATA, not a table with 0 cells."""
+    record = sm.table_missing_body(_table_model(tmp_path))
+    assert record["metric_spec"] == "S-TBL-08"
+    assert record["scope"] == ["tables"]
+    assert record["unit"] == "ratio"
+    assert record["n"] == 4 and record["denominator"] == 4
+    assert record["value"] == pytest.approx(0.25)
+    assert record["evidence"]["missing"] == [4]
+    assert "TABLE_BODY_EMPTY" in record["warnings"]
+
+
+def test_table_metrics_are_null_without_tables(tmp_path: Path) -> None:
+    model = _write(tmp_path, "p10_content_list.json", [
+        _block("text", text="Only prose."),
+        _block("image", img_path="a.png", image_caption=["Figure 1", "x"]),
+    ])
+    for record in (sm.table_columns(model), sm.table_empty_cells(model),
+                   sm.table_missing_body(model)):
+        assert record["value"] is None and record["n"] == 0
+        assert "NO_TABLES" in record["warnings"]
+        assert record["scope"] == ["tables"]

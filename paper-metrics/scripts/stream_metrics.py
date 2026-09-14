@@ -17,6 +17,7 @@ stream scope this module introduces.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
@@ -34,6 +35,7 @@ _INVENTORY_STREAMS: Final[tuple[dm.Stream, ...]] = (dm.Stream.FIGURES,
                                                     dm.Stream.TABLES)
 
 _SCOPE_FIGURES: Final[tuple[str, ...]] = (dm.Stream.FIGURES.value,)
+_SCOPE_TABLES: Final[tuple[str, ...]] = (dm.Stream.TABLES.value,)
 
 #: The stream(s) each metric reads, keyed by metric id (not by function) so a "not
 #: measured" record carries exactly the same scope as a measured one.
@@ -43,6 +45,9 @@ _SCOPE_OF_METRIC: Final[dict[str, tuple[str, ...]]] = {
     "S-REF-03": _SCOPE_INVENTORY,
     "S-SIZ-04": _SCOPE_FIGURES,
     "S-CAPL-05": _SCOPE_INVENTORY,
+    "S-TBL-06": _SCOPE_TABLES,
+    "S-TBL-07": _SCOPE_TABLES,
+    "S-TBL-08": _SCOPE_TABLES,
 }
 
 #: Journal figures are printed at ~300 dpi; 800 px is roughly a 6.8 cm single-column
@@ -127,7 +132,9 @@ def caption_coverage(model: dm.DocumentModel) -> dict[str, dm.JsonValue]:
     reported by stream index rather than counted as "present".
     """
     inventory = _inventory_blocks(model)
-    uncaptioned = [{"kind": stream.value, "index": index}
+    # Both coordinates are reported: "index" is the position inside that stream
+    # (which figure is missing a caption), "block_index" re-opens the content_list.
+    uncaptioned = [{"kind": stream.value, "index": index, "block_index": block.index}
                    for stream, index, block in inventory if not block.caption.strip()]
     total = len(inventory)
     # Only captioned items are sampled: a sample must be quotable, and the absence
@@ -385,8 +392,168 @@ def caption_length(model: dm.DocumentModel) -> dict[str, dm.JsonValue]:
                    warnings=[])
 
 
+# ---------------------------------------------------------------------------
+# Table structure (tables only): rows, cells, merges, missing bodies
+# ---------------------------------------------------------------------------
+# Measured on the real corpus (2026-09-14): every table_body is HTML (no markdown
+# pipe tables), colspan/rowspan are pervasive (~19 colspans per table on the English
+# corpus), 8 of 273 English tables carry no body at all, and the empty-cell ratio
+# reaches 0.70 - so "count the <td> tags" would understate wide tables and hide both
+# missing data and sparse tables.
+
+_TABLE_ROW_RE: Final = re.compile(r"<tr\b[^>]*>(.*?)</tr>", re.IGNORECASE | re.DOTALL)
+_TABLE_CELL_RE: Final = re.compile(r"<t[dh]\b([^>]*)>(.*?)</t[dh]>",
+                                   re.IGNORECASE | re.DOTALL)
+_TABLE_COLSPAN_RE: Final = re.compile(r"colspan\s*=\s*[\"']?\s*(\d+)", re.IGNORECASE)
+_TABLE_ROWSPAN_RE: Final = re.compile(r"rowspan\s*=\s*[\"']?\s*(\d+)", re.IGNORECASE)
+
+
+@dataclass(frozen=True, slots=True)
+class TableShape:
+    """Shape of one HTML table_body, as far as the markup states it."""
+
+    rows: int
+    cells: int
+    empty_cells: int
+    declared_columns: int
+    colspan_merges: int
+    rowspan_merges: int
+
+
+def _span_value(attrs: str, pattern: re.Pattern[str]) -> int:
+    match = pattern.search(attrs)
+    return int(match.group(1)) if match else 1
+
+
+def table_shape(html: str) -> TableShape:
+    """Rows / cells / merges / emptiness of one HTML table_body.
+
+    declared_columns sums each row's own colspan (the real corpus merges heavily, so
+    counting cells would understate every wide table).  rowspan is counted but NOT
+    carried into following rows: this is the row's declared span, not a reconstructed
+    render grid - and it is documented as such rather than silently approximated.
+    """
+    rows = _TABLE_ROW_RE.findall(html)
+    cells = _TABLE_CELL_RE.findall(html)
+    empty_cells = 0
+    colspan_merges = 0
+    rowspan_merges = 0
+    for attrs, inner in cells:
+        # Reuse doc_model's normaliser instead of a second tag-stripping rule: "is this
+        # cell empty" must mean the same thing here as it does in the census.
+        if not dm.html_to_text(inner):
+            empty_cells += 1
+        if _span_value(attrs, _TABLE_COLSPAN_RE) > 1:
+            colspan_merges += 1
+        if _span_value(attrs, _TABLE_ROWSPAN_RE) > 1:
+            rowspan_merges += 1
+    declared_columns = 0
+    if rows:
+        for row in rows:
+            declared_columns = max(
+                declared_columns,
+                sum(_span_value(attrs, _TABLE_COLSPAN_RE)
+                    for attrs, _inner in _TABLE_CELL_RE.findall(row)))
+    elif cells:
+        declared_columns = sum(_span_value(attrs, _TABLE_COLSPAN_RE)
+                               for attrs, _inner in cells)
+    return TableShape(rows=len(rows) if rows else (1 if cells else 0),
+                      cells=len(cells), empty_cells=empty_cells,
+                      declared_columns=declared_columns,
+                      colspan_merges=colspan_merges, rowspan_merges=rowspan_merges)
+
+
+def _table_observations(model: dm.DocumentModel) -> tuple[list[dict[str, dm.JsonValue]],
+                                                          list[int]]:
+    """One observation per table block with a body, plus the indices of empty ones."""
+    observations: list[dict[str, dm.JsonValue]] = []
+    empty_bodies: list[int] = []
+    for _stream, index, block in _inventory_blocks(model):
+        if block.kind is not dm.Stream.TABLES:
+            continue
+        body = block.table_body or ""
+        shape = table_shape(body)
+        if not shape.cells:
+            # block_index (position in the content_list), not the stream-relative
+            # index: an anomaly must be re-openable at the coordinate it names.
+            empty_bodies.append(block.index)
+            continue
+        observations.append({
+            "block_index": block.index, "field": "table_body",
+            "excerpt": body[:80], "index": index, "rows": shape.rows,
+            "cells": shape.cells, "empty_cells": shape.empty_cells,
+            "declared_columns": shape.declared_columns,
+            "colspan_merges": shape.colspan_merges,
+            "rowspan_merges": shape.rowspan_merges})
+    return observations, empty_bodies
+
+
+def table_columns(model: dm.DocumentModel) -> dict[str, dm.JsonValue]:
+    """S-TBL-06: median DECLARED column count over the paper's tables.
+
+    Nearest-rank median (the repo's quantile convention).  Tables that carry no body
+    are excluded from the median and listed separately: an unmeasurable table must not
+    drag the column count toward zero.
+    """
+    observations, empty_bodies = _table_observations(model)
+    warnings: list[str] = ["TABLE_BODY_EMPTY"] if empty_bodies else []
+    if not observations:
+        warnings.append("NO_TABLES")
+        return _record("S-TBL-06", value=None, n=0, denominator=0, unit="columns",
+                       evidence={"count": 0, "sample": [], "tables": [],
+                                 "empty_bodies": empty_bodies}, warnings=warnings)
+    columns = sorted(_as_int(item.get("declared_columns")) for item in observations)
+    return _record("S-TBL-06", value=float(columns[len(columns) // 2]),
+                   n=len(columns), denominator=len(columns), unit="columns",
+                   evidence={"count": len(observations),
+                             "sample": observations[:_SAMPLE_LIMIT],
+                             "tables": observations,
+                             "empty_bodies": empty_bodies}, warnings=warnings)
+
+
+def table_empty_cells(model: dm.DocumentModel) -> dict[str, dm.JsonValue]:
+    """S-TBL-07: share of table cells that carry no text (pooled over the paper)."""
+    observations, empty_bodies = _table_observations(model)
+    warnings: list[str] = ["TABLE_BODY_EMPTY"] if empty_bodies else []
+    cells = sum(_as_int(item.get("cells")) for item in observations)
+    empty = sum(_as_int(item.get("empty_cells")) for item in observations)
+    if not cells:
+        warnings.append("NO_TABLES")
+        return _record("S-TBL-07", value=None, n=0, denominator=0, unit="ratio",
+                       evidence={"count": 0, "sample": [], "tables": [], "cells": 0,
+                                 "empty_cells": 0, "empty_bodies": empty_bodies},
+                       warnings=warnings)
+    return _record("S-TBL-07", value=empty / cells, n=len(observations),
+                   denominator=len(observations), unit="ratio",
+                   evidence={"count": cells, "sample": observations[:_SAMPLE_LIMIT],
+                             "tables": observations, "cells": cells,
+                             "empty_cells": empty, "empty_bodies": empty_bodies},
+                   warnings=warnings)
+
+
+def table_missing_body(model: dm.DocumentModel) -> dict[str, dm.JsonValue]:
+    """S-TBL-08: share of table blocks whose body carries no measurable cells.
+
+    Missing DATA, not a table with zero cells: the two must not be conflated, and the
+    affected blocks are named by index so the gap is auditable.
+    """
+    observations, empty_bodies = _table_observations(model)
+    total = len(observations) + len(empty_bodies)
+    warnings: list[str] = ["TABLE_BODY_EMPTY"] if empty_bodies else []
+    if not total:
+        warnings.append("NO_TABLES")
+        return _record("S-TBL-08", value=None, n=0, denominator=0, unit="ratio",
+                       evidence={"count": 0, "sample": [], "missing": []},
+                       warnings=warnings)
+    return _record("S-TBL-08", value=len(empty_bodies) / total, n=total,
+                   denominator=total, unit="ratio",
+                   evidence={"count": total, "sample": observations[:_SAMPLE_LIMIT],
+                             "missing": empty_bodies}, warnings=warnings)
+
+
 _METRIC_IDS: Final[tuple[str, ...]] = ("S-CAP-01", "S-NUM-02", "S-REF-03",
-                                         "S-SIZ-04", "S-CAPL-05")
+                                         "S-SIZ-04", "S-CAPL-05", "S-TBL-06",
+                                         "S-TBL-07", "S-TBL-08")
 
 
 def unavailable_records(warning: str) -> dict[str, dict[str, dm.JsonValue]]:
@@ -408,7 +575,8 @@ def stream_metrics(model: dm.DocumentModel) -> dict[str, dict[str, dm.JsonValue]
     out: dict[str, dict[str, dm.JsonValue]] = {}
     for record in (caption_coverage(model), numbering_consistency(model),
                    reference_consistency(model), image_resolution(model),
-                   caption_length(model)):
+                   caption_length(model), table_columns(model),
+                   table_empty_cells(model), table_missing_body(model)):
         metric_id = record["metric_spec"]
         if isinstance(metric_id, str):
             out[metric_id] = record

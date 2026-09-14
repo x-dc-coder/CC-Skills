@@ -164,6 +164,7 @@ class Block:
     level: int | None
     caption_field: str | None
     image_path: str | None
+    table_body: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -279,7 +280,8 @@ def _to_block(index: int, raw_block: dict[str, JsonValue]) -> Block:
                  caption_digits=count_digits(caption),
                  level=level if isinstance(level, int) else None,
                  caption_field=caption_field,
-                 image_path=_field_str(raw_block, "img_path") or None)
+                 image_path=_field_str(raw_block, "img_path") or None,
+                 table_body=_field_str(raw_block, "table_body") or None)
 
 
 def _load_blocks(path: Path) -> list[dict[str, JsonValue]]:
