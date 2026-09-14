@@ -25,6 +25,8 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+
 # ── Mock the GPU bridge module before importing paper_reader ──────────
 # paper_reader does `from gpu_safe_subprocess import ...` at module level.
 # This mock satisfies the import without touching real GPU resources.
@@ -403,25 +405,36 @@ def test_backfill_is_idempotent(tmp_path: Path, monkeypatch) -> None:
     after_second = _digests(paths)
 
     assert first["scanned"] == 3
-    assert first["updated"] == 2          # PaperA + PaperC
+    # PaperA + PaperC (versions + hash + language) and PaperB, which keeps its
+    # measured versions but still gains the language triple (issue #10 step).
+    assert first["updated"] == 3
     assert first["skipped_conversion_time"] == 1
     assert second["updated"] == 0         # nothing left to fill
-    assert second["unchanged"] == 2
+    assert second["unchanged"] == 3
     assert after_first == after_second    # byte-identical: no rewrite
 
 
 def test_backfill_never_touches_conversion_time_record(tmp_path: Path, monkeypatch) -> None:
+    """A measured record keeps every measured field.  The language triple is a
+    different question and is still added: the oldest records are exactly the ones
+    that predate it, so skipping the file outright left the keys permanently absent."""
     monkeypatch.setattr(pr, "_engine_version_snapshot", lambda: dict(_FAKE_SNAPSHOT))
     papers_dir, paths = _backfill_corpus(tmp_path)
-    before = paths["b"].read_bytes()
+    before = json.loads(paths["b"].read_text(encoding="utf-8"))
 
     pr.backfill_meta(papers_dir)
+    after_first = paths["b"].read_bytes()
     pr.backfill_meta(papers_dir)
 
-    assert paths["b"].read_bytes() == before
     record = json.loads(paths["b"].read_text(encoding="utf-8"))
     assert record["engine_versions_source"] == "conversion_time"
     assert record["pdf_sha256"] == "f" * 64
+    assert record["engine_versions"] == before["engine_versions"]
+    assert record["engine_versions_note"] == before.get("engine_versions_note")
+    # Only the language triple may appear; with no markdown to measure it is null.
+    assert [k for k in pr._LANG_META_KEYS if k not in record] == []
+    assert [record[k] for k in pr._LANG_META_KEYS] == [None, None, None]
+    assert paths["b"].read_bytes() == after_first, "a second pass is a no-op"
 
 
 def test_backfill_fills_missing_hash_and_marks_estimate(tmp_path: Path, monkeypatch) -> None:
@@ -509,6 +522,652 @@ def test_process_one_writes_provenance_meta(tmp_path: Path, monkeypatch) -> None
     assert list(meta["engine_versions"]) == list(pr._ENGINE_CONTRACT_KEYS)
     assert meta["engine_versions"]["marker"] == "9.9.9"
     assert meta["engine_versions_source"] == "conversion_time"
+    # Stage 1.5 wiring: the conversion leaves side-band evidence behind and the
+    # language triple is written next to the provenance fields (issue #12/#10).
+    assert (tmp_path / "paper-merged" / "paper"
+            / pr._TEXTLAYER_PROBE_FILENAME).is_file()
+    assert [k for k in pr._LANG_META_KEYS if k not in meta] == []
+    assert meta["language"] == "en"
+    assert meta["lang_source"] == pr._LANG_SOURCE_MERGED
+
+
+# ---------------------------------------------------------------------------
+# Stage 1.5 side-band wiring: text-layer probe + language record (issue #12/#10)
+# ---------------------------------------------------------------------------
+
+LANG_SPEC = Path(__file__).resolve().parent / "lang_spec_cases.json"
+
+
+def _lang_spec() -> dict:
+    return json.loads(LANG_SPEC.read_text(encoding="utf-8"))
+
+
+def test_language_spec_cases_match_shared_fixture() -> None:
+    """The frozen shared spec is the contract: reproduce it exactly.
+
+    The same file is asserted by paper-metrics' suite, so the conversion layer and
+    the metrics layer cannot drift apart about what language a paper is in.
+    """
+    spec = _lang_spec()
+    assert spec["threshold"] == pr.LANGUAGE_CJK_THRESHOLD
+    assert spec["round_digits"] == pr._LANG_ROUND_DIGITS
+    assert [list(r) for r in pr._LANG_CJK_RANGES] == spec["cjk_ranges"]
+    assert pr._LANG_ALPHA_TOKEN_RE.pattern == spec["alpha_token_regex"]
+    for case in spec["cases"]:
+        record = pr.detect_language_record(case["text"], "test")
+        expected = case["expected"]
+        assert record["language"] == expected["language"], case["id"]
+        assert record["cjk_ratio"] == expected["cjk_ratio"], case["id"]
+        assert record["cjk_chars"] == expected["cjk_chars"], case["id"]
+        assert record["ascii_alpha_tokens"] == expected["ascii_alpha_tokens"], case["id"]
+
+
+def test_stage_1_5_never_fails_a_conversion(tmp_path: Path, monkeypatch) -> None:
+    """The side-band stage is evidence only: even a broken probe must leave a
+    finished conversion finished, with _META.json written and the language triple
+    present.  This is the "never blocks" red line, tested instead of asserted."""
+    body = b"%PDF-1.4\n" + b"P" * 4096
+    pdf = tmp_path / "paper.pdf"
+    pdf.write_bytes(body)
+    digest = hashlib.sha256(body).hexdigest()
+
+    monkeypatch.setattr(
+        pr, "run_precheck",
+        lambda p, max_pages=pr._DEFAULT_MAX_PAGES: pr.PrecheckResult(
+            ok=True, status="passed", page_count=1, pdf_hash=digest[:16],
+            pdf_sha256=digest))
+    monkeypatch.setattr(pr, "_engine_version_snapshot", lambda: dict(_FAKE_SNAPSHOT))
+
+    def _fake_marker(pdf_path, out_dir, pages):
+        md_dir = Path(out_dir) / "marker" / Path(pdf_path).stem
+        md_dir.mkdir(parents=True, exist_ok=True)
+        md = md_dir / f"{Path(pdf_path).stem}.md"
+        md.write_text("# Title\n\nBody text.\n", encoding="utf-8")
+        return pr.EngineResult("marker", True, 0.1, md_path=str(md), img_count=0)
+
+    monkeypatch.setattr(pr, "run_marker", _fake_marker)
+
+    # (1) a probe that raises for reasons nobody predicted
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("probe exploded")
+
+    monkeypatch.setattr(pr, "run_textlayer_probe", _boom)
+    result = pr.process_one(pdf, tmp_path, "marker", None, "auto", "pipeline", None)
+    # A crash is its own verdict, not "not_applicable": a downstream rule like
+    # "verdict != warn means fine" must not sweep an unmeasured hop into "fine".
+    assert result.probe_verdict == "error"
+    assert result.probe_warnings == ["PROBE_CRASHED"]
+    assert result.probe_path is None, "a crashed probe must not claim a record"
+    meta = json.loads((tmp_path / "paper-merged" / "paper" / "_META.json")
+                      .read_text(encoding="utf-8"))
+    assert [k for k in pr._LANG_META_KEYS if k not in meta] == []
+
+    # (2) a stored/foreign record whose warnings field is not a list
+    monkeypatch.setattr(pr, "run_textlayer_probe",
+                        lambda *_args, **_kwargs: {"verdict": "warn", "warnings": 123})
+    second = pr.process_one(pdf, tmp_path, "marker", None, "auto", "pipeline", None)
+    assert second.probe_verdict == "warn"
+    assert second.probe_warnings == [], "a non-list warnings field must not iterate"
+
+
+def test_backfill_adds_the_language_triple_even_without_text(tmp_path: Path) -> None:
+    """The triple is never omitted: with no markdown to measure it is filled with
+    nulls (not measured), not left out."""
+    merged_dir = tmp_path / "paper-merged" / "orphan"
+    merged_dir.mkdir(parents=True)
+    meta_path = merged_dir / "_META.json"
+    meta: dict = {"stem": "orphan"}
+    snapshot = {"engine_versions": {}, "engine_versions_source": "unavailable",
+                "engine_versions_note": None}
+
+    changed, _ = pr._backfill_one(meta, meta_path, tmp_path, dict(snapshot))
+    assert changed is True
+    assert [meta.get(k) for k in pr._LANG_META_KEYS] == [None, None, None]
+    assert [k for k in pr._LANG_META_KEYS if k not in meta] == []
+
+
+def test_resolve_canonical_md_ignores_internal_artifacts(tmp_path: Path) -> None:
+    """A large _DIFF.md must never be mistaken for the paper's own text."""
+    paper_dir = tmp_path / "paper"
+    paper_dir.mkdir()
+    (paper_dir / "_DIFF.md").write_text("x" * 200000, encoding="utf-8")
+    (paper_dir / "paper.md").write_text("real body", encoding="utf-8")
+    assert pr.resolve_canonical_md(paper_dir).name == "paper.md"
+
+
+def test_backfill_probe_covers_already_converted_papers(tmp_path: Path) -> None:
+    """--resume skips finished papers forever, so an old corpus needs its own entry
+    point to gain the stage 1.5 evidence without a minute-per-paper re-conversion."""
+    corpus = tmp_path / "paper-analysis"
+    auto = corpus / "paper-x" / "mineru" / "paper-x" / "auto"
+    auto.mkdir(parents=True)
+    (auto / "paper-x_content_list.json").write_text(
+        json.dumps([{"type": "text", "text": "Body 12.73% 本文方法。"}]),
+        encoding="utf-8")
+    pdf = tmp_path / "elsewhere" / "paper-x.pdf"
+    pdf.parent.mkdir(parents=True)
+    pdf.write_bytes(b"not a real pdf")
+    meta_path = corpus / "paper-x" / "_META.json"
+    meta_path.write_text(json.dumps({"stem": "paper-x", "pdf_path": str(pdf)}),
+                         encoding="utf-8")
+
+    stats = pr.backfill_probe(corpus)
+    assert stats == {"scanned": 1, "probed": 1, "reused": 0, "warn": 0,
+                     "not_measured": 1, "no_pdf": 0}
+    record = json.loads((corpus / "paper-x" / pr._TEXTLAYER_PROBE_FILENAME)
+                        .read_text(encoding="utf-8"))
+    assert record["canonical_source"] == pr._LANG_SOURCE_CONTENT_LIST
+    assert record["canonical_sha256"]
+
+    # A second pass reuses the valid record instead of re-reading the PDF.
+    again = pr.backfill_probe(corpus)
+    assert again["reused"] == 1
+    assert again["probed"] == 0
+
+    # A paper whose PDF is gone is counted, never fatal.
+    meta_path.write_text(json.dumps({"stem": "paper-x",
+                                     "pdf_path": str(tmp_path / "gone.pdf")}),
+                         encoding="utf-8")
+    third = pr.backfill_probe(corpus)
+    assert third["no_pdf"] == 1
+
+
+def test_backfill_probe_finds_the_conversion_tree_when_pointed_at_merged(tmp_path: Path) -> None:
+    """Users point at <root>/paper-merged too, and there the conversion tree is a
+    sibling: missing it would silently degrade the comparison to the markdown."""
+    root = tmp_path / "corpus"
+    auto = root / "paper-conversion" / "paper-x" / "mineru" / "paper-x" / "auto"
+    auto.mkdir(parents=True)
+    (auto / "paper-x_content_list.json").write_text(
+        json.dumps([{"type": "text", "text": "正文 12.73% 本文方法。"}]),
+        encoding="utf-8")
+    merged_root = root / "paper-merged"
+    merged = merged_root / "paper-x"
+    merged.mkdir(parents=True)
+    (merged / "_MERGED.md").write_text("仅合并稿正文\n", encoding="utf-8")
+    pdf = tmp_path / "paper-x.pdf"
+    pdf.write_bytes(b"not a real pdf")
+    (merged / "_META.json").write_text(
+        json.dumps({"stem": "paper-x", "pdf_path": str(pdf)}), encoding="utf-8")
+
+    # Point the CLI straight at <root>/paper-merged: _meta_candidates accepts that
+    # layout, so the conversion tree has to be found as a sibling.
+    stats = pr.backfill_probe(merged_root)
+    assert stats["scanned"] == 1 and stats["no_pdf"] == 0
+    record = json.loads((merged / pr._TEXTLAYER_PROBE_FILENAME)
+                        .read_text(encoding="utf-8"))
+    assert record["canonical_source"] == pr._LANG_SOURCE_CONTENT_LIST, \
+        "the sibling paper-conversion tree must be used, not the markdown"
+
+
+def test_language_survives_a_probe_failure(tmp_path: Path, monkeypatch) -> None:
+    """The language is computed before the probe runs; a probe failure must not
+    also erase a fact this stage had already established."""
+    conversion_dir = tmp_path / "paper-conversion" / "paper"
+    conversion_dir.mkdir(parents=True)
+    merged_dir = tmp_path / "paper-merged" / "paper"
+    merged_dir.mkdir(parents=True)
+    (merged_dir / "_MERGED.md").write_text("This run is marker only.\n",
+                                           encoding="utf-8")
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("later failure")
+
+    monkeypatch.setattr(pr, "run_textlayer_probe", _boom)
+    result = pr.PaperResult(pdf_path="/tmp/paper.pdf", stem="paper")
+    record = pr.collect_stage_1_5(tmp_path / "paper.pdf", merged_dir, conversion_dir,
+                                  "paper", force=False, enabled=True, result=result)
+    assert record["language"] == "en", "a probe crash must not null the language"
+    assert record["lang_source"] == pr._LANG_SOURCE_MERGED
+    assert result.probe_verdict == "error"
+    assert result.probe_warnings == ["PROBE_CRASHED"]
+
+
+def test_canonical_json_must_match_the_markdown_stem(tmp_path: Path) -> None:
+    """A shared directory must not hand back another paper's content_list.
+
+    If this paper's own JSON carries no text blocks, the old glob would continue
+    and return the first non-empty file in the same directory - another paper's
+    text, still labelled mineru_content_list.
+    """
+    conversion_dir = tmp_path / "paper-conversion" / "paper"
+    auto = conversion_dir / "mineru" / "paper" / "auto"
+    auto.mkdir(parents=True)
+    md = auto / "paper.md"
+    md.write_text("# t\n", encoding="utf-8")
+    (auto / "paper_content_list.json").write_text(
+        json.dumps([{"type": "image", "img_path": "scan.jpg"}]), encoding="utf-8")
+    (auto / "other_content_list.json").write_text(
+        json.dumps([{"type": "text", "text": "别篇的正文"}]), encoding="utf-8")
+
+    text, source = pr.resolve_metrics_canonical(conversion_dir, mineru_md_path=md)
+    assert (text, source) == (None, None), \
+        "another paper's JSON must never be returned as this paper's canonical"
+
+    # With a usable JSON of its own the exact match is used.
+    (auto / "paper_content_list.json").write_text(
+        json.dumps([{"type": "text", "text": "Body 12.73%"}]), encoding="utf-8")
+    text2, source2 = pr.resolve_metrics_canonical(conversion_dir, mineru_md_path=md)
+    assert source2 == pr._LANG_SOURCE_CONTENT_LIST and text2 == "Body 12.73%"
+
+
+def test_backfill_never_escapes_above_a_corpus_root(tmp_path: Path) -> None:
+    """The parent candidate is for <root>/paper-merged style callers only: from a
+    corpus root it would reach the parent directory, where an unrelated corpus
+    holding a same-stem paper could hand back its evidence."""
+    outer = tmp_path / "outer"
+    root = outer / "my-corpus"
+    # Decoy: a same-stem paper in the parent directory's conversion tree.
+    decoy = outer / "paper-conversion" / "paper-x" / "mineru" / "paper-x" / "auto"
+    decoy.mkdir(parents=True)
+    (decoy / "paper-x_content_list.json").write_text(
+        json.dumps([{"type": "text", "text": "别库的证据"}]), encoding="utf-8")
+    # The corpus's own tree, with its own JSON.
+    own = root / "paper-conversion" / "paper-x" / "mineru" / "paper-x" / "auto"
+    own.mkdir(parents=True)
+    (own / "paper-x_content_list.json").write_text(
+        json.dumps([{"type": "text", "text": "本库正文"}]), encoding="utf-8")
+    merged = root / "paper-merged" / "paper-x"
+    merged.mkdir(parents=True)
+    (merged / "_MERGED.md").write_text("md\n", encoding="utf-8")
+    pdf = tmp_path / "paper-x.pdf"
+    pdf.write_bytes(b"not a pdf")
+    (merged / "_META.json").write_text(
+        json.dumps({"stem": "paper-x", "pdf_path": str(pdf)}), encoding="utf-8")
+
+    pr.backfill_probe(root)
+    record = json.loads((merged / pr._TEXTLAYER_PROBE_FILENAME)
+                        .read_text(encoding="utf-8"))
+    assert record["canonical_source"] == pr._LANG_SOURCE_CONTENT_LIST
+    assert record["canonical_sha256"] == hashlib.sha256(
+        "本库正文".encode("utf-8")).hexdigest(), "the corpus's own JSON must be used"
+
+
+def test_canonical_fallback_accepts_only_an_unambiguous_renamed_json(tmp_path: Path) -> None:
+    """The exact match is the rule; the fallback exists for layouts that name the
+    JSON differently, and it may only fire when there is nothing to guess between."""
+    conversion_dir = tmp_path / "paper-conversion" / "paper"
+    auto = conversion_dir / "mineru" / "paper" / "auto"
+    auto.mkdir(parents=True)
+    md = auto / "paper.md"
+
+    # exact missing + exactly one renamed JSON -> accepted
+    renamed = auto / "renamed_content_list.json"
+    renamed.write_text(json.dumps([{"type": "text", "text": "Body 12.73%"}]), encoding="utf-8")
+    text, source = pr.resolve_metrics_canonical(conversion_dir, mineru_md_path=md)
+    assert source == pr._LANG_SOURCE_CONTENT_LIST and text == "Body 12.73%"
+
+    # exact missing + two candidates -> ambiguous, nothing is returned
+    (auto / "second_content_list.json").write_text(
+        json.dumps([{"type": "text", "text": "别篇"}]), encoding="utf-8")
+    assert pr.resolve_metrics_canonical(conversion_dir, mineru_md_path=md) == (None, None)
+
+    # the exact file always wins over the others
+    (auto / "paper_content_list.json").write_text(
+        json.dumps([{"type": "text", "text": "本篇"}]), encoding="utf-8")
+    text3, source3 = pr.resolve_metrics_canonical(conversion_dir, mineru_md_path=md)
+    assert source3 == pr._LANG_SOURCE_CONTENT_LIST and text3 == "本篇"
+
+
+def test_is_fully_done_requires_the_merge_phase(tmp_path: Path) -> None:
+    """A failed merge is not done: --resume used to skip the paper forever, so
+    neither the merge nor the stage that runs after it was ever retried."""
+    state = pr.PipelineState(tmp_path / "_pipeline_state.json")
+    state.set_phase("paper", "precheck", {"status": "passed"})
+    state.set_phase("paper", "phase1_converted", {"status": "done"})
+    state.set_phase("paper", "phase2_merged", {"status": "failed",
+                                              "error_type": "normalize_crash"})
+    assert state.is_fully_done("paper") is False
+
+    state.set_phase("paper", "phase2_merged", {"status": "done"})
+    assert state.is_fully_done("paper") is True
+
+    # degraded still counts as finished: a single-engine run is not a failure
+    state.set_phase("paper", "phase2_merged", {"status": "degraded"})
+    assert state.is_fully_done("paper") is True
+
+
+def test_backfill_meta_fills_language_for_conversion_time_records(tmp_path: Path) -> None:
+    """Integration: a record measured at conversion time keeps its versions but
+    must still gain the language triple.  Skipping the file outright (the old
+    behaviour) left the keys permanently absent on exactly the oldest records."""
+    merged_dir = tmp_path / "paper-merged" / "paper"
+    merged_dir.mkdir(parents=True)
+    (merged_dir / "_MERGED.md").write_text("This paper compares three baselines.",
+                                           encoding="utf-8")
+    meta_path = merged_dir / "_META.json"
+    measured = {"marker": "9.9.9", "mineru": "8.8.8", "surya": None,
+                "torch": "2.5.1", "cuda": "12.4", "python": "3.12.0"}
+    meta_path.write_text(json.dumps({
+        "stem": "paper", "engine_versions": measured,
+        "engine_versions_source": "conversion_time",
+    }), encoding="utf-8")
+
+    stats = pr.backfill_meta(tmp_path)
+    assert stats["scanned"] == 1
+    assert stats["skipped_conversion_time"] == 1, "the versions are not re-stamped"
+    assert stats["updated"] == 1
+
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    assert meta["language"] == "en"
+    assert meta["cjk_ratio"] == 0.0
+    assert meta["lang_source"] == pr._LANG_SOURCE_BACKFILL
+    assert meta["engine_versions"] == measured, "measured versions must survive"
+    assert meta["engine_versions_source"] == "conversion_time"
+
+
+def test_stage_1_5_refuses_a_stale_content_list_from_an_earlier_run(tmp_path: Path) -> None:
+    """A marker-only run (or a failed MinerU) over a tree that still holds an old
+    Chinese content_list must not record that old text as this run's canonical."""
+    conversion_dir = tmp_path / "paper-conversion" / "paper"
+    auto = conversion_dir / "mineru" / "paper" / "auto"
+    auto.mkdir(parents=True)
+    (auto / "paper_content_list.json").write_text(
+        json.dumps([{"type": "text", "text": "旧的中文正文，来自上一次转换。"}]),
+        encoding="utf-8")
+    merged_dir = tmp_path / "paper-merged" / "paper"
+    merged_dir.mkdir(parents=True)
+    (merged_dir / "_MERGED.md").write_text("# Title\n\nThis run is marker only.\n",
+                                           encoding="utf-8")
+
+    # (1) the pipeline knows this run produced no MinerU result -> no tree scan
+    result = pr.PaperResult(pdf_path="/tmp/paper.pdf", stem="paper")
+    record = pr.collect_stage_1_5(tmp_path / "paper.pdf", merged_dir, conversion_dir,
+                                  "paper", force=True, enabled=False,
+                                  result=result, mineru_md_path=None)
+    assert record["language"] == "en", "the stale Chinese JSON must not be used"
+    assert record["lang_source"] == pr._LANG_SOURCE_MERGED
+    assert pr.resolve_metrics_canonical(conversion_dir) == (None, None)
+
+    # (2) a JSON next to THIS run's MinerU markdown is accepted as usual
+    fresh_md = auto / "paper.md"
+    fresh_md.write_text("# x\n", encoding="utf-8")
+    text, source = pr.resolve_metrics_canonical(conversion_dir, mineru_md_path=fresh_md)
+    assert source == pr._LANG_SOURCE_CONTENT_LIST
+    assert "旧的中文正文" in text
+
+    # (3) the backfill has no "this run", so it may scan the tree and label it
+    text2, source2 = pr.resolve_metrics_canonical(conversion_dir, allow_tree_scan=True)
+    assert source2 == pr._LANG_SOURCE_CONTENT_LIST
+    assert "旧的中文正文" in text2
+
+
+def test_resolve_metrics_canonical_survives_pathological_json(tmp_path: Path) -> None:
+    """A pathological content_list must be skipped, not crash the conversion."""
+    conversion_dir = tmp_path / "paper-conversion" / "paper"
+    auto = conversion_dir / "mineru" / "paper" / "auto"
+    auto.mkdir(parents=True)
+    (auto / "paper_content_list.json").write_text(
+        '{"a":' * 2000 + "1" + "}" * 2000, encoding="utf-8")
+    assert pr.resolve_metrics_canonical(conversion_dir) == (None, None)
+
+
+def test_degraded_probe_record_is_persisted_and_retried(tmp_path: Path) -> None:
+    """ "This hop was never measured" is evidence too: it is written to disk, and
+    because a degraded record carries no pdf_sha256 it can never become a cache hit."""
+    pdf = tmp_path / "missing.pdf"
+    paper_dir = tmp_path / "paper"
+    paper_dir.mkdir()
+
+    record = pr.run_textlayer_probe(pdf, paper_dir, "body")
+    assert record["verdict"] == "not_applicable"
+    assert record["warnings"] == ["PDF_NOT_FOUND"]
+    out = paper_dir / pr._TEXTLAYER_PROBE_FILENAME
+    assert out.is_file(), "a degraded attempt must still leave a trace"
+    assert json.loads(out.read_text(encoding="utf-8"))["warnings"] == ["PDF_NOT_FOUND"]
+
+    again = pr.run_textlayer_probe(pdf, paper_dir, "body")
+    assert again["warnings"] == ["PDF_NOT_FOUND"], "degraded records must not cache"
+
+
+def test_corrupt_probe_json_is_replaced(tmp_path: Path, monkeypatch) -> None:
+    """Unparseable stored JSON must be overwritten by a fresh measurement."""
+    import textlayer_probe
+
+    pdf = tmp_path / "paper.pdf"
+    pdf.write_bytes(b"%PDF-1.4 junk")
+    paper_dir = tmp_path / "paper"
+    paper_dir.mkdir()
+    out = paper_dir / pr._TEXTLAYER_PROBE_FILENAME
+    out.write_text("{not json at all", encoding="utf-8")
+
+    calls: list[int] = []
+
+    def _fake_probe(pdf_path, canonical_text, canonical_source=None):
+        calls.append(1)
+        return {"verdict": "warn", "pdf_sha256": pr._sha256_of_file(Path(pdf_path))[0],
+                "probe_version": pr._current_probe_versions()[0],
+                "pdfplumber_version": pr._current_probe_versions()[1],
+                "canonical_sha256": (hashlib.sha256(canonical_text.encode("utf-8")).hexdigest()
+                                     if canonical_text is not None else None),
+                "canonical_source": canonical_source}
+
+    monkeypatch.setattr(textlayer_probe, "probe_pdf", _fake_probe)
+    record = pr.run_textlayer_probe(pdf, paper_dir, "body",
+                                    canonical_source=pr._LANG_SOURCE_CONTENT_LIST)
+    assert record["verdict"] == "warn"
+    assert len(calls) == 1, "a corrupt record must be re-measured"
+    assert json.loads(out.read_text(encoding="utf-8"))["verdict"] == "warn"
+
+
+def test_resolve_metrics_canonical_prefers_the_artifact_metrics_read(tmp_path: Path) -> None:
+    """The comparison side must be the text paper-metrics actually measures.
+
+    Real measurement on the Chinese corpus: 2.1% digit loss against the merged
+    markdown, 55.5% against the content_list.json — choosing the markdown hides
+    the damage the probe exists to find.
+    """
+    conversion_dir = tmp_path / "paper-conversion" / "paper"
+    auto = conversion_dir / "mineru" / "paper" / "auto"
+    auto.mkdir(parents=True)
+    (auto / "paper_content_list.json").write_text(
+        json.dumps([{"type": "text", "text": "Body 12.73%"},
+                    {"type": "text", "text": "Second 4"},
+                    {"type": "image", "img_path": "x.jpg"}]),
+        encoding="utf-8")
+    # The pipeline must name this run's MinerU markdown; only then is the JSON
+    # next to it accepted.  Without that argument there is nothing to trust.
+    assert pr.resolve_metrics_canonical(conversion_dir) == (None, None)
+    fresh_md = auto / "paper.md"
+    fresh_md.write_text("# x\n", encoding="utf-8")
+    text, source = pr.resolve_metrics_canonical(conversion_dir, mineru_md_path=fresh_md)
+    assert source == pr._LANG_SOURCE_CONTENT_LIST
+    assert text == "Body 12.73%\nSecond 4"
+
+    # A backfill has no "this run", so it may scan the tree (and says so).
+    scanned_text, scanned_source = pr.resolve_metrics_canonical(
+        conversion_dir, allow_tree_scan=True)
+    assert scanned_source == pr._LANG_SOURCE_CONTENT_LIST
+    assert scanned_text == text
+
+    # No JSON at all: the caller falls back to its own markdown.
+    empty_dir = tmp_path / "paper-conversion" / "nojson"
+    empty_dir.mkdir(parents=True)
+    assert pr.resolve_metrics_canonical(empty_dir, allow_tree_scan=True) == (None, None)
+
+
+def test_probe_cache_is_invalidated_when_the_input_changes(
+        tmp_path: Path, monkeypatch) -> None:
+    """A stored record must not be reused for a different PDF or comparison side.
+
+    Reuse is the whole point of the cache, so the guard has to be tested: a record
+    about a *different* hop is worse than no record at all.
+    """
+    import textlayer_probe
+
+    pdf = tmp_path / "paper.pdf"
+    pdf.write_bytes(b"%PDF-1.4 first")
+    paper_dir = tmp_path / "paper"
+    paper_dir.mkdir()
+    digest, _ = pr._sha256_of_file(pdf)
+    probe_version, pdfplumber_version = pr._current_probe_versions()
+    canonical_digest = hashlib.sha256(b"body").hexdigest()
+    out = paper_dir / pr._TEXTLAYER_PROBE_FILENAME
+
+    def _seed() -> None:
+        out.write_text(textlayer_probe.render_json(
+            {"verdict": "ok", "pdf_sha256": digest,
+             "probe_version": probe_version,
+             "pdfplumber_version": pdfplumber_version,
+             "canonical_sha256": canonical_digest,
+             "canonical_source": pr._LANG_SOURCE_CONTENT_LIST}), encoding="utf-8")
+
+    _seed()
+
+    calls: list[str | None] = []
+
+    def _fake_probe(pdf_path, canonical_text, canonical_source=None):
+        calls.append(canonical_source)
+        return {"verdict": "ok", "pdf_sha256": digest,
+                "canonical_source": canonical_source}
+
+    monkeypatch.setattr(textlayer_probe, "probe_pdf", _fake_probe)
+
+    # 1) same PDF + same comparison side -> reuse (the probe must not re-read it)
+    pr.run_textlayer_probe(pdf, paper_dir, "body",
+                           canonical_source=pr._LANG_SOURCE_CONTENT_LIST)
+    assert calls == [], "an up-to-date record must be reused"
+
+    # 2) same stem, new bytes -> the record describes a different PDF
+    pdf.write_bytes(b"%PDF-1.4 second")
+    pr.run_textlayer_probe(pdf, paper_dir, "body",
+                           canonical_source=pr._LANG_SOURCE_CONTENT_LIST)
+    assert len(calls) == 1, "a record about another PDF must not be reused"
+
+    # 3) different comparison side -> also a different hop
+    pr.run_textlayer_probe(pdf, paper_dir, "body",
+                           canonical_source=pr._LANG_SOURCE_MERGED)
+    assert len(calls) == 2, "a record about another comparison side is invalid"
+
+    # 4) a legacy record without the label is refreshed, never trusted
+    out.write_text(textlayer_probe.render_json({"verdict": "ok"}), encoding="utf-8")
+    pr.run_textlayer_probe(pdf, paper_dir, "body",
+                           canonical_source=pr._LANG_SOURCE_MERGED)
+    assert len(calls) == 3, "an unlabelled record must be refreshed"
+
+    # 5) same PDF + same label, but the comparison TEXT changed (a re-conversion
+    #    rewrites content_list.json under the same name) -> still a stale record
+    _seed()
+    pr.run_textlayer_probe(pdf, paper_dir, "a different body",
+                           canonical_source=pr._LANG_SOURCE_CONTENT_LIST)
+    assert len(calls) == 4, "the canonical text itself must be part of the cache key"
+
+
+def test_detect_language_record_null_when_unmeasured() -> None:
+    """No artifact to measure means nulls — never "unknown", never 0.
+
+    "zh/en", "no rule for this text" and "not measured" are three states.
+    """
+    record = pr.detect_language_record(None)
+    assert record["language"] is None
+    assert record["cjk_ratio"] is None
+    assert record["lang_source"] is None
+
+
+def test_meta_record_always_carries_the_language_triple() -> None:
+    """Frozen contract: the three keys are always present, null when unmeasured."""
+    provenance = {"engine_versions": {}, "engine_versions_source": "unavailable"}
+
+    def _meta(language=None):
+        return pr.build_meta_record(
+            pr.PaperResult(pdf_path="/tmp/p.pdf", stem="p"), engines="marker",
+            pages=None, images_copied=0, pdf_sha256=None, pdf_sha256_note=None,
+            engine_provenance=provenance, language=language,
+        )
+
+    bare = _meta()
+    assert [bare[k] for k in pr._LANG_META_KEYS] == [None, None, None]
+
+    record = pr.detect_language_record("本文提出一种方法。", pr._LANG_SOURCE_MERGED)
+    full = _meta(record)
+    assert full["language"] == "zh"
+    assert full["cjk_ratio"] == record["cjk_ratio"]
+    assert full["lang_source"] == pr._LANG_SOURCE_MERGED
+
+
+def test_resolve_canonical_md_prefers_merged_and_is_deterministic(tmp_path: Path) -> None:
+    paper_dir = tmp_path / "paper"
+    paper_dir.mkdir()
+    (paper_dir / "aaa.md").write_text("x" * 10, encoding="utf-8")
+    (paper_dir / "bbb.md").write_text("x" * 5000, encoding="utf-8")
+    # No _MERGED.md: the largest markdown wins, not the alphabetically first one.
+    assert pr.resolve_canonical_md(paper_dir).name == "bbb.md"
+
+    merged = paper_dir / "_MERGED.md"
+    merged.write_text("short", encoding="utf-8")
+    assert pr.resolve_canonical_md(paper_dir) == merged
+
+    (paper_dir / "empty.md").write_text("", encoding="utf-8")
+    assert pr.resolve_canonical_md(tmp_path / "missing") is None
+
+
+def test_run_textlayer_probe_degrades_and_stays_byte_stable(tmp_path: Path) -> None:
+    """An unreadable PDF degrades to not_applicable (never raises, never a pass),
+    and re-running the probe on the same input reproduces the same bytes."""
+    pytest.importorskip("pdfplumber")
+    pdf = tmp_path / "paper.pdf"
+    pdf.write_bytes(b"not a pdf at all")
+    paper_dir = tmp_path / "paper"
+    paper_dir.mkdir()
+
+    first = pr.run_textlayer_probe(pdf, paper_dir, "Body text.", force=True)
+    assert first["verdict"] == "not_applicable"
+    assert "TEXT_LAYER_UNREADABLE" in first["warnings"]
+    out = paper_dir / pr._TEXTLAYER_PROBE_FILENAME
+    assert out.is_file(), "the walk-away evidence must still be written"
+    before = out.read_bytes()
+
+    second = pr.run_textlayer_probe(pdf, paper_dir, "Body text.", force=True)
+    assert second["verdict"] == first["verdict"]
+    assert out.read_bytes() == before
+
+
+def test_run_textlayer_probe_reuses_a_matching_cached_record_unless_forced(
+        tmp_path: Path, monkeypatch) -> None:
+    """Reuse requires the record to prove it belongs to this PDF and this side."""
+    import textlayer_probe
+
+    pdf = tmp_path / "paper.pdf"
+    pdf.write_bytes(b"%PDF-1.4 junk")
+    paper_dir = tmp_path / "paper"
+    paper_dir.mkdir()
+    digest, _ = pr._sha256_of_file(pdf)
+    probe_version, pdfplumber_version = pr._current_probe_versions()
+    (paper_dir / pr._TEXTLAYER_PROBE_FILENAME).write_text(
+        textlayer_probe.render_json({"verdict": "warn", "cached": True,
+                                     "pdf_sha256": digest,
+                                     "canonical_source": None,
+                                     "probe_version": probe_version,
+                                     "pdfplumber_version": pdfplumber_version}),
+        encoding="utf-8")
+
+    def _boom(*_args, **_kwargs):
+        raise AssertionError("a matching cached record must not re-read the PDF")
+
+    monkeypatch.setattr(textlayer_probe, "probe_pdf", _boom)
+    assert pr.run_textlayer_probe(pdf, paper_dir, None)["cached"] is True
+
+    forced = pr.run_textlayer_probe(pdf, paper_dir, None, force=True)
+    assert forced["verdict"] == "not_applicable"
+    assert "PROBE_UNAVAILABLE" in forced["warnings"]
+
+
+def test_backfill_fills_language_triple_idempotently(tmp_path: Path) -> None:
+    merged_dir = tmp_path / "paper-merged" / "paper"
+    merged_dir.mkdir(parents=True)
+    (merged_dir / "_MERGED.md").write_text("本文提出一种方法。", encoding="utf-8")
+    meta_path = merged_dir / "_META.json"
+    meta = {"stem": "paper", "pdf_sha256": None}
+    snapshot = {"engine_versions": {}, "engine_versions_source": "unavailable",
+                "engine_versions_note": None}
+
+    changed, _ = pr._backfill_one(meta, meta_path, tmp_path, dict(snapshot))
+    assert changed is True
+    assert meta["language"] == "zh"
+    assert meta["lang_source"] == pr._LANG_SOURCE_BACKFILL
+
+    changed_again, _ = pr._backfill_one(meta, meta_path, tmp_path, dict(snapshot))
+    assert changed_again is False, "a second backfill must be a no-op"
 
 
 def test_cli_help_exits_zero_and_documents_backfill() -> None:

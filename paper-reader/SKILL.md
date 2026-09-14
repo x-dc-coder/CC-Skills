@@ -49,7 +49,8 @@ papers/              paper-conversion/         paper-merged/           paper-sum
 │       ├── images/                    # 从两引擎复制的 Figure 图片（自包含）
 │       ├── _MERGED.md                 # 合并版 Markdown
 │       ├── _DIFF.md                   # 差异对照
-│       └── _META.json                 # 转换元数据（含 pdf_sha256 + engine_versions 溯源）
+│       ├── _META.json                 # 转换元数据（pdf_sha256 + engine_versions 溯源 + language）
+│       └── _textlayer_probe.json      # 阶段 1.5 文本层探针（旁路证据，见下）
 └── paper-summaries/                   # 阶段3: 文献总结 → git 跟踪
     └── <stem>.md                      # 结构化总结（含期刊等级）
 ```
@@ -174,12 +175,16 @@ paper_reader.py papers/ --backfill-meta
 | `engine_versions_source` | `conversion_time`（转换时实测）\| `current_env_estimate`（回填估计）\| `unavailable`（探测失败） |
 | `engine_versions_note` | 失败原因或回填说明；成功为 `null` |
 | `pdf_sha256_note` | 源 PDF 定位/失败说明；正常为 `null` |
+| `language` | `zh` \| `en` \| `unknown` \| `null`——**与 paper-metrics `detect_language` 同一规则**（issue #10 首步） |
+| `cjk_ratio` | 汉字数 /（汉字数 + ASCII 字母 token 数），6 位小数；无文本时为 `null` |
+| `lang_source` | 该比率取自哪份产物：`mineru_content_list` \| `merged_markdown` \| `merged_markdown_backfill` \| `null` |
 
 约束：
 
 - 版本探测**每批只做一次并缓存**（探测各引擎 venv 的解释器；WSL 下经桥接取 Windows 侧解释器）。
 - 单项失败只留 `null` + note，**绝不抛异常、绝不阻塞转换**（探测有超时上限，超时保留已产出的部分结果）。
 - `pdf_sha256` 复用预检阶段的读取，不额外全量读盘。
+- **语言三键永不写 0、永不省略**：`null` 是"没测"，`unknown` 是"这份文本没有任何可识别规则"，两者不同。冻结用例见 `scripts/lang_spec_cases.json`——**paper-metrics 的测试断言同一份文件**（`test_text_metrics.py::test_detect_language_matches_paper_reader_shared_spec`），所以两层的语言判断不会各自漂移。
 
 **`pdf_sha256` 的来源等级（可信度分层，issue #7）**——同一个字段可能是三种东西，引用时必须说明是哪一级：
 
@@ -202,6 +207,8 @@ paper_reader.py <papers_dir> --backfill-meta
 - 扫描 `<papers_dir>/paper-analysis/*/_META.json`（v1 语料）与 `<papers_dir>/paper-merged/*/_META.json`（v2 产物）。
 - **幂等**：只补缺失字段；已有 `conversion_time` 实测记录一律不动；内容无变化则不重写文件。
 - **诚实标注**：回填的版本写 `engine_versions_source = "current_env_estimate"`，note 明说"该论文转换于回填之前，版本为当前环境估计值，非转换时实测"；算不出源 PDF 时 `pdf_sha256 = null` 并在 note 说明。
+- **回填会改变语料指纹（预期行为）**：paper-metrics 把 `_META.json` 的 sha256 记为输入产物之一，回填后该文件哈希变化 → 语料 `corpus_id` 变化 → `audit_corpus.py` 报 `inputs_changed`（"输入变了，旧结论作废"）。这是**归因正确**，不是确定性被破坏：指标数值本身不受影响。
+- **语言三键**：回填同时补齐 `language / cjk_ratio / lang_source`（值取自已存的 canonical 文本，`lang_source` 标为 `merged_markdown_backfill`）；找不到正文时三键写 `null`——**键永远存在，未测量就是不写 0**。
 
 ## 预检（Phase 0：秒级，不启动 GPU）
 
@@ -245,14 +252,54 @@ paper_reader.py <papers_dir> --backfill-meta
 
 - **产物绝不喂给 `canonical_text()`**——旁路证据，`paper-metrics` 的纯 stdlib / 零 LLM / 逐字节契约不受影响（实测：同一英文语料改动前后 `_per_paper_metrics.jsonl` **逐字节相同**）；
 - 只用无模型、无 GPU 的宽松许可库（`pdfplumber` MIT）；**不要**在这里引入 PyMuPDF（AGPL）；
-- 探针失败**绝不阻塞**转换流水线（异常一律降级为 `not_applicable` + `TEXT_LAYER_UNREADABLE`）；
-- 同输入两次运行 JSON **逐字节一致**（键排序、无时间戳、只记文件名不记绝对路径）。
+- 探针失败**绝不阻塞**转换流水线（意外异常由该层自行捕获降级：**设计内的"不适用"**写 `not_applicable` + 具体告警码如 `TEXT_LAYER_UNREADABLE` / `PDF_NOT_FOUND` / `PROBE_UNAVAILABLE`，**意外崩溃**写 `error` + `PROBE_CRASHED`，见下文"降级也留痕"）；
+- 同输入两次运行 JSON **逐字节一致**（键排序、无时间戳、只记文件名不记绝对路径）；
+- **比较对象要选指标层读的那份产物**（content_list.json），否则会把已发生的损坏测小一个数量级；
+- 源 PDF 已不在盘上时报 `PDF_NOT_FOUND`，缺 `pdfplumber` 时报 `TEXT_LAYER_UNREADABLE`——都是"没测"，不是"通过"。
 
-### 用法
+### 接入点：阶段 1.5 已在流水线内（issue #12）
+
+`process_one` 在合并之后自动跑探针，写入 `paper-merged/<stem>/_textlayer_probe.json`，并把 verdict 汇总到末尾表格的 `probe` 列（`ok` / `WARN` / `pdf_only` / `n/a`）。默认开启，`--no-textlayer-probe` 关闭。
+
+**缓存键 = PDF 内容哈希 + 比较对象标签 + 比较文本哈希 + 探针版本 + pdfplumber 版本。** 五项里任何一项变了都重算（`--force` 越过判断强制重算）。少任何一项都会把"上一次转换的旧证据"当成新证据——尤其**比较文本哈希**：重新转换会在同一文件名下换掉 content_list，只认标签就会复用错的记录。
+
+**降级也留痕，且区分"没测"与"崩了"**：源 PDF 不在（`PDF_NOT_FOUND`）、缺 `pdfplumber`（`TEXT_LAYER_UNREADABLE`）、探针不可用（`PROBE_UNAVAILABLE`）都写 `verdict=not_applicable`（**设计内的"不适用"**）；而**意料之外的崩溃**写 `verdict=error` + `PROBE_CRASHED`，并把 `probe_path` 置空。两者都会落盘——"这一跳没测过"本身就是证据；区分它们是因为下游常见的"`verdict != warn` 即算通过"会把崩溃悄悄扫进通过桶。这类记录没有 PDF 哈希，永远不会成为缓存命中。
+
+**content_list 按 md 同名匹配**：优先精确匹配 `<md_stem>_content_list.json`；精确文件不存在时，**只有该目录里仅有一个 content_list 才接受**，否则一律拒绝（歧义即视为"没有证据"，退回 `_MERGED.md`）。旧实现在本篇 JSON 为空时会退而取"同目录第一个非空文件"，等于**张冠李戴**——把别篇的正文当成本篇证据，而且标签还写着 `mineru_content_list`。
+
+**整段永不抛异常**：探针与语言相关的代码都在 `collect_stage_1_5()` 里，该函数契约为"永不抛异常"——磁盘上一条被手改坏的记录（例如 `"warnings": 123`）绝不能把一篇已经转换成功的论文变成失败的。探针异常一律由它捕获并降级（设计内的不适用 → `not_applicable`；**意外崩溃 → `error`**），**绝不阻塞转换**。
+
+**比较对象必须是本轮**产出**的那个产物**：本轮 MinerU 成功时用**它自己目录下**的 `*_content_list.json`（`canonical_source=mineru_content_list`），否则退回本轮 `_MERGED.md`（`canonical_source=merged_markdown`）。
+
+- "本轮"不是客套：树里可能留着**上一次转换**的 MinerU JSON。marker-only 运行、或本轮 MinerU 失败时如果还去扫树，就会把旧文本当作本次证据（实测：旧中文 JSON + 本轮英文合并稿 → 记录出 `zh`）。所以流水线只在传入了本轮 MinerU markdown 时才读同目录 JSON，扫描整棵树只允许 `--backfill-probe` 这类"没有本轮"的调用，并且 `canonical_source` 会写明用的是哪一份。
+- **不要把它说成"指标层读的那份文本"**：这里是**原始** content_list 的全部 text，而 paper-metrics 的 `canonical_text()` 会再丢掉 front_matter / references / keywords 等非正文。所以两层的 `cjk_ratio` **允许不同**，语言标签也不保证一致——paper-metrics 侧为此专门产出 `LANGUAGE_METADATA_MISMATCH` 交叉核对（见其 SKILL）。选 content_list 而不是 markdown 的理由与上面无关，只关乎**能不能看见损坏**：同一篇 PDF 对 `_MERGED.md` 只测出 **2.1%** 数字丢失，对 content_list 是 **55.5%**——markdown 导出保留着 JSON 侧已经丢掉的数字。
+
+### 本机实测（2026-09-14，中文语料 10 篇，比较对象 = content_list）
+
+| 结论 | 数值 |
+|---|---|
+| verdict | **10/10 篇 `warn`**（`DIGIT_LOSS_HIGH` + `UNSPACED_ENGLISH_RUNS`） |
+| 数字丢失率 | **41.8% – 78.2%**（PDF 侧 1094 个数字**全是全角**，CNKI 自定义字体编码） |
+| 空格引入 | 每篇 75–104 条 15+ 字母长串 |
+| 确定性 | 同输入两次运行 JSON **逐字节一致**（10/10） |
+| 与指标层一致 | 语言标签与 `text_metrics.detect_language` **10/10 一致** |
+
+### 存量语料：`--backfill-probe`
+
+`--resume` 会把状态文件里"已完成"的论文整篇跳过，所以**接入之前就转换好的语料永远拿不到阶段 1.5 证据**（真重跑转换约 6 分钟/篇）。这个入口只读 PDF 自带文本层：不启动引擎、不碰 GPU。
+
+```bash
+cd ~/.claude/skills && uv run python paper-reader/scripts/paper_reader.py <papers_dir> --backfill-probe [--force]
+```
+
+输出 `scanned/probed/reused/warn/not_measured/no_pdf` 计数：有效记录算 `reused`，源 PDF 找不到的论文计入 `no_pdf` 且不写记录。实测（真实中文语料副本《序定车辆路径问题》）：首次 `probed=1 warn=1`（数字丢失 78.2%），第二次 `reused=1`，`--force` 重新测量。
+
+### 单独跑（离线复核用）
 
 ```bash
 cd ~/.claude/skills && uv run python paper-reader/scripts/textlayer_probe.py \
-    --pdf paper.pdf --canonical canonical.txt --out _textlayer_probe.json
+    --pdf paper.pdf --canonical canonical.txt --canonical-source mineru_content_list \
+    --out _textlayer_probe.json
 ```
 
 ## 引擎与许可（红线）

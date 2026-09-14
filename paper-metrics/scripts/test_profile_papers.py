@@ -321,6 +321,184 @@ def test_profile_outputs_valid_json_and_md(synthetic_corpus: Path, tmp_path: Pat
 # ---------------------------------------------------------------------------
 
 @pytest.mark.skipif(not TGA_PAPER.exists(), reason="TGA paper not available on this machine")
+def test_language_record_mismatch_is_reported_not_hidden(tmp_path: Path) -> None:
+    """Two layers measure different artifacts, so they may disagree.  A silent
+    disagreement would leave a reader with one label and no hint that the
+    conversion layer had recorded another."""
+    corpus = tmp_path / "paper-analysis"
+    paper_dir = _write_paper(corpus, "Paper One", "p1", [
+        _make_block("text", "Title One", level=1),
+        _make_block("text", "1 Introduction", level=2),
+        _make_block("text", "This paper compares three baselines on two datasets."),
+    ])
+    (paper_dir / "_META.json").write_text(json.dumps({
+        "stem": "p1", "language": "zh", "cjk_ratio": 0.99,
+        "lang_source": "mineru_content_list",
+    }), encoding="utf-8")
+
+    out_dir = tmp_path / "out"
+    pp.run_profile(corpus, out_dir)
+    line = (out_dir / "_per_paper_metrics.jsonl").read_text(
+        encoding="utf-8").splitlines()[0]
+    record = json.loads(line)
+    assert record["language"] == "en", "this layer's own answer must not move"
+    assert record["upstream"]["language_recorded"] == "zh"
+    assert "LANGUAGE_METADATA_MISMATCH" in record["warnings"]
+    assert record["language_mismatch"]["recorded"] == "zh"
+    assert record["language_mismatch"]["detected"] == "en"
+
+
+def test_absent_language_record_adds_no_new_upstream_keys(tmp_path: Path) -> None:
+    """A corpus whose _META.json predates the language triple must keep exactly the
+    audit trail it had before (no new keys, no new warnings)."""
+    corpus = tmp_path / "paper-analysis"
+    paper_dir = _write_paper(corpus, "Paper One", "p1", [
+        _make_block("text", "Title One", level=1),
+        _make_block("text", "1 Introduction", level=2),
+        _make_block("text", "Prior work [1] showed X."),
+    ])
+    (paper_dir / "_META.json").write_text(json.dumps({"stem": "p1"}), encoding="utf-8")
+
+    out_dir = tmp_path / "out"
+    pp.run_profile(corpus, out_dir)
+    record = json.loads((out_dir / "_per_paper_metrics.jsonl").read_text(
+        encoding="utf-8").splitlines()[0])
+    assert "language_recorded" not in record["upstream"]
+    assert "language_mismatch" not in record
+    assert "LANGUAGE_METADATA_MISMATCH" not in record["warnings"]
+
+
+def test_language_record_agreement_adds_no_warning(tmp_path: Path) -> None:
+    """Agreement is the normal case: no mismatch key, no warning."""
+    corpus = tmp_path / "paper-analysis"
+    paper_dir = _write_paper(corpus, "Paper One", "p1", [
+        _make_block("text", "Title One", level=1),
+        _make_block("text", "1 Introduction", level=2),
+        _make_block("text", "本文比较了三种基线方法，并在两个数据集上验证。"),
+    ])
+    (paper_dir / "_META.json").write_text(json.dumps({
+        "stem": "p1", "language": "zh", "cjk_ratio": 0.97,
+        "lang_source": "mineru_content_list",
+    }), encoding="utf-8")
+
+    out_dir = tmp_path / "out"
+    pp.run_profile(corpus, out_dir)
+    record = json.loads((out_dir / "_per_paper_metrics.jsonl").read_text(
+        encoding="utf-8").splitlines()[0])
+    assert record["language"] == "zh"
+    assert "language_mismatch" not in record
+    assert "LANGUAGE_METADATA_MISMATCH" not in record["warnings"]
+
+
+def test_language_mismatch_ignores_unknown_on_either_side(tmp_path: Path) -> None:
+    """ "unknown" is an absence of judgement, not a competing claim: treating it as
+    a disagreement would make the signal noisy in both directions."""
+    corpus = tmp_path / "paper-analysis"
+    paper_dir = _write_paper(corpus, "Paper One", "p1", [
+        _make_block("text", "Title One", level=1),
+        _make_block("text", "1 Introduction", level=2),
+        _make_block("text", "This paper compares three baselines."),
+    ])
+    (paper_dir / "_META.json").write_text(json.dumps({
+        "stem": "p1", "language": "unknown", "lang_source": "mineru_content_list",
+    }), encoding="utf-8")
+
+    out_dir = tmp_path / "out"
+    pp.run_profile(corpus, out_dir)
+    record = json.loads((out_dir / "_per_paper_metrics.jsonl").read_text(
+        encoding="utf-8").splitlines()[0])
+    assert record["language"] == "en"
+    assert "language_mismatch" not in record
+    assert "LANGUAGE_METADATA_MISMATCH" not in record["warnings"]
+
+
+def test_detect_missing_is_not_silence(tmp_path: Path) -> None:
+    """Upstream recorded a language this layer could not measure at all: that is
+    not agreement, and it must not read like it (R2)."""
+    corpus = tmp_path / "paper-analysis"
+    paper_dir = _write_paper(corpus, "Paper One", "p1", [
+        _make_block("text", "Title One", level=1),
+        _make_block("text", "1 Introduction", level=2),
+        _make_block("text", "This paper compares three baselines."),
+    ])
+    (paper_dir / "_META.json").write_text(json.dumps({
+        "stem": "p1", "language": "zh", "lang_source": "mineru_content_list",
+    }), encoding="utf-8")
+
+    out_dir = tmp_path / "out"
+    # Force this layer's own detection to be inconclusive for the paper.
+    orig = pp._language_facts
+
+    def _blind(text_metrics_mod, text, metrics):
+        facts = dict(orig(text_metrics_mod, text, metrics))
+        facts["language"] = "unknown"
+        return facts
+
+    pp._language_facts = _blind
+    try:
+        pp.run_profile(corpus, out_dir)
+    finally:
+        pp._language_facts = orig
+    record = json.loads((out_dir / "_per_paper_metrics.jsonl").read_text(
+        encoding="utf-8").splitlines()[0])
+    assert record["language"] == "unknown"
+    assert record["language_mismatch"]["kind"] == "detect_missing"
+    assert "LANGUAGE_DETECT_MISSING" in record["warnings"]
+    assert "LANGUAGE_METADATA_MISMATCH" not in record["warnings"]
+
+
+def test_language_comparison_folds_case_and_region(tmp_path: Path) -> None:
+    """ "EN" vs "en" and "zh-CN" vs "zh" are label differences, not language
+    differences: they must not raise a mismatch."""
+    from profile_papers import _language_record_mismatch
+    assert _language_record_mismatch({"language": "en"}, {"language_recorded": "EN"}) is None
+    assert _language_record_mismatch({"language": "zh"}, {"language_recorded": "zh-CN"}) is None
+    assert _language_record_mismatch({"language": "en"}, {"language_recorded": " unknown "}) is None
+    different = _language_record_mismatch({"language": "en"}, {"language_recorded": "zh"})
+    assert different and different["kind"] == "mismatch"
+
+
+def _language_corpus(corpus: Path, langs: tuple[str, ...]) -> None:
+    for index, lang in enumerate(langs):
+        name, pid = f"Paper {index}", f"p{index}"
+        paper_dir = _write_paper(corpus, name, pid, [
+            _make_block("text", "Title", level=1),
+            _make_block("text", "1 Introduction", level=2),
+            _make_block("text", "This paper compares three baselines."),
+        ])
+        (paper_dir / "_META.json").write_text(json.dumps(
+            {"stem": pid, "language": lang, "lang_source": "mineru_content_list"}),
+            encoding="utf-8")
+
+
+def test_agreeing_corpus_raises_no_language_warning(tmp_path: Path) -> None:
+    """Aggregate-layer regression: the per-paper tests and the corpus audits could
+    not see this, yet every agreeing corpus used to report every paper as a
+    mismatch (a defaulted "kind" turned "no claim" into "mismatch")."""
+    corpus = tmp_path / "paper-analysis"
+    _language_corpus(corpus, ("en", "en"))
+    out_dir = tmp_path / "out"
+    pp.run_profile(corpus, out_dir)
+    summary = json.loads((out_dir / "_corpus_summary.json").read_text(encoding="utf-8"))
+    codes = [w.get("code") for w in summary.get("corpus_warnings", [])]
+    assert "LANGUAGE_METADATA_MISMATCH" not in codes
+    assert "LANGUAGE_DETECT_MISSING" not in codes
+
+
+def test_one_mismatch_names_only_the_mismatching_paper(tmp_path: Path) -> None:
+    corpus = tmp_path / "paper-analysis"
+    _language_corpus(corpus, ("en", "zh"))
+    out_dir = tmp_path / "out"
+    pp.run_profile(corpus, out_dir)
+    summary = json.loads((out_dir / "_corpus_summary.json").read_text(encoding="utf-8"))
+    hits = [w for w in summary.get("corpus_warnings", [])
+            if w.get("code") == "LANGUAGE_METADATA_MISMATCH"]
+    assert len(hits) == 1
+    # paper_key is the paper directory name, not the content_list file name.
+    assert "Paper 1" in hits[0]["detail"], "only the disagreeing paper may be named"
+    assert "Paper 0" not in hits[0]["detail"], "an agreeing paper must never be named"
+
+
 def test_tga_paper_real_profile(tmp_path: Path) -> None:
     """Profile the real TGA paper alone and verify counts match the source PDF."""
     # Build a 1-paper corpus by symlinking

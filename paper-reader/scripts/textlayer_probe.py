@@ -52,7 +52,16 @@ from pathlib import Path
 from typing import Any, Sequence
 
 PROBE_SPEC = "textlayer-probe/1"
-PROBE_VERSION = "1.1"
+PROBE_VERSION = "1.3"
+#: 1.3 records canonical_sha256 — the hash of the comparison text itself.  The
+#: source label alone cannot tell whether the *content* changed under the same
+#: label (a re-conversion rewrites content_list.json while keeping its name), so
+#: a cached result could otherwise be reused for a different comparison.
+#: 1.2 records canonical_source — which artifact the comparison used.  The field
+#: exists because that choice decides whether the damage is visible at all: on the
+#: Chinese corpus the same PDF measures 2.1% digit loss against the merged
+#: markdown, but 55.5% against the MinerU content_list.json that the metrics layer
+#: actually reads.  A verdict without that label is ambiguous.
 
 #: Below this many characters the PDF has no usable text layer (scan / image
 #: only) and every comparison is meaningless -> not_applicable.
@@ -195,8 +204,19 @@ def pdfplumber_version() -> str | None:
         return None
 
 
-def probe_pdf(pdf_path: Path, canonical_text: str | None = None) -> dict[str, Any]:
-    """Full probe of one PDF: text layer -> counts -> comparison -> record."""
+def probe_pdf(pdf_path: Path, canonical_text: str | None = None,
+              canonical_source: str | None = None) -> dict[str, Any]:
+    """Full probe of one PDF: text layer -> counts -> comparison -> record.
+
+    canonical_source names the artifact the canonical text came from (for example
+    "mineru_content_list" or "merged_markdown"), because the same PDF can measure
+    very different loss depending on which side of the hop is used as the
+    comparison, and a bare warn/ok would hide that choice.
+    """
+    canonical_sha256 = (
+        hashlib.sha256(canonical_text.encode("utf-8")).hexdigest()
+        if isinstance(canonical_text, str) else None
+    )
     base: dict[str, Any] = {
         "probe_spec": PROBE_SPEC,
         "probe_version": PROBE_VERSION,
@@ -205,6 +225,8 @@ def probe_pdf(pdf_path: Path, canonical_text: str | None = None) -> dict[str, An
         # byte-stability of a corpus-level record.
         "pdf_name": pdf_path.name,
         "pdf_sha256": sha256_file(pdf_path),
+        "canonical_source": canonical_source,
+        "canonical_sha256": canonical_sha256,
     }
     try:
         text, pages = read_pdf_text_layer(pdf_path)
@@ -232,6 +254,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--pdf", required=True, type=Path, help="PDF to probe")
     parser.add_argument("--canonical", type=Path, default=None,
                         help="canonical text file to compare against (optional)")
+    parser.add_argument("--canonical-source", default=None, metavar="LABEL",
+                        help="name of the artifact given to --canonical "
+                             "(e.g. mineru_content_list); recorded in the output")
     parser.add_argument("--out", type=Path, default=None,
                         help="write _textlayer_probe.json here (default: stdout)")
     args = parser.parse_args(argv)
@@ -239,7 +264,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     canonical_text = None
     if args.canonical is not None:
         canonical_text = args.canonical.read_text(encoding="utf-8")
-    record = probe_pdf(args.pdf, canonical_text)
+    record = probe_pdf(args.pdf, canonical_text, args.canonical_source)
     payload = render_json(record)
     if args.out is not None:
         args.out.parent.mkdir(parents=True, exist_ok=True)

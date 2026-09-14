@@ -1,0 +1,160 @@
+{
+  "alpha_token_regex": "[A-Za-z][A-Za-z'\\-]*",
+  "cases": [
+    {
+      "expected": {
+        "ascii_alpha_tokens": 9,
+        "cjk_chars": 0,
+        "cjk_ratio": 0.0,
+        "language": "en"
+      },
+      "id": "en_plain",
+      "note": "pure English: every English metric is defined here",
+      "text": "The proposed method outperforms all baselines on three datasets."
+    },
+    {
+      "expected": {
+        "ascii_alpha_tokens": 0,
+        "cjk_chars": 25,
+        "cjk_ratio": 1.0,
+        "language": "zh"
+      },
+      "id": "zh_plain",
+      "note": "pure Chinese: cjk_ratio far above the threshold",
+      "text": "本文提出一种新的方法，并在三个数据集上验证了其有效性。"
+    },
+    {
+      "expected": {
+        "ascii_alpha_tokens": 1,
+        "cjk_chars": 24,
+        "cjk_ratio": 0.96,
+        "language": "zh"
+      },
+      "id": "zh_with_ascii_terms",
+      "note": "mixed: CJK is counted in CHARACTERS while ASCII is counted in TOKENS, so one ASCII term can never move the ratio as much as one CJK character does",
+      "text": "本文采用 K-means 算法对数据进行聚类，实验结果表明该方法有效。"
+    },
+    {
+      "expected": {
+        "ascii_alpha_tokens": 0,
+        "cjk_chars": 0,
+        "cjk_ratio": 0.0,
+        "language": "unknown"
+      },
+      "id": "empty_string",
+      "note": "empty text is a measured state (ratio 0.0), not a missing one",
+      "text": ""
+    },
+    {
+      "expected": {
+        "ascii_alpha_tokens": 0,
+        "cjk_chars": 0,
+        "cjk_ratio": 0.0,
+        "language": "unknown"
+      },
+      "id": "whitespace_only",
+      "note": "no letters and no CJK -> unknown (no rule applies)",
+      "text": "   \n\t  "
+    },
+    {
+      "expected": {
+        "ascii_alpha_tokens": 0,
+        "cjk_chars": 0,
+        "cjk_ratio": 0.0,
+        "language": "unknown"
+      },
+      "id": "digits_only",
+      "note": "digits are not alpha tokens; still unknown",
+      "text": "2026 09 14 - 12.73%"
+    },
+    {
+      "expected": {
+        "ascii_alpha_tokens": 0,
+        "cjk_chars": 0,
+        "cjk_ratio": 0.0,
+        "language": "unknown"
+      },
+      "id": "cjk_punct_only",
+      "note": "CJK punctuation is NOT a CJK ideograph -> unknown, not zh",
+      "text": "【】（）、，。；：——…％"
+    },
+    {
+      "expected": {
+        "ascii_alpha_tokens": 6,
+        "cjk_chars": 0,
+        "cjk_ratio": 0.0,
+        "language": "en"
+      },
+      "id": "en_hyphen_apostrophe",
+      "note": "an internal hyphen/apostrophe stays inside one token",
+      "text": "The state-of-the-art model's results are reproducible."
+    },
+    {
+      "expected": {
+        "ascii_alpha_tokens": 0,
+        "cjk_chars": 19,
+        "cjk_ratio": 1.0,
+        "language": "zh"
+      },
+      "id": "fullwidth_digits_zh",
+      "note": "CNKI full-width digits (the corruption the stage 1.5 probe looks for)",
+      "text": "２０２６年９月１４日，本文方法在５个数据集上取得最优结果。"
+    },
+    {
+      "expected": {
+        "ascii_alpha_tokens": 120,
+        "cjk_chars": 6,
+        "cjk_ratio": 0.047619,
+        "language": "en"
+      },
+      "id": "en_long_with_few_cjk",
+      "note": "long English body with a handful of CJK characters stays English",
+      "text": "We compare against three strong baselines. We compare against three strong baselines. We compare against three strong baselines. We compare against three strong baselines. We compare against three strong baselines. We compare against three strong baselines. We compare against three strong baselines. We compare against three strong baselines. We compare against three strong baselines. We compare against three strong baselines. We compare against three strong baselines. We compare against three strong baselines. We compare against three strong baselines. We compare against three strong baselines. We compare against three strong baselines. We compare against three strong baselines. We compare against three strong baselines. We compare against three strong baselines. We compare against three strong baselines. We compare against three strong baselines. 文中算法数据"
+    },
+    {
+      "expected": {
+        "ascii_alpha_tokens": 90,
+        "cjk_chars": 10,
+        "cjk_ratio": 0.1,
+        "language": "en"
+      },
+      "id": "boundary_at_threshold",
+      "note": "ratio is exactly 0.10: the comparison is a strict >, so this is still en",
+      "text": "文中算法数据集实验结 word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word"
+    },
+    {
+      "expected": {
+        "ascii_alpha_tokens": 89,
+        "cjk_chars": 11,
+        "cjk_ratio": 0.11,
+        "language": "zh"
+      },
+      "id": "boundary_above_threshold",
+      "note": "ratio is exactly 0.11: the only difference from the case above is the boundary side",
+      "text": "文中算法数据集实验结果 word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word"
+    }
+  ],
+  "cjk_ranges": [
+    [
+      13312,
+      19903
+    ],
+    [
+      19968,
+      40959
+    ],
+    [
+      63744,
+      64255
+    ]
+  ],
+  "implementations": [
+    "paper-reader/scripts/paper_reader.py::detect_language_record",
+    "paper-metrics/scripts/text_metrics.py::detect_language"
+  ],
+  "round_digits": 6,
+  "rule": "cjk_ratio = cjk_chars / (cjk_chars + ascii_alpha_tokens), 0.0 if the denominator is 0; language = 'zh' if cjk_ratio > 0.10 else ('en' if ascii_alpha_tokens else 'unknown')",
+  "spec": "language-record/1",
+  "threshold": 0.1,
+  "why": "One frozen rule, two implementations: paper-reader records the language on the conversion side, paper-metrics re-detects it on the metrics side. This file is the shared spec; BOTH test suites assert against it, so the two layers cannot drift apart silently."
+}

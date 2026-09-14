@@ -318,6 +318,14 @@ def discover_papers_detailed(corpus_dir: Path) -> Discovery:
                     # dict of all-nulls must NOT count as "recorded".
                     "versions_recorded": any(v for v in versions.values()),
                 }
+                # Only carried over when the conversion layer actually recorded it:
+                # adding null keys would move every corpus audit trail for a
+                # cross-check that has nothing to compare.
+                for key, meta_key in (("language_recorded", "language"),
+                                      ("cjk_ratio_recorded", "cjk_ratio"),
+                                      ("language_source_recorded", "lang_source")):
+                    if meta_obj.get(meta_key) is not None:
+                        upstream[key] = meta_obj[meta_key]
         papers.append(Paper(
             name=paper_dir.name,
             content_list_path=cl_path,
@@ -1387,6 +1395,61 @@ def _language_facts(text_metrics_mod, text: str, metrics: dict) -> dict:
     return {"language": "unknown", "cjk_ratio": None, "language_supported": None}
 
 
+def _language_record_mismatch(record: dict, upstream: dict | None) -> dict | None:
+    """Compare the conversion layer's recorded language with this layer's answer.
+
+    Two layers answer the same question from different artifacts, so they *can*
+    legitimately disagree: this layer measures its prose-filtered canonical text
+    while paper-reader measures the raw content_list, and a paper whose body is
+    English but whose references are Chinese may land on opposite sides of the 0.10
+    threshold.  Silence would be the wrong answer - a reader would see one label and
+    never learn that the other layer said something else - so a disagreement is
+    reported instead of being averaged away.
+    """
+    recorded = _normalise_language((upstream or {}).get("language_recorded"))
+    detected = _normalise_language(record.get("language"))
+    if recorded is None:
+        # Nothing definite was recorded upstream: no claim, nothing to compare.
+        return None
+    if detected is None:
+        # Upstream made a claim and this layer could not measure anything.  That is
+        # NOT "no difference" - treating it as silence would let a failed
+        # measurement read exactly like agreement (see the R2 red line), so it gets
+        # its own kind instead of being folded into the mismatch.
+        return {
+            "kind": "detect_missing",
+            "recorded": recorded,
+            "recorded_cjk_ratio": (upstream or {}).get("cjk_ratio_recorded"),
+            "recorded_source": (upstream or {}).get("language_source_recorded"),
+            "detected": record.get("language"),
+            "detected_cjk_ratio": record.get("cjk_ratio"),
+        }
+    if recorded == detected:
+        return None
+    return {
+        "kind": "mismatch",
+        "recorded": recorded,
+        "recorded_cjk_ratio": (upstream or {}).get("cjk_ratio_recorded"),
+        "recorded_source": (upstream or {}).get("language_source_recorded"),
+        "detected": detected,
+        "detected_cjk_ratio": record.get("cjk_ratio"),
+    }
+
+
+def _normalise_language(value) -> str | None:
+    """A definite language tag, or None when the value makes no claim.
+
+    Case and region subtags are folded ("EN", "zh-CN" -> "en", "zh") so a label
+    difference that is not a language difference cannot raise a false mismatch.
+    """
+    if not isinstance(value, str):
+        return None
+    tag = value.strip().lower().replace("_", "-")
+    if not tag or tag == "unknown":
+        return None
+    return tag.split("-")[0]
+
+
 def aggregate_corpus(records: list[dict], corpus_id: str | None = None) -> dict:
     """Aggregate per-paper records into _corpus_summary.json.
 
@@ -1455,6 +1518,31 @@ def aggregate_corpus(records: list[dict], corpus_id: str | None = None) -> dict:
                                            if u.get("engine_versions_source")}),
         "engine_versions_recorded": bool(version_lists),
     }
+    for kind, code, why in (
+            ("mismatch", "LANGUAGE_METADATA_MISMATCH",
+             "differs from the language detected here; the two layers read different "
+             "artifacts, so the labels are allowed to differ - but a consumer must not "
+             "treat them as interchangeable"),
+            ("detect_missing", "LANGUAGE_DETECT_MISSING",
+             "could not be detected here at all; a missing measurement is not "
+             "agreement")):
+        # No default kind.  A record without the key made no claim at all, and
+        # defaulting it to "mismatch" (the earlier bug) made every AGREEING corpus
+        # report every one of its papers as a mismatch - a deterministic false
+        # positive that the per-paper tests and the corpus audits could not see.
+        keys = sorted(r["paper_key"] for r in records
+                      if (r.get("language_mismatch") or {}).get("kind") == kind)
+        if not keys:
+            continue
+        sources = sorted({str((r.get("language_mismatch") or {}).get("recorded_source"))
+                          for r in records
+                          if (r.get("language_mismatch") or {}).get("kind") == kind
+                          and (r.get("language_mismatch") or {}).get("recorded_source")})
+        detail = (f"{len(keys)} paper(s): the language recorded by paper-reader "
+                  f"{why} ({', '.join(keys[:5])}).")
+        if sources:
+            detail += " Recorded sources: " + ", ".join(sources) + "."
+        corpus_warnings.append({"code": code, "metric": "", "detail": detail})
     if upstream_known and not upstream_summary["engine_versions_recorded"]:
         corpus_warnings.append({
             "code": "ENGINE_VERSION_NOT_RECORDED", "metric": "",
@@ -1615,6 +1703,13 @@ def run_profile(corpus_dir: Path, out_dir: Path,
             "warnings": list(paper.warnings),
         }
         record.update(_language_facts(text_metrics_mod, text, metrics))
+        mismatch = _language_record_mismatch(record, paper.upstream)
+        if mismatch:
+            record["language_mismatch"] = mismatch
+            code = ("LANGUAGE_DETECT_MISSING"
+                    if mismatch.get("kind") == "detect_missing"
+                    else "LANGUAGE_METADATA_MISMATCH")
+            record["warnings"] = sorted(set(record["warnings"]) | {code})
         releases_used.add(_bundle_for(bundles, record.get("language")).language)
         if record.get("language_supported") is False and record.get("language") not in (
                 "en", "zh"):

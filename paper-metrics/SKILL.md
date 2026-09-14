@@ -105,6 +105,12 @@ uv run python paper-metrics/scripts/pas_spotcheck.py --corpus <paper-analysis> -
   - 被动用中文标记规则（`被/受到/得到/加以/予以` + 后接汉字）；连接词三组**联合最长匹配**，保证 `M-CONN-30 = 30c + 30k + 30r` 严格成立；
   - 能力矩阵的唯一事实源是 `text_metrics._METRIC_LANGUAGE_CAPABILITY`；**中文词表是策展词表**（无公开可再分发的对应资源，见 `data/lexicons/v2-zh/*.json` 的 source 字段）。
 - **元数据层也已支持中文（issue #10 首步）**：引用样式识别认全角 `［N］`，参考文献计数认无空格的中文条目与 GB/T 7714 文献类型标记。
+- **上游已落盘同规则的语言记录（issue #10 首步，2026-09-14）**：paper-reader 为每篇写 `_META.json` 的 `language` / `cjk_ratio` / `lang_source`，规则与本层 `detect_language` **逐字符类、逐阈值一致**（`cjk_ratio > 0.10 → zh`）。**冻结用例是共享的**：`paper-reader/scripts/lang_spec_cases.json`，本层测试 `test_detect_language_matches_paper_reader_shared_spec` 断言同一份文件——**漂移的是规则，这一点已被钉死**。
+- **但语言结论不保证一致，也不得跨层比较**：本层量的是**过滤后的正文**（丢 references/keywords/front_matter），上游量的是**原始 content_list**。同一篇"英文正文 + 中文参考文献"的论文，两层完全可能落在 0.10 阈值两侧。所以本层会**显式交叉核对**，且把两种情形分开（issue #10 首步，2026-09-14）：
+  - 双方都给出确定且**不同**的判断 → 逐篇 `LANGUAGE_METADATA_MISMATCH`（附 `language_mismatch`：双方 `language` / `cjk_ratio` 与 `lang_source`）；
+  - 上游**有**明确记录、本层**完全测不出**（canonical 拿不到） → 逐篇 `LANGUAGE_DETECT_MISSING`：**"本次没测出"不等于"两边一致"**，混为一谈就是把未测量洗成通过（本层的 R2 红线）；
+  - 只有"某一侧为 `unknown`"（没有主张）才算无可比，静默跳过；比较前对大小写与 `zh-CN` 这类地区子标签做归一，避免把标签差异误报成语言差异。
+  语料级同步产出同名 code——**不一致、以及"测不出"，都必须被看见**。
 - 每篇都会算 `cjk_ratio = 汉字数 / (汉字数 + ASCII 字母 token 数)`，**`cjk_ratio > 0.10` 判为中文**（阈值与实现见 `text_metrics.detect_language`）。
 - **没有规则的语篇**（既不是 en 也不是 zh）：**每一个指标输出 `null`**（`n = 0`、`warnings = ["LANGUAGE_NOT_SUPPORTED"]`），计入 `n_missing`，并在语料级触发 `CORPUS_LANGUAGE_UNSUPPORTED` 告警；**任何情况下不得用 0 代替"未测量"**。
 - 草稿校验：**能力感知**（issue #13）——逐条判定，测不了的指标以 `capability_not_supported` 跳过并说明原因；只有"没有任何规则的语言"才整体拒绝（退出码 2 `language_unsupported`）；中文草稿的有效性门槛用 **cjk-units（≥150）**，不是 ASCII 词数。

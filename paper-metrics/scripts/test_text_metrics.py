@@ -922,3 +922,31 @@ def test_real_corpus_excerpt_if_available():
     assert all(0.0 <= metrics[m]["value"] <= 1.0
                for m in ("M-HED-14", "M-BOO-15", "M-AWR-03", "M-NOM-10", "M-PAS-09", "M-TENSE-28"))
     print(f"corpus excerpt: {path.name} chars={len(text)}")
+
+
+# ---------------------------------------------------------------------------
+# Cross-layer language spec (issue #10 step): the conversion side records
+# language/cjk_ratio/lang_source in _META.json; this layer re-detects it.  Both
+# must reproduce the frozen shared cases, otherwise the two layers can disagree
+# about what language a paper is in.
+# ---------------------------------------------------------------------------
+
+PAPER_READER_LANG_SPEC = (Path(__file__).resolve().parents[2] / "paper-reader"
+                          / "scripts" / "lang_spec_cases.json")
+
+
+def test_detect_language_matches_paper_reader_shared_spec():
+    if not PAPER_READER_LANG_SPEC.is_file():
+        pytest.skip("shared language spec absent (paper-reader not checked out)")
+    spec = json.loads(PAPER_READER_LANG_SPEC.read_text(encoding="utf-8"))
+    assert spec["threshold"] == tm.LANGUAGE_SUPPORT_CJK_THRESHOLD
+    assert spec["round_digits"] == tm._ROUND_DIGITS
+    assert [list(r) for r in tm._CJK_RANGES] == spec["cjk_ranges"]
+    assert tm._ALPHA_TOKEN_RE.pattern == spec["alpha_token_regex"]
+    for case in spec["cases"]:
+        record = tm.detect_language(case["text"])
+        expected = case["expected"]
+        assert record["language"] == expected["language"], case["id"]
+        assert record["cjk_ratio"] == expected["cjk_ratio"], case["id"]
+        assert record["cjk_chars"] == expected["cjk_chars"], case["id"]
+        assert record["ascii_alpha_tokens"] == expected["ascii_alpha_tokens"], case["id"]

@@ -297,6 +297,387 @@ def _engine_version_snapshot() -> dict:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+#   Stage 1.5 side-band: text-layer probe + language record
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# The PDF -> content_list.json hop has no independent check of its own, and two
+# classes of damage happen inside it *silently* (measured 2026-09-14 on the Chinese
+# corpus, content_list basis: 10/10 papers lose 41.8-78.2% of the digits, and 75-104
+# unspaced English runs appear).  scripts/textlayer_probe.py measures the hop; this
+# block is the
+# pipeline call site (issue #12 follow-up), so a converted corpus carries the
+# evidence instead of needing a separate manual run per paper.
+#
+# Hard constraints (same style as the engine-provenance block above):
+#   * never raises  — any failure degrades to a not_applicable record + note
+#   * never blocks  — the probe is side-band; a broken probe must not fail a run
+#   * never feeds canonical text — paper-metrics keeps its pure-stdlib / zero-LLM /
+#     byte-reproducible contract, so nothing here may become a metric input
+#   * byte-stable   — sorted keys, no timestamps, file name only (no abs paths)
+#
+# The language record exists because two layers must not drift apart: the metrics
+# layer detects the language itself (text_metrics.detect_language) while this layer
+# now records the same quantity per converted paper.  Both sides use the SAME
+# character classes and threshold; the frozen cases live in
+# scripts/lang_spec_cases.json and are asserted by BOTH test suites.
+_TEXTLAYER_PROBE_FILENAME = "_textlayer_probe.json"
+
+#: CJK ideograph ranges — MUST stay identical to text_metrics._CJK_RANGES.
+_LANG_CJK_RANGES = ((0x3400, 0x4DBF), (0x4E00, 0x9FFF), (0xF900, 0xFAFF))
+_LANG_CJK_RE = re.compile(
+    "[" + "".join(chr(lo) + "-" + chr(hi) for lo, hi in _LANG_CJK_RANGES) + "]")
+
+#: Alpha token — MUST stay identical to text_metrics._ALPHA_TOKEN_RE: an internal
+#: apostrophe or hyphen stays inside the token, and digits split words apart.
+_LANG_ALPHA_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z'\-]*")
+
+#: MUST stay identical to text_metrics.LANGUAGE_SUPPORT_CJK_THRESHOLD.
+LANGUAGE_CJK_THRESHOLD = 0.10
+_LANG_ROUND_DIGITS = 6
+
+#: Which artifact a recorded cjk_ratio was computed from.  The metrics layer reads
+#: the MinerU content_list.json, so that is the preferred basis here as well; the
+#: merged markdown is only a fallback for marker-only runs.  The *rule* is shared, so
+#: the language labels must agree even when the two ratios differ a little.
+_LANG_SOURCE_CONTENT_LIST = "mineru_content_list"
+_LANG_SOURCE_MERGED = "merged_markdown"
+_LANG_SOURCE_BACKFILL = "merged_markdown_backfill"
+
+#: The frozen _META.json language triple (agreed with the metrics layer).
+_LANG_META_KEYS = ("language", "cjk_ratio", "lang_source")
+
+
+def detect_language_record(text: str | None,
+                           source: str | None = None) -> dict[str, Any]:
+    """language / cjk_ratio / lang_source — same rule as paper-metrics.
+
+    Mirrors text_metrics.detect_language exactly:
+
+        cjk_ratio = cjk_chars / (cjk_chars + ascii_alpha_tokens)   0.0 if empty
+        language  = "zh" if cjk_ratio > LANGUAGE_CJK_THRESHOLD else
+                    ("en" if ascii_alpha_tokens else "unknown")
+
+    text=None means "there is no artifact to measure" and is reported as nulls,
+    never as "unknown": "zh/en", "no rule for this text" and "not measured" are
+    three different states.  A missing measurement is never written as 0.
+    """
+    if text is None:
+        return {"language": None, "cjk_ratio": None, "lang_source": None,
+                "cjk_chars": None, "ascii_alpha_tokens": None}
+    cjk_chars = len(_LANG_CJK_RE.findall(text))
+    ascii_alpha_tokens = len(_LANG_ALPHA_TOKEN_RE.findall(text))
+    denominator = cjk_chars + ascii_alpha_tokens
+    cjk_ratio = (cjk_chars / denominator) if denominator else 0.0
+    if cjk_ratio > LANGUAGE_CJK_THRESHOLD:
+        language = "zh"
+    elif ascii_alpha_tokens > 0:
+        language = "en"
+    else:
+        language = "unknown"
+    return {
+        "language": language,
+        "cjk_ratio": round(cjk_ratio, _LANG_ROUND_DIGITS),
+        "lang_source": source,
+        "cjk_chars": cjk_chars,
+        "ascii_alpha_tokens": ascii_alpha_tokens,
+    }
+
+
+def read_text_or_none(path: Path | None) -> str | None:
+    """Text of *path*, or None when it is absent or unreadable.  Never raises."""
+    if path is None:
+        return None
+    try:
+        return path.read_text(encoding="utf-8") if path.is_file() else None
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def resolve_canonical_md(paper_dir: Path) -> Path | None:
+    """Canonical markdown of one converted paper, or None.
+
+    Covers both on-disk layouts: the v2 pipeline writes _MERGED.md next to
+    _META.json, v1 corpora keep a differently named markdown.  Falling back to the
+    largest .md keeps the choice deterministic (no RNG, no mtime).
+    """
+    merged = paper_dir / "_MERGED.md"
+    if merged.is_file():
+        return merged
+    candidates: list[tuple[int, str, Path]] = []
+    for path in paper_dir.glob("*.md"):
+        if path.name.startswith("_"):
+            # Internal artifacts (_DIFF.md and friends) are not the paper's text:
+            # the "largest .md" fallback must never return a diff file.
+            continue
+        try:
+            size = path.stat().st_size
+        except OSError:
+            continue
+        if size > 0:
+            candidates.append((-size, path.name, path))
+    return sorted(candidates)[0][2] if candidates else None
+
+
+def resolve_metrics_canonical(conversion_dir: Path, *,
+                              mineru_md_path: Path | None = None,
+                              allow_tree_scan: bool = False
+                              ) -> tuple[str | None, str | None]:
+    """(text, source) of the artifact the metrics layer actually reads.
+
+    mineru_md_path is this run's MinerU markdown: when it is given, only the
+    content_list sitting next to it counts, so a JSON left behind by an earlier
+    conversion can never be reported as this run's evidence.  allow_tree_scan=True
+    is for callers that have no "this run" at all (the backfill walk over an
+    existing corpus); the pipeline never uses it, because after a marker-only run
+    a stale Chinese JSON would otherwise become the canonical side of the record.
+
+    paper-metrics builds its canonical document from the MinerU
+    content_list.json, NOT from the merged markdown, and that difference decides
+    whether the probe sees the damage at all.  Measured on the Chinese corpus: the
+    same PDF shows 2.1% digit loss against _MERGED.md but 55.5% against the
+    content_list, because the markdown export keeps digits the JSON side dropped.
+    Preferring the metrics artifact is therefore the point, not a detail.
+    """
+    if mineru_md_path is not None:
+        # Exact stem first: a directory could hold more than one content_list, and
+        # then "the first non-empty one" would be another paper's text while the
+        # record still claims mineru_content_list.  The glob stays as a fallback for
+        # layouts that name the JSON differently from the markdown.
+        md = Path(mineru_md_path)
+        exact = md.parent / f"{md.stem}_content_list.json"
+        if exact.is_file():
+            candidates = [exact]
+        else:
+            # Fallback for layouts that name the JSON differently - but only when
+            # the directory is unambiguous.  With several candidates we cannot tell
+            # which one belongs to this run, and guessing is exactly how another
+            # paper's text ends up labelled as this one's canonical.
+            globbed = sorted(md.parent.glob("*_content_list.json"))
+            candidates = globbed if len(globbed) == 1 else []
+    elif allow_tree_scan:
+        candidates = sorted(conversion_dir.glob("mineru/*/auto/*_content_list.json"))
+    else:
+        # No MinerU output from this run and no permission to scan: the caller falls
+        # back to its own merged markdown rather than trusting whatever JSON an
+        # earlier run happened to leave in the tree.
+        return None, None
+    for path in candidates:
+        try:
+            blocks = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, RecursionError):
+            # RecursionError: a pathological nesting depth must skip this file, not
+            # blow up the conversion that already succeeded.
+            continue
+        if not isinstance(blocks, list):
+            continue
+        parts = [str(b.get("text") or "") for b in blocks
+                 if isinstance(b, dict) and b.get("text")]
+        if parts:
+            return "\n".join(parts), _LANG_SOURCE_CONTENT_LIST
+    return None, None
+
+
+def run_textlayer_probe(pdf: Path, paper_dir: Path, canonical_text: str | None,
+                        *, force: bool = False,
+                        canonical_source: str | None = None) -> dict[str, Any]:
+    """Run stage 1.5 for one paper and write _textlayer_probe.json. Never raises.
+
+    An existing record is reused unless *force* — but only after it proves to belong
+    to this very PDF and comparison side (see _cached_record_matches): given the same
+    inputs the probe is deterministic, so re-reading a 200-page PDF on every resume
+    would buy nothing, while a record about a *different* hop would be worse than no
+    record at all.  The caller reads verdict and warnings back.
+    """
+    out_path = paper_dir / _TEXTLAYER_PROBE_FILENAME
+    if not force and _probe_cache_hit(out_path, pdf, canonical_source, canonical_text):
+        cached = _read_probe_record(out_path)
+        if cached is not None:
+            return cached
+    if not pdf.is_file():
+        # The text layer exists only inside the source PDF: when the file itself is
+        # gone the hop cannot be measured at all (this is what a backfill over a
+        # corpus whose PDFs were cleaned up hits).  Reported, never raised.
+        return _store_probe_record(
+            out_path, _probe_unavailable(f"source PDF not found: {pdf.name}",
+                                         warning="PDF_NOT_FOUND"))
+    try:
+        import textlayer_probe  # lazy: keeps the pure part dependency-free
+    except Exception as exc:  # noqa: BLE001 - a probe bug must not stop a run
+        return _store_probe_record(
+            out_path,
+            _probe_unavailable(f"import textlayer_probe: {type(exc).__name__}: {exc}"))
+    try:
+        record = textlayer_probe.probe_pdf(pdf, canonical_text, canonical_source)
+    except Exception as exc:  # noqa: BLE001
+        return _store_probe_record(out_path, _probe_unavailable(f"{type(exc).__name__}: {exc}"))
+    return _store_probe_record(out_path, record, render=textlayer_probe.render_json)
+
+
+def _store_probe_record(out_path: Path, record: dict[str, Any], render=None) -> dict[str, Any]:
+    """Write the record and return it; a write failure only costs the artifact.
+
+    Degraded records are stored too, on purpose: "this hop was never measured" is
+    itself evidence, and leaving it off disk would contradict the probe contract
+    that a scanned PDF is recorded as not_applicable rather than as a pass."""
+    try:
+        if render is None:
+            payload = json.dumps(record, ensure_ascii=False, sort_keys=True,
+                                 indent=2) + "\n"
+        else:
+            payload = render(record)
+        out_path.write_text(payload, encoding="utf-8")
+    except OSError as exc:
+        print(f"  [probe] could not write {out_path.name}: {exc}", file=sys.stderr)
+    return record
+
+
+def _probe_cache_hit(out_path: Path, pdf: Path, canonical_source: str | None,
+                     canonical_text: str | None) -> bool:
+    """True when the stored record may be returned as-is.
+
+    One predicate for two callers: the probe itself (reuse or re-measure) and the
+    backfill (report honestly whether a paper was measured or reused).
+    """
+    if not out_path.is_file():
+        return False
+    cached = _read_probe_record(out_path)
+    return bool(cached is not None and _cached_record_matches(
+        cached, pdf, canonical_source, canonical_text))
+
+
+def _cached_record_matches(record: dict[str, Any], pdf: Path,
+                           canonical_source: str | None,
+                           canonical_text: str | None = None) -> bool:
+    """Is a stored record still about the same PDF and the same comparison side?
+
+    Reuse is safe only when the record provably describes the current input.  The
+    source PDF can be replaced under the same stem (corrected upload, re-download),
+    and the comparison side can appear or change (a content_list.json arriving after
+    a marker-only run); reusing then would leave evidence about a different hop.  A
+    record written before canonical_source existed carries no label and is therefore
+    refreshed once instead of being trusted.
+    """
+    if record.get("canonical_source") != canonical_source:
+        return False
+    # The label is not the content: a re-conversion rewrites content_list.json
+    # under the same name, and the same PDF would then be compared against a
+    # different text.  Hash the text itself so that cannot pass as a cache hit.
+    expected_canonical = (
+        hashlib.sha256(canonical_text.encode("utf-8")).hexdigest()
+        if isinstance(canonical_text, str) else None
+    )
+    if record.get("canonical_sha256") != expected_canonical:
+        return False
+    probe_version, pdfplumber_version = _current_probe_versions()
+    if record.get("probe_version") != probe_version:
+        return False
+    if record.get("pdfplumber_version") != pdfplumber_version:
+        return False
+    recorded = record.get("pdf_sha256")
+    if not isinstance(recorded, str) or not recorded:
+        return False
+    digest, _note = _sha256_of_file(pdf)
+    return digest == recorded
+
+
+def _probe_unavailable(detail: str, warning: str = "PROBE_UNAVAILABLE") -> dict[str, Any]:
+    """Degraded probe record: an unmeasured hop, never a silent pass."""
+    return {
+        "verdict": "not_applicable",
+        "warnings": [warning],
+        "error": detail,
+    }
+
+
+def _current_probe_versions() -> tuple[str | None, str | None]:
+    """(probe version, pdfplumber version) of the code that would run right now.
+
+    Both are recorded in every probe result, so a stale record can be detected
+    instead of trusted: a probe-rule change or a pdfplumber upgrade moves the
+    text-layer extraction, which is exactly what the record claims to describe.
+    Returns (None, None) when the module cannot be imported at all; a record that
+    carries real versions then never matches, which is the safe direction.
+    """
+    try:
+        import textlayer_probe
+        return (getattr(textlayer_probe, "PROBE_VERSION", None),
+                textlayer_probe.pdfplumber_version())
+    except Exception:  # noqa: BLE001
+        return None, None
+
+
+def collect_stage_1_5(pdf: Path, merged_dir: Path, conversion_dir: Path, stem: str,
+                      *, force: bool, enabled: bool,
+                      result: PaperResult,
+                      mineru_md_path: Path | None = None) -> dict[str, Any]:
+    """Run the whole side-band stage and return the language record.
+
+    Everything here is evidence, never an input, so this function swallows every
+    exception it can meet (recording a degraded verdict) instead of letting one
+    escape into process_one.  A corrupt stored record must never turn a paper that
+    already converted successfully into a failed one, which is exactly the
+    "never blocks" red line.
+    """
+    # A literal, not a call: nothing here may raise before the try, so the
+    # "never blocks a conversion" contract does not depend on another function's
+    # behaviour.  The except branch returns whatever was established meanwhile.
+    lang_record: dict[str, Any] = {"language": None, "cjk_ratio": None,
+                                   "lang_source": None, "cjk_chars": None,
+                                   "ascii_alpha_tokens": None}
+    try:
+        canonical_text, canonical_source = resolve_metrics_canonical(
+            conversion_dir, mineru_md_path=mineru_md_path)
+        if canonical_text is None:
+            # No MinerU JSON (a marker-only run): fall back to paper-reader's own
+            # merged markdown, labelled as such so the weaker basis stays visible.
+            canonical_text = read_text_or_none(resolve_canonical_md(merged_dir))
+            canonical_source = (_LANG_SOURCE_MERGED if canonical_text is not None
+                                else None)
+        lang_record = detect_language_record(canonical_text, canonical_source)
+        if not enabled:
+            return lang_record
+        probe_record = run_textlayer_probe(pdf, merged_dir, canonical_text,
+                                           force=force,
+                                           canonical_source=canonical_source)
+        probe_file = merged_dir / _TEXTLAYER_PROBE_FILENAME
+        result.probe_path = str(probe_file) if probe_file.is_file() else None
+        result.probe_verdict = probe_record.get("verdict")
+        # Defensive: the record may come from disk, so warnings is whatever the file
+        # said (a hand-edited "warnings": 123 must not iterate).
+        raw_warnings = probe_record.get("warnings")
+        result.probe_warnings = ([str(w) for w in raw_warnings]
+                                 if isinstance(raw_warnings, list) else [])
+        if result.probe_verdict == "warn":
+            # Loud on purpose: this is the point of the stage - a conversion that
+            # dropped 55% of the digits used to look exactly like a good one.
+            print(f"  [{stem}] TEXTLAYER WARN: {', '.join(result.probe_warnings)} "
+                  f"(digit_loss_rate={probe_record.get('digit_loss_rate')}, "
+                  f"unspaced_runs_introduced="
+                  f"{probe_record.get('unspaced_runs_introduced')})",
+                  file=sys.stderr)
+        return lang_record
+    except Exception as exc:  # noqa: BLE001 - side-band evidence must never fail a run
+        print(f"  [{stem}] text-layer probe failed "
+              f"({type(exc).__name__}: {exc})", file=sys.stderr)
+        # "error" and not "not_applicable": a crash is not a designed non-case, and
+        # downstream "verdict != warn means fine" logic must not sweep it into the
+        # passing bucket.  A half-written record must not look like evidence either.
+        result.probe_verdict = "error"
+        result.probe_warnings = ["PROBE_CRASHED"]
+        result.probe_path = None
+        return lang_record
+
+
+def _read_probe_record(path: Path) -> dict[str, Any] | None:
+    """Parse an existing probe record; None when unusable (caller re-probes)."""
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, RecursionError):
+        return None
+    return record if isinstance(record, dict) else None
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 #   Enums
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -629,7 +1010,12 @@ class PipelineState:
         entry = self.get(stem)
         if not entry:
             return False
-        for phase in ("precheck", "phase1_converted"):
+        # phase2_merged belongs here: a paper whose merge failed is NOT done, yet
+        # --resume used to skip it forever (the failed merge was never retried and,
+        # since stage 1.5 runs after the merge, it never produced probe evidence
+        # either).  Retrying costs a re-conversion, which is the honest price of
+        # having called it finished.
+        for phase in ("precheck", "phase1_converted", "phase2_merged"):
             s = (entry.get(phase) or {}).get("status", "pending")
             if s not in ("done", "degraded", "passed"):
                 return False
@@ -803,6 +1189,12 @@ class PaperResult:
     merged_supplement_count: int = 0
     precheck: PrecheckResult | None = None
     phases_done: list[str] = field(default_factory=list)
+    #: Stage 1.5 side-band evidence (issue #12 follow-up).  Kept on the result so
+    #: the end-of-run summary can surface a silent corruption that would otherwise
+    #: only sit in a JSON file nobody opens.
+    probe_path: str | None = None
+    probe_verdict: str | None = None
+    probe_warnings: list[str] = field(default_factory=list)
 
 
 def run_marker(pdf: Path, out_dir: Path, pages: str | None) -> EngineResult:
@@ -1624,6 +2016,7 @@ def build_meta_record(
     pdf_sha256: str | None,
     pdf_sha256_note: str | None,
     engine_provenance: dict,
+    language: dict | None = None,
 ) -> dict:
     """Assemble the _META.json payload (pure function → unit-testable, no IO).
 
@@ -1632,8 +2025,13 @@ def build_meta_record(
       engine_versions          {marker, mineru, torch, cuda, python} — all five keys
       engine_versions_source   "conversion_time" | "current_env_estimate" | "unavailable"
       engine_versions_note     optional explanation (failure / estimate caveat)
+      language / cjk_ratio / lang_source
+                               language record (issue #10 step), the SAME rule as
+                               text_metrics.detect_language; null when there was no
+                               canonical text to measure
     """
     prov_versions = engine_provenance.get("engine_versions") or {}
+    lang = language or {}
     meta = {
         "pdf_path": result.pdf_path,
         "stem": result.stem,
@@ -1642,6 +2040,11 @@ def build_meta_record(
         "engine_versions": {k: prov_versions.get(k) for k in _ENGINE_CONTRACT_KEYS},
         "engine_versions_source": engine_provenance.get("engine_versions_source"),
         "engine_versions_note": engine_provenance.get("engine_versions_note"),
+        # Language triple: always present, null when unmeasured (never 0 / never
+        # omitted), so a consumer can tell "not measured" from "measured as 0".
+        "language": lang.get("language"),
+        "cjk_ratio": lang.get("cjk_ratio"),
+        "lang_source": lang.get("lang_source"),
         "engines": engines,
         "pages": pages,
         "marker": asdict(result.marker) if result.marker else None,
@@ -1697,12 +2100,14 @@ def _meta_candidates(papers_dir: Path) -> list[Path]:
     return unique
 
 
-def _resolve_source_pdf_sha256(
+def _resolve_source_pdf(
     meta: dict, meta_path: Path, papers_dir: Path,
-) -> tuple[str | None, str | None]:
-    """Locate the source PDF for an existing _META.json and hash it.
+) -> tuple[Path | None, str | None, str | None]:
+    """Locate the source PDF for an existing _META.json → (path, kind, digest).
 
-    Returns (digest|None, note|None). Never raises. Preference order:
+    Never raises.  kind is "source" (the paper's own file) or "engine_copy" (a copy
+    an engine kept, which may differ in bytes from what was submitted).
+    Preference order:
       1. meta["pdf_path"] (absolute, or relative to paper dir / papers_dir)
       2. <papers_dir>/papers/<stem>.pdf, <papers_dir>/<stem>.pdf, <paper_dir>/<stem>.pdf
       3. first <stem>.pdf found under papers_dir
@@ -1722,51 +2127,71 @@ def _resolve_source_pdf_sha256(
                  meta_path.parent.parent):
         candidates.append(base / f"{stem}.pdf")
 
-    for cand in candidates:
+    def _usable(cand: Path) -> bool:
         try:
-            if cand.is_file():
-                digest, _ = _sha256_of_file(cand)
-                if digest:
-                    return digest, f"pdf_sha256 computed from source PDF: {cand}"
+            if not cand.is_file():
+                return False
         except Exception:
-            continue
+            return False
+        digest, _ = _sha256_of_file(cand)
+        return bool(digest)
+
+    for cand in candidates:
+        if _usable(cand):
+            return cand, "source", _sha256_of_file(cand)[0]
 
     try:
         hits = sorted(p for p in papers_dir.rglob(f"{stem}.pdf") if p.is_file())
     except Exception:
         hits = []
     for cand in hits:
-        digest, _ = _sha256_of_file(cand)
-        if digest:
-            return digest, f"pdf_sha256 computed from source PDF: {cand}"
+        if _usable(cand):
+            return cand, "source", _sha256_of_file(cand)[0]
 
     for cand in sorted(meta_path.parent.rglob("*_origin.pdf")):
-        if not cand.is_file():
-            continue
-        digest, _ = _sha256_of_file(cand)
-        if digest:
-            return digest, (
-                "pdf_sha256 computed from an engine-side copy, not the original "
-                f"source PDF (may differ in bytes): {cand}"
-            )
+        if _usable(cand):
+            return cand, "engine_copy", _sha256_of_file(cand)[0]
 
-    return None, f"pdf_sha256 unavailable: no source PDF found for stem '{stem}'"
+    return None, None, None
+
+
+def _resolve_source_pdf_sha256(
+    meta: dict, meta_path: Path, papers_dir: Path,
+) -> tuple[str | None, str | None]:
+    """Hash the located source PDF → (digest|None, note|None).  Never raises.
+
+    The note states the credibility tier (issue #7): an original source PDF versus
+    an engine-side copy that may differ in bytes.
+    """
+    stem = str(meta.get("stem") or meta_path.parent.name)
+    path, kind, digest = _resolve_source_pdf(meta, meta_path, papers_dir)
+    if path is None or not digest:
+        return None, f"pdf_sha256 unavailable: no source PDF found for stem '{stem}'"
+    if kind == "engine_copy":
+        return digest, (
+            "pdf_sha256 computed from an engine-side copy, not the original "
+            f"source PDF (may differ in bytes): {path}"
+        )
+    return digest, f"pdf_sha256 computed from source PDF: {path}"
 
 
 def _backfill_one(
     meta: dict, meta_path: Path, papers_dir: Path, snapshot: dict,
+    with_versions: bool = True,
 ) -> tuple[bool, str]:
     """Fill missing provenance fields in-place → (changed, sha_state).
 
     Only *missing* fields are written; existing measured values are preserved.
     All derived text is deterministic (no timestamps), so a second run is a no-op.
+    with_versions=False fills the language triple only, leaving a conversion-time
+    provenance record untouched: its versions were measured then, not now.
     """
     changed = False
     existing_note = meta.get("engine_versions_note")
+    sha_state = "present" if meta.get("pdf_sha256") else "missing"
 
     # --- pdf_sha256: fill only when missing; never overwrite an existing digest ---
-    sha_state = "present" if meta.get("pdf_sha256") else "missing"
-    if not meta.get("pdf_sha256"):
+    if with_versions and not meta.get("pdf_sha256"):
         resolved, sha_note = _resolve_source_pdf_sha256(meta, meta_path, papers_dir)
         sha_state = "filled" if resolved else "null"
         if "pdf_sha256" not in meta or resolved != meta.get("pdf_sha256"):
@@ -1775,46 +2200,138 @@ def _backfill_one(
         if sha_note and meta.get("pdf_sha256_note") != sha_note:
             meta["pdf_sha256_note"] = sha_note
             changed = True
-    elif "pdf_sha256_note" not in meta:
+    elif with_versions and "pdf_sha256_note" not in meta:
         meta["pdf_sha256_note"] = None
         changed = True
 
     # --- engine_versions: keep measured values, fill only the nulls ---
-    versions = meta.get("engine_versions")
-    merged = dict(versions) if isinstance(versions, dict) else {}
-    for key in _ENGINE_CONTRACT_KEYS:
-        if not merged.get(key):
-            value = (snapshot.get("engine_versions") or {}).get(key)
-            if value:
-                merged[key] = value
-        if key not in merged:
-            merged[key] = None
-    if merged != versions:
-        meta["engine_versions"] = merged
-        changed = True
+    if with_versions:
+        existing_versions = meta.get("engine_versions")
+        merged = dict(existing_versions) if isinstance(existing_versions, dict) else {}
+        for key in _ENGINE_CONTRACT_KEYS:
+            if not merged.get(key):
+                value = (snapshot.get("engine_versions") or {}).get(key)
+                if value:
+                    merged[key] = value
+            if key not in merged:
+                merged[key] = None
+        if merged != existing_versions:
+            meta["engine_versions"] = merged
+            changed = True
 
-    source = ("current_env_estimate"
-              if any(merged.get(k) for k in _ENGINE_CONTRACT_KEYS) else "unavailable")
-    if meta.get("engine_versions_source") != source:
-        meta["engine_versions_source"] = source
-        changed = True
+        source = ("current_env_estimate"
+                  if any(merged.get(k) for k in _ENGINE_CONTRACT_KEYS) else "unavailable")
+        if meta.get("engine_versions_source") != source:
+            meta["engine_versions_source"] = source
+            changed = True
 
-    # Deterministic note (no timestamps → repeated runs stay byte-identical).
-    # The PDF path/derivation detail lives in pdf_sha256_note, not here, so that
-    # a record whose digest already exists produces exactly the same note.
-    parts = [_BACKFILL_HONESTY]
-    if (isinstance(existing_note, str) and existing_note.strip()
-            and _BACKFILL_HONESTY not in existing_note):
-        parts.append(f"original conversion note: {existing_note}")
-    stale = snapshot.get("engine_versions_note")
-    if source == "unavailable" and stale:
-        parts.append(stale)
-    desired_note = "; ".join(parts)
-    if meta.get("engine_versions_note") != desired_note:
-        meta["engine_versions_note"] = desired_note
-        changed = True
+        # Deterministic note (no timestamps → repeated runs stay byte-identical).
+        # The PDF path/derivation detail lives in pdf_sha256_note, not here, so
+        # that a record whose digest already exists produces the same note.
+        parts = [_BACKFILL_HONESTY]
+        if (isinstance(existing_note, str) and existing_note.strip()
+                and _BACKFILL_HONESTY not in existing_note):
+            parts.append(f"original conversion note: {existing_note}")
+        stale = snapshot.get("engine_versions_note")
+        if source == "unavailable" and stale:
+            parts.append(stale)
+        desired_note = "; ".join(parts)
+        if meta.get("engine_versions_note") != desired_note:
+            meta["engine_versions_note"] = desired_note
+            changed = True
+
+    # --- language record (issue #10 step): same rule as detect_language ---------
+    # Measured now from the stored canonical markdown, hence the explicit
+    # *_backfill source label.  A value that is already known is never downgraded
+    # to null, so a second run is a no-op (idempotent by construction).
+    # "0.0 is a value, not a hole": a real cjk_ratio of 0.0 (an all-English paper)
+    # must not make every backfill re-read and re-parse the markdown.
+    if any(key not in meta or meta.get(key) is None for key in _LANG_META_KEYS):
+        backfill_text = read_text_or_none(resolve_canonical_md(meta_path.parent))
+        record = detect_language_record(
+            backfill_text,
+            _LANG_SOURCE_BACKFILL if backfill_text is not None else None,
+        )
+        for key in _LANG_META_KEYS:
+            value = record.get(key)
+            # A missing key is always added (null when unmeasured: the triple is
+            # never omitted), an existing value is only ever upgraded.
+            if key not in meta:
+                meta[key] = value
+                changed = True
+            elif meta.get(key) is None and value is not None:
+                meta[key] = value
+                changed = True
 
     return changed, sha_state
+
+
+def backfill_probe(papers_dir: Path, force: bool = False) -> dict:
+    """Run stage 1.5 for papers that already converted, without re-converting.
+
+    --resume skips every paper the state file calls finished, so a corpus converted
+    before the probe was wired in would never gain the evidence through the normal
+    path, and re-converting to obtain it costs minutes per paper.  This walks the
+    existing _META.json files instead and writes _textlayer_probe.json next to each
+    one, using the same never-raising probe and the same cache rules.
+    """
+    stats = {"scanned": 0, "probed": 0, "reused": 0, "warn": 0,
+             "not_measured": 0, "no_pdf": 0}
+    for meta_path in _meta_candidates(papers_dir):
+        stats["scanned"] += 1
+        paper_dir = meta_path.parent
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, RecursionError):
+            continue
+        if not isinstance(meta, dict):
+            continue
+        stem = str(meta.get("stem") or paper_dir.name)
+
+        # Canonical side: the artifact the metrics layer reads, looked up in the
+        # conversion tree first (a paper-merged dir has no mineru tree of its own).
+        canonical_text, canonical_source = None, None
+        # A caller may point straight at <root>/paper-merged, in which case the
+        # conversion tree is a sibling, not a child: without that candidate the
+        # content_list is never found and the probe silently degrades to the
+        # markdown, hiding exactly the damage it exists to measure.
+        # The parent candidate exists for callers that point at <root>/paper-merged
+        # or <root>/paper-analysis; gating it on those names keeps it from escaping
+        # to the parent of a corpus root, where an unrelated corpus could hold a
+        # same-stem paper and hand back its evidence.
+        candidates = [papers_dir / "paper-conversion" / stem]
+        if papers_dir.name in ("paper-merged", "paper-analysis"):
+            candidates.append(papers_dir.parent / "paper-conversion" / stem)
+        candidates.append(paper_dir)
+        for candidate in candidates:
+            # A backfill has no "this run": the newest tree is all it can use, and
+            # the recorded canonical_source tells a reader which artifact that was.
+            canonical_text, canonical_source = resolve_metrics_canonical(
+                candidate, allow_tree_scan=True)
+            if canonical_text is not None:
+                break
+        if canonical_text is None:
+            canonical_text = read_text_or_none(resolve_canonical_md(paper_dir))
+            canonical_source = (_LANG_SOURCE_MERGED if canonical_text is not None
+                                else None)
+
+        pdf_path, _kind, _digest = _resolve_source_pdf(meta, meta_path, papers_dir)
+        out_path = paper_dir / _TEXTLAYER_PROBE_FILENAME
+        if pdf_path is None:
+            stats["no_pdf"] += 1
+            continue
+        hit = (not force) and _probe_cache_hit(out_path, pdf_path,
+                                               canonical_source, canonical_text)
+        record = run_textlayer_probe(pdf_path, paper_dir, canonical_text,
+                                     force=force,
+                                     canonical_source=canonical_source)
+        verdict = record.get("verdict")
+        if verdict == "warn":
+            stats["warn"] += 1
+        if verdict == "not_applicable":
+            stats["not_measured"] += 1
+        stats["reused" if hit else "probed"] += 1
+    return stats
 
 
 def backfill_meta(papers_dir: Path) -> dict:
@@ -1850,11 +2367,16 @@ def backfill_meta(papers_dir: Path) -> dict:
             print(f"[backfill-meta] WARN: not a JSON object: {meta_path}", file=sys.stderr)
             stats["unreadable"] += 1
             continue
-        if meta.get("engine_versions_source") == "conversion_time":
+        # A conversion_time record must keep its measured versions, but the language
+        # triple is a different question and used to be lost with it: every record
+        # old enough to carry conversion_time also predates the language keys, so
+        # skipping the file outright left them permanently absent.
+        measured_versions = meta.get("engine_versions_source") == "conversion_time"
+        if measured_versions:
             stats["skipped_conversion_time"] += 1
-            continue
 
-        changed, sha_state = _backfill_one(meta, meta_path, papers_dir, snapshot)
+        changed, sha_state = _backfill_one(meta, meta_path, papers_dir, snapshot,
+                                           with_versions=not measured_versions)
         if changed:
             error = _write_meta_json(meta_path, meta)
             if error:
@@ -1883,6 +2405,7 @@ def process_one(
     max_workers: int = 2,
     state: PipelineState | None = None,
     force: bool = False,
+    textlayer_probe: bool = True,
 ) -> PaperResult:
     """   PDF  ."""
     stem = pdf.stem
@@ -2091,6 +2614,17 @@ def process_one(
     if pdf_sha256 and state:
         state.set_pdf_sha256(stem, pdf_sha256)
 
+    # ── Stage 1.5 (side-band): text-layer probe + language record ─────────────
+    # Runs after the merge because the merged markdown / content_list is the
+    # canonical side of the comparison.  Calls one wrapper that is contractually
+    # unable to raise: nothing in this stage may fail a conversion that worked.
+    mineru_md = (Path(result.mineru.md_path)
+                 if result.mineru and result.mineru.ok and result.mineru.md_path
+                 else None)
+    lang_record = collect_stage_1_5(pdf, merged_dir, conversion_dir, stem,
+                                    force=force, enabled=textlayer_probe,
+                                    result=result, mineru_md_path=mineru_md)
+
     meta = build_meta_record(
         result,
         engines=engines,
@@ -2099,6 +2633,7 @@ def process_one(
         pdf_sha256=pdf_sha256,
         pdf_sha256_note=pdf_sha256_note,
         engine_provenance=_engine_version_snapshot(),
+        language=lang_record,
     )
     meta_error = _write_meta_json(meta_path, meta)
     if meta_error:
@@ -2128,9 +2663,13 @@ def find_pdfs(target: Path) -> list[Path]:
 
 
 def print_summary(results: list[PaperResult]) -> None:
-    print("\n" + "=" * 70)
-    print(f"{'stem':<40} {'marker':>8} {'mineru':>8} {'diff':>6}")
-    print("-" * 70)
+    header = f"{'stem':<40} {'marker':>8} {'mineru':>8} {'diff':>6} {'probe':>10}"
+    print("\n" + "=" * len(header))
+    print(header)
+    print("-" * len(header))
+    labels = {"ok": "ok", "warn": "WARN", "pdf_only": "pdf_only",
+              "not_applicable": "n/a", "error": "ERROR"}
+    tally: dict[str, int] = {}
     for r in results:
         m_t = (f"{r.marker.elapsed_sec:.0f}s"
                if r.marker and r.marker.ok else
@@ -2139,8 +2678,16 @@ def print_summary(results: list[PaperResult]) -> None:
                if r.mineru and r.mineru.ok else
                ("FAIL" if r.mineru else "-"))
         d = str(r.diff_line_count) if r.diff_path else "-"
-        print(f"{r.stem:<40} {m_t:>8} {u_t:>8} {d:>6}")
-    print("=" * 70)
+        probe = labels.get(r.probe_verdict or "", r.probe_verdict or "-")
+        if r.probe_verdict:
+            tally[r.probe_verdict] = tally.get(r.probe_verdict, 0) + 1
+        print(f"{r.stem:<40} {m_t:>8} {u_t:>8} {d:>6} {probe:>10}")
+    print("=" * len(header))
+    if tally:
+        # "not measured" (n/a, pdf_only) is reported next to the verdicts on
+        # purpose: a pass rate that silently folded them into "ok" would be a lie.
+        print("text-layer probe: "
+              + ", ".join(f"{k}={tally[k]}" for k in sorted(tally)))
 
 
 def print_status(state: PipelineState) -> None:
@@ -2257,6 +2804,15 @@ def main() -> int:
                          "existing _META.json without re-converting")
     ap.add_argument("--resume", action="store_true",
                     help="       （  --batch  ）")
+    ap.add_argument("--backfill-probe", action="store_true",
+                    help="run the stage 1.5 text-layer probe for already-converted "
+                         "papers (no engines, no GPU): writes _textlayer_probe.json "
+                         "next to each existing _META.json")
+    ap.add_argument("--no-textlayer-probe", dest="textlayer_probe",
+                    action="store_false",
+                    help="skip the stage 1.5 text-layer probe for this run "
+                         "(default: run it; the probe is side-band evidence and "
+                         "never blocks the conversion)")
     ap.add_argument("--force", action="store_true",
                     help="    ，     ")
     ap.add_argument("--from-manifest", type=Path, default=None, metavar="PATH",
@@ -2309,6 +2865,24 @@ def main() -> int:
             "pdf_sha256_filled={pdf_sha256_filled} pdf_sha256_null={pdf_sha256_null} "
             "unreadable={unreadable}".format(**stats)
         )
+        return 0
+
+    # ── --backfill-probe ─────────────────────────────────────────────
+    # Stage 1.5 over an already-converted corpus: reads the PDF's own text layer,
+    # runs no engine and touches no GPU.  --resume would skip these papers forever,
+    # so this is the only way an old corpus gains the evidence.
+    if args.backfill_probe:
+        target = args.pdf.resolve()
+        probe_root = target if target.is_dir() else target.parent
+        if not _meta_candidates(probe_root):
+            print(f"ERROR: no _META.json found under {probe_root}", file=sys.stderr)
+            print("  expected <papers_dir>/paper-analysis/*/_META.json or "
+                  "<papers_dir>/paper-merged/*/_META.json", file=sys.stderr)
+            return 1
+        stats = backfill_probe(probe_root, force=args.force)
+        print("[backfill-probe] scanned={scanned} probed={probed} reused={reused} "
+              "warn={warn} not_measured={not_measured} "
+              "no_pdf={no_pdf}".format(**stats))
         return 0
 
     # ── GPU    ──────────────────────────────────────────────────────
@@ -2469,6 +3043,7 @@ def main() -> int:
                     max_workers=args.max_workers,
                     state=state,
                     force=args.force,
+                    textlayer_probe=args.textlayer_probe,
                 )
                 results.append(r)
             except KeyboardInterrupt:
@@ -2514,6 +3089,7 @@ def main() -> int:
                         max_workers=args.max_workers,
                         state=state,
                         force=args.force,
+                        textlayer_probe=args.textlayer_probe,
                     )
                 except Exception as e:
                     print(f"  ERROR: {e}", file=sys.stderr)
