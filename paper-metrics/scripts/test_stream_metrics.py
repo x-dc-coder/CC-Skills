@@ -156,7 +156,7 @@ def test_every_stream_metric_declares_scope_and_contract(model: dm.DocumentModel
     assert set(metrics) == {"S-CAP-01", "S-NUM-02", "S-REF-03", "S-SIZ-04",
                             "S-CAPL-05", "S-TBL-06", "S-TBL-07", "S-TBL-08",
                             "S-TBL-09", "S-TBL-10", "S-TBL-11", "S-TBL-12",
-                            "S-TBL-13"}
+                            "S-TBL-13", "S-REF-14"}
     required = {"value", "n", "denominator", "unit", "state", "method",
                 "metric_spec", "evidence", "warnings", "scope"}
     for metric_id, record in metrics.items():
@@ -189,7 +189,7 @@ def test_unavailable_records_are_explicit_not_silent() -> None:
     assert set(records) == {"S-CAP-01", "S-NUM-02", "S-REF-03", "S-SIZ-04",
                             "S-CAPL-05", "S-TBL-06", "S-TBL-07", "S-TBL-08",
                             "S-TBL-09", "S-TBL-10", "S-TBL-11", "S-TBL-12",
-                            "S-TBL-13"}
+                            "S-TBL-13", "S-REF-14"}
     for metric_id, record in records.items():
         assert record["metric_spec"] == metric_id
         assert record["value"] is None and record["n"] == 0
@@ -556,3 +556,62 @@ def test_table_content_metrics_are_null_without_tables(tmp_path: Path) -> None:
                    sm.table_latex_residue(model)):
         assert record["value"] is None and record["n"] == 0
         assert "NO_TABLES" in record["warnings"]
+
+
+# ---------------------------------------------------------------------------
+# 10. Table citation depth
+# ---------------------------------------------------------------------------
+
+def test_reference_depth_counts_mentions_per_table(tmp_path: Path) -> None:
+    """S-REF-14: 表 1 mentioned twice, 表 2 once, 表 3 never -> mean depth 1.0.
+
+    Depth is the difference between "the table is listed" and "the table is discussed";
+    the uncited one stays visible instead of being averaged away.
+    """
+    model = _write(tmp_path, "p19_content_list.json", [
+        _block("text", text="表 1 给出对比。表 1 也讨论了下界。表 2 是明细。"),
+        _block("table", table_body=_TABLE_NUM_B, table_caption=["表 1", "对比"]),
+        _block("table", table_body=_TABLE_HTML_B, table_caption=["表 2", "明细"]),
+        _block("table", table_body=_TABLE_HTML_C, table_caption=["表 3", "未引用"]),
+    ])
+    record = sm.reference_depth(model)
+    assert record["metric_spec"] == "S-REF-14"
+    assert record["scope"] == ["prose", "tables"]
+    assert record["unit"] == "citations-per-declared-table"
+    assert record["n"] == 3 and record["denominator"] == 3
+    assert record["value"] == pytest.approx(1.0)
+    evidence = record["evidence"]
+    assert evidence["depths"] == {"1": 2, "2": 1, "3": 0}
+    assert evidence["uncited"] == [3]
+    assert evidence["single_mention_share"] == pytest.approx(1 / 3, abs=1e-6)
+    assert evidence["multi_mention_share"] == pytest.approx(1 / 3, abs=1e-6)
+    assert evidence["max_depth"] == 2
+    for sample in evidence["sample"]:
+        # the declared number is read from the CAPTION, so evidence points at that field
+        assert sample["field"] == "table_caption"
+
+
+def test_reference_depth_is_null_without_tables_or_prose(tmp_path: Path) -> None:
+    no_tables = _write(tmp_path, "p20_content_list.json", [
+        _block("text", text="表 1 被引用了，但没有表。")])
+    record = sm.reference_depth(no_tables)
+    assert record["value"] is None and record["n"] == 0
+    assert "NO_TABLES" in record["warnings"]
+
+    no_prose = _write(tmp_path, "p21_content_list.json", [
+        _block("table", table_body=_TABLE_HTML_B, table_caption=["表 1", "x"])])
+    record = sm.reference_depth(no_prose)
+    assert record["value"] is None
+    assert "NO_PROSE_TEXT" in record["warnings"]
+
+
+def test_reference_counts_stay_prose_only(tmp_path: Path) -> None:
+    """The counting version must inherit the prose-only rule: a "表 2" inside a cell is
+    not a citation, or tables would cite themselves."""
+    model = _write(tmp_path, "p22_content_list.json", [
+        _block("text", text="表 1 见正文。"),
+        _block("table", table_body="<table><tr><td>表 2</td><td>表 2</td></tr></table>",
+               table_caption=["表 1", "x"]),
+    ])
+    counts = sm._reference_counts(model)
+    assert counts["tables"] == {1: 1}

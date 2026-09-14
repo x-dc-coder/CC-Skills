@@ -17,6 +17,7 @@ stream scope this module introduces.
 from __future__ import annotations
 
 import re
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
@@ -37,8 +38,10 @@ _INVENTORY_STREAMS: Final[tuple[dm.Stream, ...]] = (dm.Stream.FIGURES,
 
 _SCOPE_FIGURES: Final[tuple[str, ...]] = (dm.Stream.FIGURES.value,)
 _SCOPE_TABLES: Final[tuple[str, ...]] = (dm.Stream.TABLES.value,)
-#: Density reads the prose side too - the first mixed-scope metric.
-_SCOPE_DENSITY: Final[tuple[str, ...]] = (dm.Stream.PROSE.value, dm.Stream.TABLES.value)
+#: Metrics that need the prose side (density, citation depth): the mixed-scope set.
+#: They are NOT draft-checkable either - a Markdown draft has tables neither.
+_SCOPE_PROSE_TABLES: Final[tuple[str, ...]] = (dm.Stream.PROSE.value,
+                                              dm.Stream.TABLES.value)
 
 #: The stream(s) each metric reads, keyed by metric id (not by function) so a "not
 #: measured" record carries exactly the same scope as a measured one.
@@ -51,11 +54,12 @@ _SCOPE_OF_METRIC: Final[dict[str, tuple[str, ...]]] = {
     "S-TBL-06": _SCOPE_TABLES,
     "S-TBL-07": _SCOPE_TABLES,
     "S-TBL-08": _SCOPE_TABLES,
-    "S-TBL-09": _SCOPE_DENSITY,
+    "S-TBL-09": _SCOPE_PROSE_TABLES,
     "S-TBL-10": _SCOPE_TABLES,
     "S-TBL-11": _SCOPE_TABLES,
     "S-TBL-12": _SCOPE_TABLES,
     "S-TBL-13": _SCOPE_TABLES,
+    "S-REF-14": _SCOPE_PROSE_TABLES,
 }
 
 #: Journal figures are printed at ~300 dpi; 800 px is roughly a 6.8 cm single-column
@@ -226,9 +230,8 @@ def numbering_consistency(model: dm.DocumentModel) -> dict[str, dm.JsonValue]:
 
 def _referenced_numbers(model: dm.DocumentModel) -> dict[str, list[int]]:
     """Numbers cited in the PROSE stream only (cell values are not references)."""
-    prose = model.text(dm.Stream.PROSE)
-    return {dm.Stream.FIGURES.value: sorted(set(_numbers(prose, _FIGURE_REF_RE))),
-            dm.Stream.TABLES.value: sorted(set(_numbers(prose, _TABLE_REF_RE)))}
+    return {stream: sorted(counts)
+            for stream, counts in _reference_counts(model).items()}
 
 
 def reference_consistency(model: dm.DocumentModel) -> dict[str, dm.JsonValue]:
@@ -848,11 +851,70 @@ def table_latex_residue(model: dm.DocumentModel) -> dict[str, dm.JsonValue]:
                              "empty_bodies": empty_bodies}, warnings=warnings)
 
 
+# ---------------------------------------------------------------------------
+# Table citation depth
+# ---------------------------------------------------------------------------
+
+#: Mentions per declared table: a table that is merely listed reads low, a table that
+#: is argued over reads high.
+_UNIT_CITATIONS_PER_TABLE: Final = "citations-per-declared-table"
+
+
+def _reference_counts(model: dm.DocumentModel) -> dict[str, dict[int, int]]:
+    """Mentions of each figure/table number in the PROSE stream only.
+
+    A "表 2" written inside a cell is not a citation - otherwise tables would cite
+    themselves - so cell text never contributes, exactly as in _referenced_numbers.
+    """
+    prose = model.text(dm.Stream.PROSE)
+    return {dm.Stream.FIGURES.value: dict(Counter(_numbers(prose, _FIGURE_REF_RE))),
+            dm.Stream.TABLES.value: dict(Counter(_numbers(prose, _TABLE_REF_RE)))}
+
+
+def reference_depth(model: dm.DocumentModel) -> dict[str, dm.JsonValue]:
+    """S-REF-14: mean prose mentions per declared table.
+
+    The uncited tables are named rather than averaged away, and the citation
+    distribution (median / max / single- vs multi-mention shares) ships as evidence:
+    "how often is a table discussed" is a different question from "is it cited at all".
+    """
+    declared_numbers, observed = _declared_observations(model)
+    declared = sorted(set(declared_numbers[dm.Stream.TABLES.value]))
+    if not declared:
+        return _record("S-REF-14", value=None, n=0, denominator=0,
+                       unit=_UNIT_CITATIONS_PER_TABLE,
+                       evidence={"count": 0, "sample": [], "depths": {},
+                                 "uncited": []}, warnings=["NO_TABLES"])
+    if not model.text(dm.Stream.PROSE).strip():
+        # No prose means the citation search could not run: "not measured", not zero.
+        return _record("S-REF-14", value=None, n=len(declared),
+                       denominator=len(declared), unit=_UNIT_CITATIONS_PER_TABLE,
+                       evidence={"count": len(declared),
+                                 "sample": observed[:_SAMPLE_LIMIT], "depths": {},
+                                 "uncited": declared}, warnings=["NO_PROSE_TEXT"])
+    counts = _reference_counts(model)[dm.Stream.TABLES.value]
+    depths = {number: counts.get(number, 0) for number in declared}
+    values = sorted(depths.values())
+    uncited = sorted(number for number, depth in depths.items() if depth == 0)
+    warnings: list[str] = ["UNCITED_TABLES"] if uncited else []
+    return _record(
+        "S-REF-14", value=sum(values) / len(values), n=len(values),
+        denominator=len(values), unit=_UNIT_CITATIONS_PER_TABLE,
+        evidence={"count": len(values), "sample": observed[:_SAMPLE_LIMIT],
+                  "depths": {str(number): depth for number, depth in depths.items()},
+                  "median_depth": values[len(values) // 2], "max_depth": values[-1],
+                  "single_mention_share": round(
+                      sum(1 for value in values if value == 1) / len(values), 6),
+                  "multi_mention_share": round(
+                      sum(1 for value in values if value >= 2) / len(values), 6),
+                  "uncited": uncited}, warnings=warnings)
+
+
 _METRIC_IDS: Final[tuple[str, ...]] = ("S-CAP-01", "S-NUM-02", "S-REF-03",
                                          "S-SIZ-04", "S-CAPL-05", "S-TBL-06",
                                          "S-TBL-07", "S-TBL-08", "S-TBL-09",
                                          "S-TBL-10", "S-TBL-11", "S-TBL-12",
-                                         "S-TBL-13")
+                                         "S-TBL-13", "S-REF-14")
 
 
 def unavailable_records(warning: str) -> dict[str, dict[str, dm.JsonValue]]:
@@ -884,7 +946,7 @@ def stream_metrics(model: dm.DocumentModel,
                    table_empty_cells(model), table_missing_body(model),
                    table_density(model), table_placement(model, sections),
                    numeric_cell_share(model), numeric_row_share(model),
-                   table_latex_residue(model)):
+                   table_latex_residue(model), reference_depth(model)):
         metric_id = record["metric_spec"]
         if isinstance(metric_id, str):
             out[metric_id] = record
