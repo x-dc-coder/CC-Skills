@@ -1078,3 +1078,54 @@ def test_keywords_marker_regex_does_not_eat_prose() -> None:
     assert not pp._KEYWORDS_MARKER_RE.match(
         "The keywords were extracted from the abstract.")
     assert not pp._KEYWORDS_MARKER_RE.match("Keyword selection matters here.")
+
+
+# ---------------------------------------------------------------------------
+# 8. Chinese section titles -> canonical labels (2026-09-14)
+# ---------------------------------------------------------------------------
+
+def _label(raw_title: str) -> str:
+    """Production call path: normalize the raw heading, then canonicalize it."""
+    return pp.canonical_section_label(pp.normalize_section_title(raw_title))
+
+
+@pytest.mark.parametrize("title, expected", [
+    ("数学建模", "method"),
+    ("2．2 分段函数处理", "method"),
+    ("2．3．1 摧毁算子", "method"),
+    ("3．1 初始解构造", "method"),
+    ("数值实验", "experiments"),
+    ("3．3 结果对比", "experiments"),
+    ("3．1 案例构造", "experiments"),
+    ("问题描述", "preliminaries"),
+    ("参数说明", "preliminaries"),
+    ("1．1 问题描述", "preliminaries"),
+    ("程序流程", "method"),
+    ("Problem Description", "preliminaries"),
+    ("Sensitivity Analysis", "experiments"),
+    ("Case Study", "experiments"),
+    ("Computational Results", "experiments"),
+])
+def test_chinese_and_missing_english_sections_map_to_canonical(
+        title: str, expected: str) -> None:
+    """Real headings from the corpora that the map used to leave verbatim.
+
+    Unmapped titles are not neutral: they keep the block in the prose body (fine) but
+    they also hide where a table actually sits, which is what S-TBL-10 reports.
+    """
+    assert _label(title) == expected, title
+
+
+def test_non_prose_section_mapping_is_unchanged() -> None:
+    """Guard: the non-prose labels drive what is DROPPED from the canonical text, so
+    this change must not touch them (that would move every metric)."""
+    assert _label("参考文献") == "references"
+    assert _label("附录") == "appendix"
+    assert _label("致谢") == "acknowledgments"
+    assert _label("References") == "references"
+
+
+def test_unmapped_titles_stay_verbatim() -> None:
+    """A domain-specific heading with no canonical meaning must survive as-is rather
+    than being forced into a wrong bucket."""
+    assert _label("行程时间模糊集下的鲁棒优化") == "行程时间模糊集下的鲁棒优化"
