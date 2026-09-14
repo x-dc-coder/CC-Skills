@@ -93,6 +93,29 @@ uv run python paper-metrics/scripts/pas_spotcheck.py --corpus <paper-analysis> -
 - **层红线（只做 OBSERVED）**：本技能只产出确定性规则指标（`state = OBSERVED`、`method = rule`，由 `test_profile_papers.py` / `test_determinism.py` 断言守线）。语步（move）、引用功能、论证图等 INFERRED 语义指标**未实现**，且必须同时满足 5 条准入条件才能引入（标签集冻结 + 人工标注集 κ ≥ 0.6 + 留出集 P/R/F1 + 每句可追溯输出 + 不得进 gate / 不得自报置信度）——完整检查表见 `references/metric-definitions.md`〈INFERRED 层准入检查表〉。
 - **分句前的非正文掩码（2026-09-13）**：句界只在**等长掩码副本**上判定，关键词行（`Keywords:`/`关键词：`）、行内/行间数学（`$...$`/`$$...$$`）、MinerU 的 `<sub>`/`<sup>` 标签不参与分句；掩码后不含字母的片段直接丢弃。span 仍切片回原文，语料级 before/after 差值见 `references/metric-definitions.md`〈正文口径与关键词行过滤〉。
 
+## 指标基座：范围与块型普查（2026-09-14 起）
+
+指标不是"从论文"算出来的，而是**从某个基座的某个流**算出来的。这两件事过去是隐式的，导致同一篇论文的"数字丢失"可以是 2.1%、25%、55.5% 或 78.2%——**取决于拿什么跟什么比**。现在它们都是产物里的显式字段：
+
+- **基座**：`_corpus_summary.json → base_artifact` = `{name: "mineru_content_list", scope: ["prose"]}`。指标定义在 **MinerU `content_list.json` 的 prose 流**上。
+- **每条指标自带 `scope`**：现在全部是 `["prose"]`；**缺 `scope` 即测试失败**（防"隐式口径"回归）。将来建立在表格/图表流上的新指标会显式写 `["tables"]` / `["captions"]` / `["inventory"]`。
+- **块型普查**：`_per_paper_metrics.jsonl → block_census`（逐篇）与 `_corpus_summary.json → block_census`（语料级）给出每个流有多少块/字符/数字，以及**是否被指标读取**（`dropped_by_metrics`）。
+
+**实测（中文语料 10 篇，去标记后的规范化计数）**：prose 只覆盖 **69.6% 字符 / 25.0% 数字**；未被读取的流里，`tables` 30 块 **7668 数字**、`lists` 10 块 **19237 字符 / 2175 数字**、`equations` 314 块（去 LaTeX 后 22073 字符）、`footnotes` 30 块、`running_heads` 155 块、`page_numbers` 64 块，另有 732 字符题注（四个键：`image_/table_/chart_/code_caption`）。
+
+### 口径决定（2026-09-14，用户定）
+
+1. **脚注不算正文** → `footnotes` 独立流，不进 prose，但进普查（将来若需要可作为独立指标）。
+2. **表格与图表各自独立分析，绝不并入正文纯文本** → 表格数字、图注/表注都要成为**独立指标**（对应 issue #1 的 D-1/D-2），不得混入句长/密度类指标。
+3. 因此**现有 14 条指标继续只读 prose 流** → 数值不变、已登记语料无需重登记（审计 23/23 与 22/22 不变即为证明）。
+
+### 两条规范化红线（否则计数直接错）
+
+- **表格必须先剥离 HTML**：真实语料里 `table_body` 的 **51.8% 是标记**，且属性自带约 2600 个"数字"（`colspan`/样式/宽度）——直接计数会凭空多出数字。实现：`html_to_text()`（去标签/注释、解实体、`</td>`/`<br>` 变分隔符）。
+- **公式必须先剥离 LaTeX 命令**：`equation` 块的原始文本里命令占 ~60%（314 块 55835 → 22073 字符）；实现：`latex_to_text()`（去命令与 ``{}` 框架，保留变量与数字）。
+
+> 为什么这些是"普查"而不是"指标"：表格不是句子，把表格塞进句长/hedge/被动会把 style 指标污染掉（这正是 prose-only 的正当理由）。但"看不见"也不对——所以每条流的体量都必须**可见、可复算、可追责**。
+
 ## 支持的语言（红线：不支持就**显式失败**，绝不给假数字）
 
 - **英文（en）**：14 条指标全部可测，词表用 `data/lexicons/v1/`。
