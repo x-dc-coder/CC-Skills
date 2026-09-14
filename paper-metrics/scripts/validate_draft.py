@@ -17,12 +17,16 @@ Design rules (frozen):
     A clause outside its target band is "fail" when level==gate and "warn"
     otherwise. Actual value or target unavailable -> "skipped".
   * No 0-100 aggregate value is produced: assessment is strictly per clause.
-  * Language scope comes first: text_metrics.detect_language() decides whether the
-    draft's language is inside the metrics' scope. When it is not, the result is
-    draft_validity.status=language_unsupported, every clause is skipped without any
-    gate/warn arithmetic (no metric is even computed) and the exit code is 2. The
-    language verdict is never re-derived here: text_metrics is the single source of
-    truth, so an unavailable or unusable verdict is reported as such, never guessed.
+  * Language scope comes first, and it is two questions - both answered in
+    text_metrics: WHICH language the draft is in (detect_language) and WHICH
+    languages the rules cover (SUPPORTED_LANGUAGES, read through _rule_languages()).
+    A language with no rules is refused: draft_validity.status=language_unsupported,
+    every clause skipped without any gate/warn arithmetic (no metric is even
+    computed), exit code 2. The detector's own supported flag is the Round-A
+    "English-majority" contract, NOT the capability verdict; reading it as the scope
+    is how a Chinese draft came to report language_supported=false while its clauses
+    were graded normally (issue #19). An unavailable or unusable verdict is reported
+    as such, never guessed.
   * Exit code: 2 when the draft is not usable evidence (unsupported language, fewer
     than MIN_ALPHA_TOKENS alpha tokens, no evaluable clause, or fewer than
     MIN_EVALUABLE_RATIO of the clauses evaluable), 1 when a gate clause fails, 0
@@ -81,14 +85,14 @@ MIN_ALPHA_TOKENS = 50
 MIN_CJK_UNITS = 150
 MIN_EVALUABLE_RATIO = 0.5
 
-# Languages the OBSERVED metric layer is defined for. The list is informational:
-# text_metrics.detect_language() owns the actual decision (thresholds included).
+# Fallback only: the live language set comes from text_metrics.SUPPORTED_LANGUAGES
+# via _rule_languages().
 SUPPORTED_METRIC_LANGUAGES = ("en",)
-# NOTE: this is only the FALLBACK used when the metrics provider cannot be imported.
-# The live verdict comes from text_metrics.SUPPORTED_LANGUAGES via _rule_languages();
-# keep this value in sync with that module (cross-review M8: the note here used to
-# claim Chinese support was unimplemented, which stopped being true with issue #13).
-UNSUPPORTED_LANGUAGE_NOTE = "当前支持的指标语言 = en（中文支持见 issue #10）"
+# The note strings are kept distinct (unsupported / unavailable / undecidable) so
+# the JSON never conflates "no rules for this language" with "scope not checked".
+UNSUPPORTED_LANGUAGE_NOTE = "该语言无已验证指标规则"
+LANGUAGE_DETECTION_UNAVAILABLE_NOTE = "语言检测不可用，未检查指标语言范围"
+LANGUAGE_UNDECIDABLE_NOTE = "无法判定语言，未检查指标语言范围"
 # Only used when text_metrics (the frozen tokenizer) is unavailable; it never
 # produces a metric value, it only keeps the guard from silently disappearing.
 _FALLBACK_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z'\-]*")
@@ -234,17 +238,27 @@ def normalize_language_verdict(raw: Any, detector: str | None = None) -> dict:
     Accepted: a mapping or object with supported/is_supported, language/lang/code
     and cjk_ratio/ratio; a bare bool; or a language code alone. Anything else is
     reported as an unusable verdict rather than approximated.
+
+    "supported" answers "does this layer have metric rules for the language" via
+    _rule_languages(). The detector's own flag is NOT that answer: it is the
+    Round-A "text is English-majority" contract (cjk_ratio <= 0.10), so a Chinese
+    draft reports supported=False even though Chinese rules exist. That raw flag
+    is archived as detector_supported; only a language the detector cannot name
+    (None/"unknown") keeps its verdict, because there is no table entry to look up.
     """
-    if isinstance(raw, bool):                       # detect_language() -> bool
-        supported, language, cjk_ratio = raw, None, None
-    elif isinstance(raw, str):                      # detect_language() -> "en" / "zh"
-        supported, language, cjk_ratio = None, raw, None
+    if isinstance(raw, bool):
+        detector_supported, language, cjk_ratio = raw, None, None
+    elif isinstance(raw, str):
+        detector_supported, language, cjk_ratio = None, raw, None
     else:
-        supported = _first_of(raw, ("supported", "is_supported", "ok", "in_scope"), bool)
+        detector_supported = _first_of(raw, ("supported", "is_supported", "ok", "in_scope"), bool)
         language = _first_of(raw, ("language", "lang", "code", "detected"), str)
         cjk_ratio = _first_of(raw, ("cjk_ratio", "ratio", "han_ratio", "cjk"), float)
-    if supported is None and isinstance(language, str) and language:
-        supported = language.lower().split("-")[0] in SUPPORTED_METRIC_LANGUAGES
+    code = language.lower().split("-")[0] if isinstance(language, str) and language else None
+    if code and code != "unknown":
+        supported = code in _rule_languages()
+    else:
+        supported = detector_supported
     warnings: list[str] = []
     if supported is None:
         warnings.append(
@@ -254,15 +268,17 @@ def normalize_language_verdict(raw: Any, detector: str | None = None) -> dict:
         return {
             "available": False, "supported": None, "language": language,
             "cjk_ratio": round(cjk_ratio, 6) if cjk_ratio is not None else None,
-            "supported_languages": list(SUPPORTED_METRIC_LANGUAGES),
-            "detector": detector, "note": UNSUPPORTED_LANGUAGE_NOTE, "warnings": warnings,
+            "detector_supported": detector_supported,
+            "supported_languages": list(_rule_languages()),
+            "detector": detector, "note": LANGUAGE_UNDECIDABLE_NOTE, "warnings": warnings,
         }
     return {
         "available": True,
         "supported": bool(supported),
         "language": language,
         "cjk_ratio": round(cjk_ratio, 6) if cjk_ratio is not None else None,
-        "supported_languages": list(SUPPORTED_METRIC_LANGUAGES),
+        "detector_supported": detector_supported,
+        "supported_languages": list(_rule_languages()),
         "detector": detector,
         "note": None if supported else UNSUPPORTED_LANGUAGE_NOTE,
         "warnings": warnings,
@@ -297,10 +313,11 @@ def detect_draft_language(
     if resolved is None:
         return {
             "available": False, "supported": None, "language": None, "cjk_ratio": None,
-            "supported_languages": list(SUPPORTED_METRIC_LANGUAGES), "detector": None,
-            "note": UNSUPPORTED_LANGUAGE_NOTE,
-            "warnings": [f"language detection unavailable: {module}.detect_language is missing "
-                         "(see issue #10); the language scope was not checked"],
+            "supported_languages": list(_rule_languages()), "detector": None,
+            "detector_supported": None,
+            "note": LANGUAGE_DETECTION_UNAVAILABLE_NOTE,
+            "warnings": [f"language detection unavailable: {module}.detect_language is missing; "
+                         "the language scope was not checked"],
         }
     name = f"{getattr(resolved, '__module__', module)}.detect_language"
     try:
@@ -308,8 +325,9 @@ def detect_draft_language(
     except Exception as exc:  # noqa: BLE001 - an exploding detector is not a pass
         return {
             "available": False, "supported": None, "language": None, "cjk_ratio": None,
-            "supported_languages": list(SUPPORTED_METRIC_LANGUAGES), "detector": name,
-            "note": UNSUPPORTED_LANGUAGE_NOTE,
+            "supported_languages": list(_rule_languages()), "detector": name,
+            "detector_supported": None,
+            "note": LANGUAGE_DETECTION_UNAVAILABLE_NOTE,
             "warnings": [f"detect_language() failed ({type(exc).__name__}): {exc}"],
         }
     return normalize_language_verdict(raw, name)

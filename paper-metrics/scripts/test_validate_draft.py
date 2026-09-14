@@ -902,6 +902,40 @@ def test_language_without_rules_is_refused_before_any_gate_math():
     assert result["exit_code"] == 2
 
 
+def test_chinese_draft_reports_language_supported_in_both_layers():
+    """Issue #19: the metadata layer must agree with the clause logic that
+    Chinese has validated rules, instead of parroting detect_language()'s
+    supported=False (the Round-A English-majority contract)."""
+    contract = _contract([_clause("M-HED-14", "gate", [0.01, 0.05])])
+    result = _validate(contract, CHINESE_DRAFT, _compute({"M-HED-14": 0.02}),
+                       language_detector=CJK_DETECTOR)
+    assert result["draft_language"]["supported"] is True
+    assert result["draft_validity"]["language_supported"] is True
+    assert result["draft_validity"]["status"] != "language_unsupported"
+    assert result["draft_language"]["supported_languages"] == ["en", "zh"]
+
+
+def test_detector_supported_flag_is_archived_not_trusted_for_zh():
+    verdict = vd.normalize_language_verdict(
+        {"language": "zh-Hans", "supported": False, "cjk_ratio": 0.9235}, "fake")
+    assert verdict["available"] is True
+    assert verdict["supported"] is True
+    assert verdict["detector_supported"] is False
+    assert verdict["supported_languages"] == ["en", "zh"]
+
+
+def test_language_without_rules_is_blocked_even_when_detector_says_supported():
+    detector = _detector(supported=True, language="ja", cjk_ratio=0.9)
+    compute = _compute({"M-TEST-00": 0.9})
+    result = vd.validate(_gate_contract(1), CHINESE_DRAFT, compute,
+                         language_detector=detector)
+    assert result["draft_language"]["supported"] is False
+    assert result["draft_validity"]["language_supported"] is False
+    assert result["draft_validity"]["status"] == "language_unsupported"
+    assert result["exit_code"] == 2
+    assert compute.calls == []
+
+
 def test_english_draft_behavior_is_unchanged():
     contract = _contract([_clause("M-HED-14", "gate", [0.01, 0.05])])
     inside = vd.validate(contract, "word " * 60, _compute({"M-HED-14": 0.02}),
@@ -938,16 +972,15 @@ def test_mixed_draft_above_the_cjk_threshold_is_graded_as_chinese():
 
 
 @pytest.mark.parametrize("raw, expected_supported, expected_exit", [
-    ("en", True, 0), ("zh", False, 0), (True, True, 0), (False, False, 2)])
+    ("en", True, 0), ("zh", True, 0), (True, True, 0), (False, False, 2)])
 def test_simple_language_verdicts_are_accepted(raw, expected_supported, expected_exit):
     result = vd.validate(_contract([_clause("M-HED-14", "gate", [0.01, 0.05])]),
                          "word " * 60, _compute({"M-HED-14": 0.02}),
                          language_detector=lambda text: raw)
     assert result["draft_language"]["available"] is True
     assert result["draft_language"]["supported"] is expected_supported
-    # "zh" keeps its historical supported=False verdict (most metrics are still
-    # unmeasurable for it) yet is graded clause by clause; only a language with no
-    # rules at all - here the boolean False - is refused.
+    # "zh" is supported (the layer has Chinese rules); only a language with no
+    # rules at all - here the bare boolean False - is refused.
     assert result["exit_code"] == expected_exit
 
 
@@ -1088,18 +1121,13 @@ def _real_detector():
 
 
 def test_integration_chinese_draft_is_graded_by_the_real_detector():
-    """Real detector + real Chinese text: "zh" is no longer a refusal (issue #13).
-
-    The supported=False verdict stays for backward compatibility (most metrics
-    are still unmeasurable for Chinese), but it no longer short-circuits the
-    validation.
-    """
+    """Real detector + real Chinese text: "zh" is supported, not refused (issue #13/#19)."""
     detector = _real_detector()
     draft = "# 绪论\n\n" + "本文研究车辆路径问题的 GPU 加速方法。" * 30
     verdict = vd.normalize_language_verdict(detector(draft), "real")
     if verdict["language"] != "zh":
         pytest.skip(f"real detector did not classify the draft as zh: {verdict!r}")
-    assert verdict["supported"] is False
+    assert verdict["supported"] is True
     result = vd.validate(_gate_contract(2), draft, _compute({}))
     assert result["draft_language"]["language"] == "zh"
     assert result["draft_validity"]["status"] != "language_unsupported"
@@ -1114,4 +1142,6 @@ def test_integration_mixed_drafts_around_the_real_cjk_threshold():
     assert low["available"] and high["available"]
     assert low["cjk_ratio"] is not None and high["cjk_ratio"] is not None
     assert low["cjk_ratio"] <= 0.10 < high["cjk_ratio"]
-    assert low["supported"] is True and high["supported"] is False
+    # both languages have rules, so both are supported even across the CJK
+    # threshold that flips detect_language()'s own flag
+    assert low["supported"] is True and high["supported"] is True
