@@ -1107,7 +1107,13 @@ def _reference_metrics(paper: Paper, text: str) -> dict:
                       "newest_year": newest, "oldest_year": years[0],
                       "median_year": years[len(years) // 2],
                       "recent_entries": recent,
-                      "recent_window_years": _RECENT_REFERENCE_YEARS},
+                      "recent_window_years": _RECENT_REFERENCE_YEARS,
+                      # The headline is a RELATIVE reading (concentration near this
+                      # paper's newest reference); the years travel so a corpus-level
+                      # absolute anchor can be computed without re-parsing
+                      # (cross-review M3).
+                      "anchor": "self_newest",
+                      "years": years},
             warnings=age_warnings)
 
     numeric = len(_BRACKET_NUMERIC_RE.findall(text))
@@ -1116,7 +1122,7 @@ def _reference_metrics(paper: Paper, text: str) -> dict:
     style = {"numeric_matches": numeric, "author_year_matches": author_year}
     if numeric == 0 or author_year > numeric:
         link = _reference_record(
-            "M-REFLINK-54", value=None, n=count, denominator=count,
+            "M-REFLINK-54", value=None, n=0, denominator=count,
             evidence={"count": count, "sample": entry_samples, "cited_count": 0,
                       "dangling": [], "uncited": [], "uncited_count": 0,
                       "citation_style": style},
@@ -1126,6 +1132,10 @@ def _reference_metrics(paper: Paper, text: str) -> dict:
     cited = _cited_numbers(text, count)
     citation_samples = _citation_spans(text, 3)
     shared = len({number for number in cited if 1 <= number <= count})
+    # Jaccard: |cited ∪ 1..N|.  The old denominator (|cited| + N) capped the value at
+    # 0.5, so a corpus that cites everything read as "half of them do not match"
+    # (cross-review blocker B2).
+    union = len(set(cited) | set(range(1, count + 1)))
     dangling = sorted(number for number in cited if number > count)
     uncited = [index for index in range(1, count + 1) if index not in cited]
     link_warnings = []
@@ -1136,8 +1146,7 @@ def _reference_metrics(paper: Paper, text: str) -> dict:
     if not cited:
         link_warnings.append("NO_CITATIONS_FOUND")
     link = _reference_record(
-        "M-REFLINK-54", value=shared / (len(cited) + count), n=count,
-        denominator=count,
+        "M-REFLINK-54", value=shared / union, n=shared, denominator=union,
         evidence={"count": count, "sample": citation_samples or entry_samples,
                   "cited_count": len(cited),
                   "cited": sorted(cited)[:50], "dangling": dangling,
@@ -1426,7 +1435,11 @@ def _stream_metrics(paper: Paper) -> dict:
     # rejects non-dict entries, so the two lists cannot drift apart).
     sections = {index: section
                 for index, (section, _block) in enumerate(paper.labelled_blocks())}
-    return stream_metrics_mod.stream_metrics(model, sections)
+    # The canonical BODY is handed over explicitly: citations must not be searched in
+    # a text that contains the bibliography itself, and the density denominator must
+    # not include headings/front matter (cross-review H3).
+    return stream_metrics_mod.stream_metrics(
+        model, sections, paper.canonical_text())
 
 
 def compute_section_metrics(paper: Paper, bundles, text_metrics_mod,
@@ -1996,6 +2009,29 @@ def aggregate_corpus(records: list[dict], corpus_id: str | None = None) -> dict:
                        f"never as 0. Language-independent metrics may still carry "
                        f"values - check their warnings per metric."),
         })
+    # Absolute counterpart to M-REFAGE-53.  That metric anchors on each paper's own
+    # NEWEST reference, which makes it comparable across eras but unable to notice a
+    # reference list that is uniformly old (2026 paper citing only 2005 works scores
+    # high).  The absolute reading only makes sense with a corpus-wide anchor, so it
+    # lives here, computed from the years each paper already reports.
+    all_years = [int(year) for r in records
+                 for year in (((r.get("metrics") or {}).get("M-REFAGE-53") or {})
+                              .get("evidence") or {}).get("years", [])]
+    if all_years:
+        corpus_anchor = max(all_years)
+        window = _RECENT_REFERENCE_YEARS - 1
+        recent = sum(1 for year in all_years if year >= corpus_anchor - window)
+        reference_freshness = {
+            "anchor_year": corpus_anchor,
+            "anchor_kind": "corpus_max_reference_year",
+            "window_years": _RECENT_REFERENCE_YEARS,
+            "entries_with_year": len(all_years),
+            "absolute_recent_share": round(recent / len(all_years), 6),
+            "note": ("M-REFAGE-53 uses a per-paper anchor (cross-era comparable); this "
+                     "is the absolute reading against one corpus-wide anchor."),
+        }
+    else:
+        reference_freshness = None
     # How much text was kept out of the canonical body, and why (issue: 前置页
     # 混入正文). Aggregated over papers so the filtering rule is auditable.
     dropped_totals: dict[str, dict[str, int]] = {}
@@ -2024,14 +2060,19 @@ def aggregate_corpus(records: list[dict], corpus_id: str | None = None) -> dict:
         "weight_mode": "equal_paper",
         "languages": {k: lang_counts[k] for k in sorted(lang_counts)},
         "language_supported": language_supported,
-        # Median/p25/p75 are nearest-rank (no interpolation). For an even n the
-        # reported median is therefore the lower middle observation.
+        # Median/p25/p75 are nearest-rank at index round(p * (n-1)) with round-half-even,
+        # no interpolation.  For an even n that is the LOWER middle observation only when
+        # round((n-1)/2) rounds down (n = 2 mod 4); for n = 0 mod 4 it rounds up, which is
+        # why the blanket "even n -> lower middle" claim used to be wrong
+        # (2026-09-14 cross-review, M1).
         "quantile_method": "nearest_rank_no_interpolation",
         "n_papers": n_papers,
         "upstream": upstream_summary,
         "metrics": metrics,
         "corpus_warnings": sorted(corpus_warnings, key=lambda w: (w["code"], w["metric"])),
     }
+    if reference_freshness is not None:
+        out["reference_freshness"] = reference_freshness
     if corpus_id is not None:
         # Lets a downstream contract document name the exact corpus it was
         # derived from (traceability from clause -> corpus -> input hashes).

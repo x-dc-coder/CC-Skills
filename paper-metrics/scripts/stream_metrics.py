@@ -233,22 +233,41 @@ def numbering_consistency(model: dm.DocumentModel) -> dict[str, dm.JsonValue]:
                    warnings=warnings)
 
 
-def _referenced_numbers(model: dm.DocumentModel) -> dict[str, list[int]]:
-    """Numbers cited in the PROSE stream only (cell values are not references)."""
+def _citation_text(model: dm.DocumentModel, canonical_text: str | None) -> str:
+    """The text citations are searched in.
+
+    The canonical BODY when the caller supplies it: model.text(PROSE) is every
+    text block, which includes headings, front matter and the bibliography itself -
+    a search space ~50% larger on the Chinese corpus (measured), so a reference
+    list could in principle vote on its own citations.  Falling back to the prose
+    stream keeps the metric unit-testable, and the record says which was used.
+    """
+    return canonical_text if canonical_text is not None else model.text(dm.Stream.PROSE)
+
+
+def _referenced_numbers(model: dm.DocumentModel,
+                        canonical_text: str | None = None) -> dict[str, list[int]]:
+    """Numbers cited in the body only (cell values are not references)."""
     return {stream: sorted(counts)
-            for stream, counts in _reference_counts(model).items()}
+            for stream, counts in _reference_counts(model, canonical_text).items()}
 
 
-def reference_consistency(model: dm.DocumentModel) -> dict[str, dm.JsonValue]:
+def reference_consistency(model: dm.DocumentModel,
+                          canonical_text: str | None = None
+                          ) -> dict[str, dm.JsonValue]:
     """S-REF-03: do the prose references and the declared captions agree?
 
-    value = shared numbers / (declared + referenced).  Dangling = cited but never
+    value = shared / |declared ∪ referenced| (Jaccard overlap; 1.0 = every declared
+    number is also referenced and vice versa).  The earlier denominator
+    (declared + referenced) capped the value at 0.5, which made a near-perfect
+    corpus read as "half of them do not match" and the docs drew exactly that wrong
+    conclusion (2026-09-14 cross-review, blocker B2).  Dangling = cited but never
     declared; uncited = declared but never cited.  Both are reported per stream.
     """
     declared_numbers, observed = _declared_observations(model)
     declared = {stream: sorted(set(numbers))
                 for stream, numbers in declared_numbers.items()}
-    referenced = _referenced_numbers(model)
+    referenced = _referenced_numbers(model, canonical_text)
     dangling: dict[str, list[int]] = {}
     uncited: dict[str, list[int]] = {}
     shared = 0
@@ -258,8 +277,10 @@ def reference_consistency(model: dm.DocumentModel) -> dict[str, dm.JsonValue]:
         dangling[stream_name] = sorted(referenced_set - declared_set)
         uncited[stream_name] = sorted(declared_set - referenced_set)
         shared += len(declared_set & referenced_set)
+    # Jaccard denominator: |A ∪ B| = |A| + |B| - |A ∩ B|.  n carries the numerator,
+    # so value == n / denominator holds (the metric contract, cross-review M2).
     denominator = (sum(len(v) for v in declared.values())
-                   + sum(len(v) for v in referenced.values()))
+                   + sum(len(v) for v in referenced.values()) - shared)
     warnings: list[str] = []
     if not denominator:
         # Neither a declared number nor a reference was found: say so instead of
@@ -610,7 +631,9 @@ def _prose_units(prose: str) -> tuple[int, str, str]:
     return alpha, _UNIT_PER_1000_WORDS, name
 
 
-def table_density(model: dm.DocumentModel) -> dict[str, dm.JsonValue]:
+def table_density(model: dm.DocumentModel,
+                  canonical_text: str | None = None
+                  ) -> dict[str, dm.JsonValue]:
     """S-TBL-09: table blocks per 1000 prose units (words, or cjk-units in Chinese).
 
     The denominator is measured on the PROSE stream only: counting the tables' own
@@ -622,13 +645,23 @@ def table_density(model: dm.DocumentModel) -> dict[str, dm.JsonValue]:
          "excerpt": (block.table_body or "")[:80], "index": index}
         for _stream, index, block in _inventory_blocks(model)
         if block.kind is dm.Stream.TABLES]
-    units, unit_label, language = _prose_units(model.text(dm.Stream.PROSE))
+    body = _citation_text(model, canonical_text)
+    units, unit_label, language = _prose_units(body)
     evidence: dict[str, dm.JsonValue] = {
         "count": len(tables), "sample": tables[:_SAMPLE_LIMIT], "prose_units": units,
         "unit_basis": ("cjk-units" if unit_label == _UNIT_PER_1000_CJK_UNITS
                        else "words"),
-        "language": language}
+        "language": language,
+        # Which text carried the denominator.  model.text(PROSE) is every text block
+        # (headings, front matter, the bibliography); the canonical body is the same
+        # text minus the non-prose sections, and on the Chinese corpus the two differ
+        # by ~50% of characters - so the basis is stated instead of implied
+        # (cross-review H3).
+        "unit_basis_text": ("canonical_body" if canonical_text is not None
+                            else "prose_stream_incl_headings_and_references")}
     warnings: list[str] = []
+    if canonical_text is None:
+        warnings.append("UNIT_BASIS_NOT_CANONICAL")
     if not tables:
         warnings.append("NO_TABLES")
         return _record("S-TBL-09", value=None, n=0, denominator=units,
@@ -869,18 +902,21 @@ def table_latex_residue(model: dm.DocumentModel) -> dict[str, dm.JsonValue]:
 _UNIT_CITATIONS_PER_TABLE: Final = "citations-per-declared-table"
 
 
-def _reference_counts(model: dm.DocumentModel) -> dict[str, dict[int, int]]:
-    """Mentions of each figure/table number in the PROSE stream only.
+def _reference_counts(model: dm.DocumentModel,
+                      canonical_text: str | None = None) -> dict[str, dict[int, int]]:
+    """Mentions of each figure/table number in the body.
 
     A "表 2" written inside a cell is not a citation - otherwise tables would cite
     themselves - so cell text never contributes, exactly as in _referenced_numbers.
     """
-    prose = model.text(dm.Stream.PROSE)
+    prose = _citation_text(model, canonical_text)
     return {dm.Stream.FIGURES.value: dict(Counter(_numbers(prose, _FIGURE_REF_RE))),
             dm.Stream.TABLES.value: dict(Counter(_numbers(prose, _TABLE_REF_RE)))}
 
 
-def reference_depth(model: dm.DocumentModel) -> dict[str, dm.JsonValue]:
+def reference_depth(model: dm.DocumentModel,
+                    canonical_text: str | None = None
+                    ) -> dict[str, dm.JsonValue]:
     """S-REF-14: mean prose mentions per declared table.
 
     The uncited tables are named rather than averaged away, and the citation
@@ -901,17 +937,24 @@ def reference_depth(model: dm.DocumentModel) -> dict[str, dm.JsonValue]:
                        evidence={"count": len(declared),
                                  "sample": observed[:_SAMPLE_LIMIT], "depths": {},
                                  "uncited": declared}, warnings=["NO_PROSE_TEXT"])
-    counts = _reference_counts(model)[dm.Stream.TABLES.value]
+    counts = _reference_counts(model, canonical_text)[dm.Stream.TABLES.value]
     depths = {number: counts.get(number, 0) for number in declared}
     values = sorted(depths.values())
     uncited = sorted(number for number, depth in depths.items() if depth == 0)
     warnings: list[str] = ["UNCITED_TABLES"] if uncited else []
     return _record(
-        "S-REF-14", value=sum(values) / len(values), n=len(values),
+        "S-REF-14", value=float(values[len(values) // 2]), n=len(values),
         denominator=len(values), unit=_UNIT_CITATIONS_PER_TABLE,
         evidence={"count": len(values), "sample": observed[:_SAMPLE_LIMIT],
                   "depths": {str(number): depth for number, depth in depths.items()},
-                  "median_depth": values[len(values) // 2], "max_depth": values[-1],
+                  "median_depth": values[len(values) // 2],
+                  # mean and the shares stay in evidence: citation depth is long-tailed
+                  # (one table is often discussed many times), so the headline is the
+                  # median and the actionable number is how much is never cited
+                  # (cross-review M8).
+                  "mean_depth": round(sum(values) / len(values), 6),
+                  "uncited_share": round(len(uncited) / len(values), 6),
+                  "max_depth": values[-1],
                   "single_mention_share": round(
                       sum(1 for value in values if value == 1) / len(values), 6),
                   "multi_mention_share": round(
@@ -941,7 +984,8 @@ def unavailable_records(warning: str) -> dict[str, dict[str, dm.JsonValue]]:
 
 
 def stream_metrics(model: dm.DocumentModel,
-                   sections: dict[int, str] | None = None
+                   sections: dict[int, str] | None = None,
+                   canonical_text: str | None = None
                    ) -> dict[str, dict[str, dm.JsonValue]]:
     """All stream metrics for one paper, keyed by metric id.
 
@@ -950,12 +994,13 @@ def stream_metrics(model: dm.DocumentModel,
     """
     out: dict[str, dict[str, dm.JsonValue]] = {}
     for record in (caption_coverage(model), numbering_consistency(model),
-                   reference_consistency(model), image_resolution(model),
-                   caption_length(model), table_columns(model),
-                   table_empty_cells(model), table_missing_body(model),
-                   table_density(model), table_placement(model, sections),
-                   numeric_cell_share(model), numeric_row_share(model),
-                   table_latex_residue(model), reference_depth(model)):
+                   reference_consistency(model, canonical_text),
+                   image_resolution(model), caption_length(model),
+                   table_columns(model), table_empty_cells(model),
+                   table_missing_body(model), table_density(model, canonical_text),
+                   table_placement(model, sections), numeric_cell_share(model),
+                   numeric_row_share(model), table_latex_residue(model),
+                   reference_depth(model, canonical_text)):
         metric_id = record["metric_spec"]
         if isinstance(metric_id, str):
             out[metric_id] = record

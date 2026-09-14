@@ -125,7 +125,11 @@ def test_reference_consistency_finds_dangling_and_uncited(model: dm.DocumentMode
     assert evidence["dangling"] == {"figures": [2, 9], "tables": [1]}
     assert evidence["uncited"] == {"figures": [], "tables": [2]}
     # (1 shared figure number + 0 shared table numbers) / (2 declared + 4 referenced)
-    assert record["value"] == pytest.approx(1 / 6, abs=1e-6)
+    # Jaccard: |A ∪ B| = 2 + 4 - 1 = 5, so 1/5.  The old denominator (|A| + |B|)
+    # capped this at 1/2 and made a near-perfect corpus read as "half unmatched"
+    # (cross-review blocker B2).
+    assert record["value"] == pytest.approx(1 / 5, abs=1e-6)
+    assert (record["n"], record["denominator"]) == (1, 5)   # value == n / denominator
     assert "DANGLING_REFERENCES" in record["warnings"]
     assert "UNCITED_FIGURES_OR_TABLES" in record["warnings"]
 
@@ -144,7 +148,8 @@ def test_reference_consistency_ignores_numbers_in_tables(tmp_path: Path) -> None
     # Table 1 is declared but never cited -> uncited, not dangling.
     assert record["evidence"]["dangling"] == {"figures": [], "tables": []}
     assert record["evidence"]["uncited"] == {"figures": [], "tables": [1]}
-    assert record["value"] == pytest.approx(1 / 3, abs=1e-6)
+    # Jaccard: |A ∪ B| = 2 + 1 - 1 = 2 -> 0.5 (the old denominator gave 1/3)
+    assert record["value"] == pytest.approx(0.5, abs=1e-6)
 
 
 # ---------------------------------------------------------------------------

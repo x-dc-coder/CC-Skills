@@ -1189,11 +1189,19 @@ def test_reference_metrics_numeric_style(tmp_path: Path) -> None:
     link = records["M-REFLINK-54"]
     assert link["scope"] == ["prose", "references"]
     assert link["unit"] == "ratio"
-    assert link["n"] == 5                       # entries
+    # n is the numerator (numbers both cited and declared) and denominator is
+    # |cited ∪ 1..N|, so value == n / denominator holds; the entry count belongs in
+    # evidence.count (cross-review M2).
+    assert link["n"] == 4
+    assert link["evidence"]["count"] == 5
     assert link["evidence"]["cited_count"] == 4  # 1, 2, 3, 4 (not 0 from [0,1])
     assert link["evidence"]["dangling"] == []
     assert link["evidence"]["uncited"] == [5]
-    assert link["value"] == pytest.approx(4 / 9, abs=1e-6)
+    # Jaccard over cited {1,2,3,4} vs entries 1..5: |union| = 5 -> 0.8.  The old
+    # formula shared/(|cited|+N) = 4/9 looked like "half unmatched" even though the
+    # cited set covered everything (cross-review blocker B2).
+    assert link["value"] == pytest.approx(0.8, abs=1e-6)
+    assert (link["n"], link["denominator"]) == (4, 5)
     assert "UNCITED_REFERENCES" in link["warnings"]
 
     age = records["M-REFAGE-53"]
@@ -1216,7 +1224,8 @@ def test_reference_metrics_author_year_style_is_not_measured(tmp_path: Path) -> 
     link = records["M-REFLINK-54"]
     assert link["value"] is None
     assert "CITATION_STYLE_NOT_NUMERIC" in link["warnings"]
-    assert link["n"] == 5
+    assert link["n"] == 0                      # nothing was counted, so no numerator
+    assert link["denominator"] == 5            # the entries themselves
     # freshness does not depend on the citation style, so it is still measured
     assert records["M-REFAGE-53"]["value"] is not None
 

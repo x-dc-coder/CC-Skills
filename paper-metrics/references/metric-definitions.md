@@ -551,12 +551,13 @@ text_metrics.compute_text_metrics(text, bundle) 的返回值为 {metric_id: metr
 
 #### `S-REF-03` 正文引用一致性
 
-- **公式**：`|declared ∩ referenced| / (|declared| + |referenced|)`，按 figures/tables 分别求交后汇总；单位 `ratio`。
+- **公式**：`|declared ∩ referenced| / |declared ∪ referenced|`（**Jaccard**，1.0 = 完全一致），按 figures/tables 分别求交后汇总；单位 `ratio`。
+  **2026-09-14 修正（交叉审查 blocker B2）**：旧分母 `|declared| + |referenced|` **理论上限恒为 0.5**，中文均值 0.4829 曾被文档反读成"约一半对不上"——实际是 **96.6% 重合**。已改 Jaccard，并令 `n = 交集编号数`、`denominator = |并集|`，使契约的 `value = n / denominator` 成立。
 - **分子 / 分母**：分子 = 既被声明（有题注编号）又被正文引用的编号数；分母 = 声明编号数 + 引用编号数。
 - **引用只在 prose 流里搜**：表格单元格里的 `Figure 2` 不会被当作引用（有测试锁定）。
 - **证据坐标**：`declared` / `referenced` / `dangling`（引了不存在）/ `uncited`（声明了没引）/ `sample`。
 - **不能推断什么**：低值既可能来自 MinerU 漏题注，也可能来自作者书写不规范——必须同时看 `dangling`/`uncited` 与 `S-CAP-01` 才能归因，**不得**单凭本条断言"该刊图表管理混乱"。
-- **实测**：均值 **0.4829**（约一半图表编号与正文引用对不上，是 D-2 门禁的直接依据）。
+- **实测（Jaccard 口径，2026-09-14 修正）**：中文 mean **0.9417**（median 1.0）、英文 mean **0.7331**（median 0.7391）。旧口径的 0.4829 曾被读成「约一半对不上」，实际是 96.6% 重合——差异请读 dangling/uncited，不要反推。
 
 #### `S-SIZ-04` 图像分辨率充裕度
 
@@ -602,7 +603,8 @@ text_metrics.compute_text_metrics(text, bundle) 的返回值为 {metric_id: metr
 #### `S-TBL-09` 表格密度（跨流：prose + tables）
 
 - **公式**：`表格块数 / prose 单位数 × 1000`；单位随语言：英文 `per-1000-words`、中文 `per-1000-cjk-units`。
-- **分母只算 prose 流**：不能把表格自身文本算进分母——否则表多的论文会抬高自己的基数、把这指标要暴露的密度藏掉。
+- **分母是 canonical 正文**（调用方传入 `Paper.canonical_text()`）；证据以 `unit_basis_text` 写明基准，回退 prose 流时给 `UNIT_BASIS_NOT_CANONICAL` 告警。
+  **2026-09-14 修正（交叉审查 H3）**：此前分母是 `model.text(PROSE)`（**全部** text 块，含标题/前置页/参考文献），实测中文语料比 canonical 正文**多 49.8% 字符**，密度被系统性低估且中英偏差不同。
 - **分母来自冻结分词器**：复用 `text_metrics.detect_language` 的 `cjk_chars`/`ascii_alpha_tokens`，**不另写一套分词**（两套规则会漂移，密度取决于哪套先跑）。
 - **scope = ["prose","tables"]（首个跨流指标）**，带来一条契约后果：**跨流指标同样不进草稿契约**（Markdown 草稿没有表格清单），`build_contract` 只在 scope **恰好为 prose** 时才生成 clause——已收紧并有测试锁定。
 - **证据坐标**：`evidence.sample[].block_index`/`field="table_body"`/`excerpt` + `prose_units` + `unit_basis` + `language`；无 prose 单位时给 `null` + `NO_PROSE_UNITS`（不编 0）。
@@ -645,7 +647,7 @@ text_metrics.compute_text_metrics(text, bundle) 的返回值为 {metric_id: metr
 
 #### `S-REF-14` 表格被引深度
 
-- **公式**：`mean(每张声明表在正文被提及的次数)`；单位 `citations-per-declared-table`。声明表 = 题注里解析出编号的表；提及次数只统计 **prose 流**（单元格里的"表 2"不算引用，否则表格会自我引用）。
+- **公式**：`median(每张声明表在正文被提及的次数)`（长尾分布，均值退居证据字段 `mean_depth`）；单位 `citations-per-declared-table`。声明表 = 题注里解析出编号的表；提及次数只统计 **prose 流**（单元格里的"表 2"不算引用，否则表格会自我引用）。
 - **证据坐标**：`evidence.depths`（表号 → 次数，JSON 键为字符串）、`median_depth`、`max_depth`、`single_mention_share`（恰好 1 次）、`multi_mention_share`（≥2 次）、`uncited`（为 0 的表号），样本指向**题注字段**（表号是从题注读出来的，证据就指那里）。
 - **与 `S-REF-03` 的分工**：S-REF-03 回答"引用的编号和题注编号**对得上吗**"（集合口径）；本指标回答"对得上的那些表**被讨论了几次**"。未被引用的表在两者中都会出现，这是刻意的重复可见性。
 - **scope = ["prose","tables"]（跨流）** → 与 S-TBL-09 一样**不进草稿契约**（草稿没有表格清单）。
@@ -681,13 +683,14 @@ text_metrics.compute_text_metrics(text, bundle) 的返回值为 {metric_id: metr
 
 ---
 
-### 5.3 `M-REFAGE-53` 参考文献时效性（近 5 年占比）
+### 5.3 `M-REFAGE-53` 参考文献**近端集中度**（原称"时效性"，2026-09-14 改名）
 
 - **公式**：`近 N 年文献数 / 有年份的文献数`（N = `_RECENT_REFERENCE_YEARS` = 5）；单位 `ratio`。
 - **"近"的基准**：以**该篇最新的参考文献年份**为锚（−4 年），**不是**当前年份或论文年份——论文自身年份在语料里不可靠，且锚在自身能使跨语料/跨年可比。该自指性质已在此写明，属于口径的一部分。
 - **每篇文献只取一个年份**：取**首个**年份样式的串并剥掉 LNCS 式后缀（`2020a` 记 2020）；否则一条文献里的卷/页码年份会被重复计数——**本指标第一版就报出过 100.8% 的"覆盖率"**（不可能值），被真语料运行抓到后修正。
 - **证据坐标**：`evidence.sample[]` 给 `block_index` + `field`（`text`/`list_items`）+ 块前缀 `excerpt` + 解析出的 `entry`（form B 可回指）；另有 `year_coverage`、`newest_year`、`oldest_year`、`median_year`、`recent_entries`。
-- **不能推断什么**：近 5 年占比低 ≠ 该刊保守（领域成熟度、经典文献密度都会影响）；`year_coverage < 1` 时给 `REFERENCE_YEARS_INCOMPLETE` 告警，此时该值只覆盖可解析部分。
+- **名不副实的历史（交叉审查 M3）**：该值以**该篇最新文献年**为锚，测的是"列表近端集中度"，**不是绝对新旧**。所以：① 改名"近端集中度"；② 语料摘要新增 `reference_freshness`（锚 = 语料最大文献年，给**绝对**近 5 年占比）；③ `evidence.anchor` 写明 `self_newest`、`evidence.years` 供第三方换锚复算。
+- **不能推断什么**：近端集中度低 ≠ 该刊保守；**跨语料比较前必须先看 `reference_freshness` 的绝对读数**；`year_coverage < 1` 时给 `REFERENCE_YEARS_INCOMPLETE` 告警，此时该值只覆盖可解析部分。
 - **实测（2026-09-14）**：中文 10 篇 mean **0.618**（median 0.625，年份可解析率 **100%**）；英文 34 篇 mean **0.490**（median 0.429，可解析率 99.0%）。
 
 ### 5.4 `M-REFLINK-54` 引用 ↔ 列表双向一致性
