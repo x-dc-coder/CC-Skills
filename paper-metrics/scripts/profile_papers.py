@@ -1450,6 +1450,145 @@ def _normalise_language(value) -> str | None:
     return tag.split("-")[0]
 
 
+# ---------------------------------------------------------------------------
+# Base artifact census: what the metrics read, and what they never see
+# ---------------------------------------------------------------------------
+# The canonical text is prose-only on purpose (a table is not a sentence), but the
+# scope was implicit until now: nothing recorded how much of the document the
+# metrics never look at.  Measured on 21 real papers, type=="text" blocks carry
+# 75.7% of the characters and only 20.7% of the digits - tables alone hold 72% of
+# them.  The census makes that a stated number, so "why did this metric move" can
+# be answered with "the table stream changed" instead of guessing.
+
+_BASE_ARTIFACT = {
+    "name": "mineru_content_list",
+    "scope": ["prose"],
+    "note": ("metrics are defined on the prose stream of the MinerU "
+             "content_list.json; tables / figures / equations / footnotes / lists "
+             "are censused but are never merged into the prose text"),
+}
+
+#: Which stream a block type belongs to.  Anything unknown lands in "other",
+#: which is reported rather than silently dropped.
+_STREAM_OF_TYPE = {
+    "text": "prose",
+    "table": "tables",
+    "equation": "equations",
+    "image": "figures",
+    "chart": "figures",
+    "list": "lists",
+    "page_footnote": "footnotes",
+    "header": "running_heads",
+    "footer": "running_heads",
+    "page_number": "page_numbers",
+    "aside_text": "asides",
+    "code": "code",
+}
+
+_HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.S)
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+_HTML_CELL_BREAK_RE = re.compile(r"</(?:td|th|tr)>|<br\s*/?>", re.I)
+_HTML_ENTITY_RE = re.compile(r"&(#x?[0-9a-fA-F]+|[a-zA-Z]+);")
+_LATEX_CMD_RE = re.compile(r"\\[A-Za-z]+")
+_LATEX_NOISE_RE = re.compile(r"[\u0024{}\\]")
+_DIGIT_RE = re.compile("\u005b0-9\uFF10-\uFF19\u005d")
+
+_ENTITY_MAP = {"amp": "&", "lt": "<", "gt": ">", "quot": '"', "apos": "'",
+               "nbsp": " "}
+
+
+def _decode_entity(match: re.Match) -> str:
+    body = match.group(1)
+    try:
+        if body[:2].lower() == "#x":
+            return chr(int(body[2:], 16))
+        if body[0] == "#":
+            return chr(int(body[1:]))
+    except (ValueError, IndexError):
+        return match.group(0)
+    return _ENTITY_MAP.get(body.lower(), match.group(0))
+
+
+def html_to_text(raw: str) -> str:
+    """Cell text of a MinerU table_body with the markup taken out.
+
+    This has to exist before any table metric: on the real corpus the raw HTML is
+    51.8% markup by character count, and its attributes carry ~2600 "digits" that
+    are not content at all (colspan, widths, style numbers).
+    """
+    text = _HTML_COMMENT_RE.sub(" ", raw or "")
+    text = _HTML_CELL_BREAK_RE.sub(" ", text)
+    text = _HTML_TAG_RE.sub(" ", text)
+    text = _HTML_ENTITY_RE.sub(_decode_entity, text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def latex_to_text(raw: str) -> str:
+    """LaTeX with its scaffolding removed; variables and digits survive."""
+    text = _LATEX_CMD_RE.sub(" ", raw or "")
+    text = _LATEX_NOISE_RE.sub(" ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def block_census(paper: "Paper") -> dict:
+    """Per-stream census of one paper's canonical input.
+
+    Counts are taken on the NORMALISED text (markup stripped for tables, commands
+    stripped for equations), because that is what a metric would actually read.
+    raw_chars is kept next to chars so the markup share stays visible.
+    """
+    streams: dict[str, dict] = {}
+    for block in paper.load_blocks():
+        bucket = _STREAM_OF_TYPE.get(str(block.get("type") or ""), "other")
+        rec = streams.setdefault(bucket, {"blocks": 0, "chars": 0, "digits": 0,
+                                          "raw_chars": 0, "caption_chars": 0,
+                                          "caption_digits": 0})
+        rec["blocks"] += 1
+        if bucket == "tables":
+            raw = str(block.get("table_body") or "")
+            plain = html_to_text(raw)
+        elif bucket == "equations":
+            raw = str(block.get("text") or "")
+            plain = latex_to_text(raw)
+        elif bucket == "lists":
+            items = block.get("list_items")
+            raw = plain = (" ".join(str(i) for i in items)
+                           if isinstance(items, list) else "")
+        else:
+            raw = plain = str(block.get("text") or "")
+        rec["raw_chars"] += len(raw)
+        rec["chars"] += len(plain)
+        rec["digits"] += len(_DIGIT_RE.findall(plain))
+        # Every *_caption key counts: the real corpus uses four of them
+        # (image_/table_/chart_/code_caption, 1056 blocks on 21 papers), so a
+        # fixed pair of names would silently drop most captions.
+        captions = " ".join(
+            str(item) for key, value in block.items() if key.endswith("_caption")
+            for item in (value if isinstance(value, list) else [value]) if item)
+        rec["caption_chars"] += len(captions)
+        rec["caption_digits"] += len(_DIGIT_RE.findall(captions))
+    for rec in streams.values():
+        rec["dropped_by_metrics"] = True
+    if "prose" in streams:
+        streams["prose"]["dropped_by_metrics"] = False
+    return {key: streams[key] for key in sorted(streams)}
+
+
+def _census_totals(records: list[dict]) -> dict:
+    totals: dict[str, dict] = {}
+    for record in records:
+        for stream, stats in (record.get("block_census") or {}).items():
+            acc = totals.setdefault(stream, {
+                "papers": 0, "blocks": 0, "chars": 0, "digits": 0,
+                "raw_chars": 0, "caption_chars": 0, "caption_digits": 0,
+                "dropped_by_metrics": stats.get("dropped_by_metrics", True)})
+            acc["papers"] += 1
+            for key in ("blocks", "chars", "digits", "raw_chars", "caption_chars",
+                        "caption_digits"):
+                acc[key] += int(stats.get(key, 0))
+    return {key: totals[key] for key in sorted(totals)}
+
+
 def aggregate_corpus(records: list[dict], corpus_id: str | None = None) -> dict:
     """Aggregate per-paper records into _corpus_summary.json.
 
@@ -1625,9 +1764,16 @@ def aggregate_corpus(records: list[dict], corpus_id: str | None = None) -> dict:
             acc["papers"] += 1
             acc["blocks"] += int(stats.get("blocks", 0))
             acc["words"] += int(stats.get("words", 0))
+    # Every metric states which stream it reads.  The scope used to be implicit,
+    # and that is exactly how "digits that live in tables" got mistaken for
+    # "digits lost in conversion": a number without its stream is not evidence.
+    for msum in metrics.values():
+        msum.setdefault("scope", list(_BASE_ARTIFACT["scope"]))
     out = {
         "schema_version": SCHEMA_VERSION,
         "analysis_unit": "paper",
+        "base_artifact": dict(_BASE_ARTIFACT),
+        "block_census": _census_totals(records),
         "non_prose_dropped": {k: dropped_totals[k] for k in sorted(dropped_totals)},
         "weight_mode": "equal_paper",
         "languages": {k: lang_counts[k] for k in sorted(lang_counts)},
@@ -1710,6 +1856,7 @@ def run_profile(corpus_dir: Path, out_dir: Path,
                     if mismatch.get("kind") == "detect_missing"
                     else "LANGUAGE_METADATA_MISMATCH")
             record["warnings"] = sorted(set(record["warnings"]) | {code})
+        record["block_census"] = block_census(paper)
         releases_used.add(_bundle_for(bundles, record.get("language")).language)
         if record.get("language_supported") is False and record.get("language") not in (
                 "en", "zh"):
@@ -1807,6 +1954,14 @@ def _render_md(profile: dict) -> str:
     lines.append(f"- 语料指纹 corpus id: {_TICK}{profile['corpus']['id']}{_TICK}")
     lines.append(f"- 词表指纹: {_TICK}{profile['toolchain']['lexicon_fingerprint']}{_TICK}")
     lines.append(f"- 依赖: {profile['toolchain']['implementation']}（无第三方依赖，无 LLM 调用）")
+    base = (profile.get("corpus_summary") or {}).get("base_artifact") or {}
+    if base:
+        lines.append(f"- 指标基座: {base.get('name')}（范围: {', '.join(base.get('scope') or [])}）")
+    census = (profile.get("corpus_summary") or {}).get("block_census") or {}
+    ignored = [f"{k} {v['blocks']}块/{v['digits']}数字"
+               for k, v in sorted(census.items()) if v.get("dropped_by_metrics")]
+    if ignored:
+        lines.append(f"- 未被指标读取的流: {'；'.join(ignored)}")
     skipped = profile["corpus"].get("skipped") or []
     if skipped:
         lines.append(f"- 跳过论文: {len(skipped)} 篇（原因见 _domain_profile.json 的 corpus.skipped）")

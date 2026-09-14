@@ -499,6 +499,97 @@ def test_one_mismatch_names_only_the_mismatching_paper(tmp_path: Path) -> None:
     assert "Paper 0" not in hits[0]["detail"], "an agreeing paper must never be named"
 
 
+def test_html_to_text_strips_markup_and_attribute_digits() -> None:
+    """Table markup must not become content: on the real corpus it is 51.8% of the
+    raw characters and its attributes carry thousands of digits that are not data."""
+    html = ('<table><tr><td colspan="3">12.73</td>'
+            '<td style="width:5%">0.982</td></tr>'
+            "<tr><td>A&amp;B</td><td>&#39;q&#39;</td><td>x</td><td>y</td></tr></table>")
+    text = pp.html_to_text(html)
+    assert "12.73" in text and "0.982" in text
+    assert "A&B" in text and "'q'" in text
+    # the attribute digits (colspan="3", width:5%) must not survive
+    digits = len(pp._DIGIT_RE.findall(text))
+    assert digits == 8, f"attribute digits leaked into the text: {text!r}"
+    assert "<" not in text and ">" not in text
+
+
+def test_latex_to_text_keeps_variables_and_digits() -> None:
+    """Only the scaffolding goes: variables and digits are the content."""
+    text = pp.latex_to_text("$$ \\frac{12}{34} \\alpha x $$")
+    assert len(pp._DIGIT_RE.findall(text)) == 4
+    assert "frac" not in text and "alpha" not in text
+    assert "x" in text
+
+
+def test_block_census_separates_streams_and_flags_dropped(tmp_path: Path) -> None:
+    """One census per stream; nothing is merged, and 'ignored' is a stated fact."""
+    corpus = tmp_path / "paper-analysis"
+    table_html = ('<table><tr><td colspan="3">12.73</td>'
+                  '<td style="width:5%">0.982</td></tr></table>')
+    _write_paper(corpus, "Paper One", "p1", [
+        _make_block("text", "Body sentence with 7 words here."),
+        {"type": "table", "table_body": table_html,
+         "table_caption": ["Table 1", "Results 2026"]},
+        {"type": "equation", "text": "$$ \\frac{12}{34} \\alpha x $$",
+         "text_format": "latex"},
+        {"type": "list", "list_items": ["item 1", "item 2 with 42"]},
+        {"type": "image", "img_path": "images/f1.jpg",
+         "image_caption": ["Figure 2", "Flow"]},
+        {"type": "page_footnote", "text": "Funded by grant 2020-1234."},
+    ])
+    out_dir = tmp_path / "out"
+    pp.run_profile(corpus, out_dir)
+    record = json.loads((out_dir / "_per_paper_metrics.jsonl")
+                        .read_text(encoding="utf-8").splitlines()[0])
+    census = record["block_census"]
+
+    assert census["prose"]["blocks"] == 1
+    assert census["prose"]["dropped_by_metrics"] is False
+    assert census["tables"]["dropped_by_metrics"] is True
+    assert census["tables"]["digits"] == 8, "cell digits only, never attributes"
+    assert census["tables"]["raw_chars"] > census["tables"]["chars"]
+    assert census["tables"]["caption_chars"] > 0
+    assert census["tables"]["caption_digits"] == 5      # "Table 1" + "Results 2026"
+    assert census["equations"]["digits"] == 4
+    assert census["equations"]["raw_chars"] > census["equations"]["chars"]
+    assert census["lists"]["chars"] == len("item 1 item 2 with 42")
+    assert census["lists"]["digits"] == 4      # 1 + 2 + 42 → four digit characters
+    assert census["figures"]["blocks"] == 1
+    assert census["figures"]["caption_chars"] == len("Figure 2 Flow")
+    assert census["figures"]["caption_digits"] == 1
+    assert census["footnotes"]["digits"] == 8
+    # every stream except prose is declared as not read by the metrics
+    assert [k for k, v in census.items() if not v["dropped_by_metrics"]] == ["prose"]
+
+
+def test_base_artifact_and_metric_scopes_are_declared(synthetic_corpus: Path,
+                                                      tmp_path: Path) -> None:
+    """The scope of every metric is a first-class field, and the census totals must
+    agree with the per-paper records (otherwise the 'ignored' claim is unverifiable)."""
+    out_dir = tmp_path / "out"
+    pp.run_profile(synthetic_corpus, out_dir)
+    summary = json.loads((out_dir / "_corpus_summary.json").read_text(encoding="utf-8"))
+
+    assert summary["base_artifact"]["name"] == "mineru_content_list"
+    assert summary["base_artifact"]["scope"] == ["prose"]
+    missing = [mid for mid, row in summary["metrics"].items() if not row.get("scope")]
+    assert missing == [], f"metrics without a declared scope: {missing}"
+
+    census = summary["block_census"]
+    assert census["prose"]["dropped_by_metrics"] is False
+    per_paper = [json.loads(line) for line in
+                 (out_dir / "_per_paper_metrics.jsonl").read_text(encoding="utf-8").splitlines()]
+    for stream, totals in census.items():
+        assert totals["blocks"] == sum(r["block_census"].get(stream, {}).get("blocks", 0)
+                                       for r in per_paper), stream
+        assert totals["digits"] == sum(r["block_census"].get(stream, {}).get("digits", 0)
+                                       for r in per_paper), stream
+
+    md = (out_dir / "_domain_profile.md").read_text(encoding="utf-8")
+    assert "指标基座" in md and "未被指标读取的流" in md
+
+
 def test_tga_paper_real_profile(tmp_path: Path) -> None:
     """Profile the real TGA paper alone and verify counts match the source PDF."""
     # Build a 1-paper corpus by symlinking
