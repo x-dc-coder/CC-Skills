@@ -596,7 +596,26 @@ text_metrics.compute_text_metrics(text, bundle) 的返回值为 {metric_id: metr
 - **不能推断什么**：缺失可能来自引擎未抽取正文（图片式表格），也可能是原表就是图形——归因需人工抽检，本指标只负责"让它可见"。
 - **实测**：中文 **0/30**；英文 **8/273 = 2.93%**（34 篇里 32 篇有表，另 2 篇为 `null`）。
 
-**变更控制**：八条的取数口径（哪些块进分母、引用模式、题注键集合、分辨率阈值、colspan 求和规则）属定义变更，按 §10 第 1 条 bump `metric_spec_version`；阈值/口径调整必须同步本节与 SKILL 里的实测数字。
+#### `S-TBL-09` 表格密度（跨流：prose + tables）
+
+- **公式**：`表格块数 / prose 单位数 × 1000`；单位随语言：英文 `per-1000-words`、中文 `per-1000-cjk-units`。
+- **分母只算 prose 流**：不能把表格自身文本算进分母——否则表多的论文会抬高自己的基数、把这指标要暴露的密度藏掉。
+- **分母来自冻结分词器**：复用 `text_metrics.detect_language` 的 `cjk_chars`/`ascii_alpha_tokens`，**不另写一套分词**（两套规则会漂移，密度取决于哪套先跑）。
+- **scope = ["prose","tables"]（首个跨流指标）**，带来一条契约后果：**跨流指标同样不进草稿契约**（Markdown 草稿没有表格清单），`build_contract` 只在 scope **恰好为 prose** 时才生成 clause——已收紧并有测试锁定。
+- **证据坐标**：`evidence.sample[].block_index`/`field="table_body"`/`excerpt` + `prose_units` + `unit_basis` + `language`；无 prose 单位时给 `null` + `NO_PROSE_UNITS`（不编 0）。
+- **不能推断什么**：**单位不同，中英数值不可直接比较**（中文按 cjk-units、英文按词）；密度高≠写得差，它只描述"该刊用表的频率"。
+- **实测**：中文 **0.530 / 千字**（逐篇 0.124–1.043，n=10）；英文 **1.201 / 千词**（逐篇 0.092–3.675，n=32）。
+
+#### `S-TBL-10` 表格章节落位（集中度）
+
+- **公式**：`该篇表最多的那个章节的表数 / 有章节归属的表数`；单位 `ratio`。
+- **为什么用"最多章节"而不是"结果段占比"**：中文语料里有大量表落在**无法解析成 canonical 标签的子标题**下（如 `3．2 决策者偏好的影响`、`数值实验`），若只认 `experiments/results/discussion` 会**系统性低估**且低估量未知。所以值取稳健统计量，同时把 `results_share` 作为**保守下界**放进证据并标注说明。
+- **证据坐标**：`evidence.sections`（章节 → 表数）、`top_section`、`top_share`、`results_share`、`results_share_note`、`sample[]`（含 `section`，可回指块）。
+- **章节标签来源**：调用方传入 `block_index → canonical 标签` 映射（来自 `labelled_blocks()`）；**没有映射时给 `null` + `SECTIONS_UNAVAILABLE`**，不猜位置。
+- **不能推断什么**：集中度高只是"表集中在少数章节"，不等于该刊规定如此；章节标签无法解析时该表不计入任何章节（已在证据里可见）。
+- **实测**：中文 mean 0.727（median 0.667），落位 discussion 8 / method 6 / experiments 4 + 7 个未解析子标题共 9 表；英文 mean 0.442（median 0.5），落位 experiments 41 / discussion 16 / method 10 / appendix 8。两语料的 `S-TBL-10` 都带 `LENGTH_CORR`（集中度与篇幅相关，不可当独立风格证据）。
+
+**变更控制**：十条的取数口径（哪些块进分母、引用模式、题注键集合、分辨率阈值、colspan 求和规则、密度单位与落位统计量）属定义变更，按 §10 第 1 条 bump `metric_spec_version`；阈值/口径调整必须同步本节与 SKILL 里的实测数字。
 
 ---
 
