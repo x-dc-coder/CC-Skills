@@ -930,7 +930,7 @@ def reference_depth(model: dm.DocumentModel,
                        unit=_UNIT_CITATIONS_PER_TABLE,
                        evidence={"count": 0, "sample": [], "depths": {},
                                  "uncited": []}, warnings=["NO_TABLES"])
-    if not model.text(dm.Stream.PROSE).strip():
+    if not _citation_text(model, canonical_text).strip():
         # No prose means the citation search could not run: "not measured", not zero.
         return _record("S-REF-14", value=None, n=len(declared),
                        denominator=len(declared), unit=_UNIT_CITATIONS_PER_TABLE,
@@ -962,6 +962,18 @@ def reference_depth(model: dm.DocumentModel,
                   "uncited": uncited}, warnings=warnings)
 
 
+#: Every metric unit, including the non-ratio ones: a not-measured record used to
+#: hardcode ratio, so a consumer dispatching on unit read the wrong scale (M9).
+_METRIC_UNITS: Final[dict[str, str]] = {
+    "S-CAP-01": "ratio", "S-NUM-02": "ratio", "S-REF-03": "ratio",
+    "S-SIZ-04": "ratio", "S-CAPL-05": "characters", "S-TBL-06": "columns",
+    "S-TBL-07": "ratio", "S-TBL-08": "ratio",
+    "S-TBL-09": "per-1000-words-or-cjk-units", "S-TBL-10": "ratio",
+    "S-TBL-11": "ratio", "S-TBL-12": "ratio", "S-TBL-13": "ratio",
+    "S-REF-14": "citations-per-declared-table",
+}
+
+
 _METRIC_IDS: Final[tuple[str, ...]] = ("S-CAP-01", "S-NUM-02", "S-REF-03",
                                          "S-SIZ-04", "S-CAPL-05", "S-TBL-06",
                                          "S-TBL-07", "S-TBL-08", "S-TBL-09",
@@ -976,7 +988,8 @@ def unavailable_records(warning: str) -> dict[str, dict[str, dm.JsonValue]]:
     corpus summary report the paper as if it had no figures at all.
     """
     return {
-        metric_id: _record(metric_id, value=None, n=0, denominator=0, unit="ratio",
+        metric_id: _record(metric_id, value=None, n=0, denominator=0,
+                           unit=_METRIC_UNITS.get(metric_id, "ratio"),
                            evidence={"count": 0, "sample": []},
                            warnings=[warning])
         for metric_id in _METRIC_IDS

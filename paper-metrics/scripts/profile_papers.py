@@ -1607,7 +1607,9 @@ def _is_missingness_cause(code: str) -> bool:
         return False
     return (code.startswith("NO_") or code.endswith("_NOT_SUPPORTED")
             or code in {"CANONICAL_UNPARSEABLE", "SECTIONS_UNAVAILABLE",
-                        "METRIC_SCOPE_MISSING"})
+                        "METRIC_SCOPE_MISSING",
+                        "CITATION_STYLE_NOT_NUMERIC", "IMAGE_UNREADABLE",
+                        "TABLE_BODY_EMPTY", "NO_FIGURES_OR_TABLES"})
 
 
 def _suppress_language_dependent_paragraph_stats(metrics: dict) -> None:
