@@ -14,9 +14,18 @@ import process from 'node:process';
 import os from 'node:os';
 
 const SKILLS_ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+const REGISTRATION_ROOTS = Array.from(new Set([
+  SKILLS_ROOT,
+  path.join(os.homedir(), '.agents', 'skills'),
+  path.join(os.homedir(), '.dsh', 'skills')
+]));
 const IGNORED_DIRS = new Set([
-  '.git', '.omo', '.pytest_cache', '.uv-cache', '.venv',
+  '.git', '.omo', '.codegraph', '.pytest_cache', '.uv-cache', '.venv',
   'archive', 'scripts', 'node_modules', '__pycache__'
+]);
+const RESOURCE_ONLY_DIRS = new Set([
+  'diagram-draft', 'diagram-er', 'diagram-ers', 'diagram-flow',
+  'diagram-module', 'diagram-sequence', 'diagram-usecase'
 ]);
 
 // 默认已知的启发式映射表（用于存量技能兼容）
@@ -127,13 +136,9 @@ function parseFrontmatter(content) {
 }
 
 /** 检测单个技能 */
-async function inspectSkill(skillDirName) {
-  const skillPath = path.join(SKILLS_ROOT, skillDirName);
+async function inspectSkill(registration) {
+  const { name: skillDirName, skillPath, realPath, sources } = registration;
   const skillMdPath = path.join(skillPath, 'SKILL.md');
-  
-  if (!fs.existsSync(skillMdPath)) {
-    return null;
-  }
 
   const content = fs.readFileSync(skillMdPath, 'utf8');
   const { metadata } = parseFrontmatter(content);
@@ -226,6 +231,8 @@ async function inspectSkill(skillDirName) {
   return {
     skill: skillDirName,
     status,
+    path: realPath,
+    sources,
     fallback: heuristic.fallback || null,
     checks
   };
@@ -238,16 +245,44 @@ async function main() {
   const targetFilter = args.find(a => !a.startsWith('--'));
 
   const t0 = performance.now();
-  const entries = fs.readdirSync(SKILLS_ROOT, { withFileTypes: true });
+  const registrations = new Map();
+  const registrationIssues = [];
+
+  for (const root of REGISTRATION_ROOTS) {
+    if (!fs.existsSync(root)) continue;
+    let entries;
+    try { entries = fs.readdirSync(root, { withFileTypes: true }); } catch (err) {
+      registrationIssues.push({ root, issue: 'unreadable-root', detail: err.message });
+      continue;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
+      if (IGNORED_DIRS.has(entry.name) || RESOURCE_ONLY_DIRS.has(entry.name)) continue;
+      const skillPath = path.join(root, entry.name);
+      let realPath;
+      try { realPath = fs.realpathSync(skillPath); } catch {
+        registrationIssues.push({ root, skill: entry.name, path: skillPath, issue: 'broken-registration' });
+        continue;
+      }
+      const skillMdPath = path.join(realPath, 'SKILL.md');
+      if (!fs.existsSync(skillMdPath)) {
+        registrationIssues.push({ root, skill: entry.name, path: skillPath, realPath, issue: 'missing-SKILL.md' });
+        continue;
+      }
+      const key = realPath;
+      const current = registrations.get(key);
+      if (current) {
+        current.sources.push({ root, name: entry.name, path: skillPath });
+      } else {
+        registrations.set(key, { name: entry.name, skillPath: realPath, realPath, sources: [{ root, name: entry.name, path: skillPath }] });
+      }
+    }
+  }
+
   const results = [];
-
-  for (const entry of entries) {
-    if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
-    if (IGNORED_DIRS.has(entry.name)) continue;
-    if (targetFilter && entry.name !== targetFilter) continue;
-
-    const res = await inspectSkill(entry.name);
-    if (res) results.push(res);
+  for (const registration of [...registrations.values()].sort((a, b) => a.name.localeCompare(b.name))) {
+    if (targetFilter && registration.name !== targetFilter && !registration.sources.some(s => s.name === targetFilter)) continue;
+    results.push(await inspectSkill(registration));
   }
 
   const elapsedMs = (performance.now() - t0).toFixed(1);
@@ -260,6 +295,9 @@ async function main() {
       ready: results.filter(r => r.status === 'READY').length,
       degraded: results.filter(r => r.status === 'DEGRADED').length,
       unavailable: results.filter(r => r.status === 'UNAVAILABLE').length,
+      registrationIssueCount: registrationIssues.length,
+      registrationIssues,
+      roots: REGISTRATION_ROOTS.filter(root => fs.existsSync(root)),
       skills: results
     }, null, 2));
     return;
@@ -288,8 +326,14 @@ async function main() {
     console.log(`${icon} ${item.skill.padEnd(22)} [${item.status.padEnd(11)}]${failMsg}${fallbackMsg}`);
   }
 
+  if (registrationIssues.length) {
+    console.log(`--------------------------------------------------------`);
+    for (const issue of registrationIssues) {
+      console.log(`⚠️  注册问题: ${issue.skill || issue.root} [${issue.issue}] ${issue.path || issue.detail || ''}`);
+    }
+  }
   console.log(`========================================================`);
-  console.log(`统计: 总计 ${results.length} | 就绪 ${readyList.length} | 降级 ${degradedList.length} | 不可用 ${unavailList.length}\n`);
+  console.log(`统计: 唯一技能 ${results.length} | 就绪 ${readyList.length} | 降级 ${degradedList.length} | 不可用 ${unavailList.length} | 注册问题 ${registrationIssues.length}\n`);
 }
 
 main().catch(err => {
