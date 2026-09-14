@@ -170,3 +170,16 @@ def test_stream_metrics_are_deterministic(model: dm.DocumentModel) -> None:
     second = sm.stream_metrics(model)
     assert json.dumps(first, ensure_ascii=False, sort_keys=True) == \
         json.dumps(second, ensure_ascii=False, sort_keys=True)
+
+
+def test_unavailable_records_are_explicit_not_silent() -> None:
+    """When the base artifact cannot be parsed, the three metrics must still be
+    reported - as explicit "not measured" records, never as absent ones."""
+    records = sm.unavailable_records("CANONICAL_UNPARSEABLE")
+    assert set(records) == {"S-CAP-01", "S-NUM-02", "S-REF-03"}
+    for metric_id, record in records.items():
+        assert record["metric_spec"] == metric_id
+        assert record["value"] is None and record["n"] == 0
+        assert "CANONICAL_UNPARSEABLE" in record["warnings"]
+        assert record["scope"] == ["figures", "tables"]
+        assert record["state"] == "OBSERVED" and record["method"] == "rule"

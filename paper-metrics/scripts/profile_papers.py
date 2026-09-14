@@ -132,7 +132,9 @@ class Paper:
             return self.blocks
         try:
             data = json.loads(self.content_list_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
+        except (OSError, json.JSONDecodeError, RecursionError) as exc:
+            # RecursionError: a pathological nesting depth is a parse failure, not a
+            # crash (doc_model would refuse the same file).
             raise ProfileError(f"failed to read {self.content_list_path}: {exc}") from exc
         if not isinstance(data, list):
             raise ProfileError(f"{self.content_list_path}: expected a JSON list")
@@ -1194,7 +1196,30 @@ def compute_paper_metrics(paper: Paper, bundles, text_metrics_mod) -> dict:
     metrics = dict(text_metrics_mod.compute_text_metrics(
         text, _bundle_for(bundles, language["language"])))
     metrics["M-PCNT-25"] = compute_paragraph_metric(paper, language["language"])
+    metrics.update(_stream_metrics(paper))
+    # Every metric declares the stream it reads; the prose metrics never carried
+    # that field, which is how the scope stayed implicit until 2026-09-14.
+    for record in metrics.values():
+        record.setdefault("scope", list(_BASE_ARTIFACT["scope"]))
     return metrics
+
+
+def _stream_metrics(paper: Paper) -> dict:
+    """Figure/table metrics: language-independent, so the prose guard skips them.
+
+    A parse failure becomes three explicit "not measured" records instead of an
+    absent metric, so the corpus summary reports n_missing rather than pretending
+    the paper had no figures.
+    """
+    doc_model = _import_sibling("doc_model")
+    stream_metrics_mod = _import_sibling("stream_metrics")
+    try:
+        model = doc_model.parse_document(paper.content_list_path)
+    except doc_model.DocumentParseError as exc:
+        print(f"[profile_papers] WARN: stream metrics unavailable for "
+              f"'{paper.paper_key}': {exc}", file=sys.stderr)
+        return stream_metrics_mod.unavailable_records("CANONICAL_UNPARSEABLE")
+    return stream_metrics_mod.stream_metrics(model)
 
 
 def compute_section_metrics(paper: Paper, bundles, text_metrics_mod,
@@ -1527,6 +1552,7 @@ def aggregate_corpus(records: list[dict], corpus_id: str | None = None) -> dict:
         metric_ids.update(r["metrics"].keys())
     metrics: dict[str, dict] = {}
     corpus_warnings: list[dict] = []
+    undeclared_scope: list[str] = []
     length_by_paper = {r["paper_key"]: r.get("n_tokens", 0) for r in records}
     # Per-metric explanation codes seen in the per-paper records. The summary has
     # to inherit them: otherwise a corpus-level row can only say "no valid value"
@@ -1536,6 +1562,7 @@ def aggregate_corpus(records: list[dict], corpus_id: str | None = None) -> dict:
     for mid in sorted(metric_ids):
         per_paper: dict[str, float] = {}
         unit = ""
+        scope_seen: set[str] = set()
         section_values: dict[str, list[float]] = defaultdict(list)
         for r in records:
             m = r["metrics"].get(mid)
@@ -1545,10 +1572,20 @@ def aggregate_corpus(records: list[dict], corpus_id: str | None = None) -> dict:
             per_paper[r["paper_key"]] = m.get("value")
             metric_record_codes[mid].update(m.get("warnings") or ())
             unit = unit or m.get("unit", "")
+            scope_seen.update(m.get("scope") or ())
             for section, smap in (r.get("section_metrics") or {}).items():
                 if smap.get(mid) is not None:
                     section_values[section].append(float(smap[mid]))
         summary = _aggregate_metric(per_paper, unit, section_values)
+        # Scope travels with the metric: a table metric that reached the corpus
+        # summary labelled "prose" would be the very confusion this field prevents.
+        # Records written before the field existed fall back to the corpus default
+        # AND are named in a corpus warning, so the gap is visible rather than silent.
+        if scope_seen:
+            summary["scope"] = sorted(scope_seen)
+        else:
+            summary["scope"] = list(_BASE_ARTIFACT["scope"])
+            undeclared_scope.append(mid)
         # Length confound: a metric that tracks paper length is not a style fact.
         pairs = [(length_by_paper[k], v) for k, v in per_paper.items() if v is not None]
         if len(pairs) >= 5:
@@ -1692,8 +1729,13 @@ def aggregate_corpus(records: list[dict], corpus_id: str | None = None) -> dict:
     # Every metric states which stream it reads.  The scope used to be implicit,
     # and that is exactly how "digits that live in tables" got mistaken for
     # "digits lost in conversion": a number without its stream is not evidence.
-    for msum in metrics.values():
-        msum.setdefault("scope", list(_BASE_ARTIFACT["scope"]))
+    if undeclared_scope:
+        corpus_warnings.append({
+            "code": "METRIC_SCOPE_MISSING", "metric": "",
+            "detail": ("these metrics declared no stream and fall back to the corpus "
+                       "default scope: " + ", ".join(sorted(undeclared_scope))
+                       + "; an implicit scope is how table digits were once read as "
+                         "lost digits")})
     out = {
         "schema_version": SCHEMA_VERSION,
         "analysis_unit": "paper",

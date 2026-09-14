@@ -32,6 +32,10 @@ _TABLE_REF_RE: Final = re.compile(r"(?:table|表)\s*(\d+)", re.IGNORECASE)
 _INVENTORY_STREAMS: Final[tuple[dm.Stream, ...]] = (dm.Stream.FIGURES,
                                                     dm.Stream.TABLES)
 
+#: Evidence samples stay bounded and deterministic (the product contract requires
+#: every metric to carry a countable sample, not the whole corpus).
+_SAMPLE_LIMIT: Final[int] = 20
+
 
 def _record(metric_spec: str, *, value: float | None, n: int, denominator: int,
             unit: str, evidence: dict[str, dm.JsonValue], warnings: list[str],
@@ -85,26 +89,49 @@ def caption_coverage(model: dm.DocumentModel) -> dict[str, dm.JsonValue]:
     uncaptioned = [{"kind": stream.value, "index": index}
                    for stream, index, block in inventory if not block.caption.strip()]
     total = len(inventory)
+    # Only captioned items are sampled: a sample must be quotable, and the absence
+    # of a caption is already reported, item by item, in "uncaptioned".
+    sample = [{"block_index": block.index, "field": block.caption_field,
+               "excerpt": block.caption[:80],
+               "kind": stream.value, "index": index}
+              for stream, index, block in inventory
+              if block.caption.strip()][:_SAMPLE_LIMIT]
     if not total:
         return _record("S-CAP-01", value=None, n=0, denominator=0, unit="ratio",
-                       evidence={"uncaptioned": []},
+                       evidence={"count": 0, "sample": [], "uncaptioned": []},
                        warnings=["NO_FIGURES_OR_TABLES"])
     return _record("S-CAP-01", value=(total - len(uncaptioned)) / total, n=total,
                    denominator=total, unit="ratio",
-                   evidence={"uncaptioned": uncaptioned,
+                   evidence={"count": total, "sample": sample,
+                             "uncaptioned": uncaptioned,
                              "captioned": total - len(uncaptioned)},
                    warnings=["CAPTION_MISSING"] if uncaptioned else [])
 
 
-def _declared_numbers(model: dm.DocumentModel) -> dict[str, list[int]]:
-    """Caption numbers per stream, in document order."""
+def _declared_observations(model: dm.DocumentModel
+                             ) -> tuple[dict[str, list[int]], list[dict]]:
+    """(numbers per stream, one observation per declared number) in document order."""
     declared: dict[str, list[int]] = {dm.Stream.FIGURES.value: [],
                                      dm.Stream.TABLES.value: []}
-    for stream, _index, block in _inventory_blocks(model):
+    observed: list[dict] = []
+    for stream, index, block in _inventory_blocks(model):
         pattern = (_FIGURE_REF_RE if stream is dm.Stream.FIGURES
                    else _TABLE_REF_RE)
-        declared[stream.value].extend(_numbers(block.caption, pattern))
-    return declared
+        for number in _numbers(block.caption, pattern):
+            declared[stream.value].append(number)
+            # block_index/field/excerpt are the evidence contract's form B: they must
+            # re-open the exact block and field the number came from.
+            observed.append({"block_index": block.index,
+                             "field": block.caption_field,
+                             "excerpt": block.caption[:80],
+                             "kind": stream.value, "index": index,
+                             "number": number})
+    return declared, observed
+
+
+def _declared_numbers(model: dm.DocumentModel) -> dict[str, list[int]]:
+    """Caption numbers per stream, in document order."""
+    return _declared_observations(model)[0]
 
 
 def numbering_consistency(model: dm.DocumentModel) -> dict[str, dm.JsonValue]:
@@ -114,7 +141,7 @@ def numbering_consistency(model: dm.DocumentModel) -> dict[str, dm.JsonValue]:
     declared one (1.0 = no duplicates).  Gaps and duplicates are both evidence, so
     a reader can see which number is wrong instead of only that something is.
     """
-    declared = _declared_numbers(model)
+    declared, observed = _declared_observations(model)
     gaps: dict[str, list[int]] = {}
     duplicates: dict[str, list[int]] = {}
     extra = 0
@@ -133,7 +160,9 @@ def numbering_consistency(model: dm.DocumentModel) -> dict[str, dm.JsonValue]:
     value = None if not total else (total - extra) / total
     return _record("S-NUM-02", value=value, n=total, denominator=total,
                    unit="ratio",
-                   evidence={"declared": declared, "gaps": gaps,
+                   evidence={"count": len(observed),
+                             "sample": observed[:_SAMPLE_LIMIT],
+                             "declared": declared, "gaps": gaps,
                              "duplicates": duplicates},
                    warnings=warnings)
 
@@ -151,8 +180,9 @@ def reference_consistency(model: dm.DocumentModel) -> dict[str, dm.JsonValue]:
     value = shared numbers / (declared + referenced).  Dangling = cited but never
     declared; uncited = declared but never cited.  Both are reported per stream.
     """
+    declared_numbers, observed = _declared_observations(model)
     declared = {stream: sorted(set(numbers))
-                for stream, numbers in _declared_numbers(model).items()}
+                for stream, numbers in declared_numbers.items()}
     referenced = _referenced_numbers(model)
     dangling: dict[str, list[int]] = {}
     uncited: dict[str, list[int]] = {}
@@ -173,9 +203,28 @@ def reference_consistency(model: dm.DocumentModel) -> dict[str, dm.JsonValue]:
     return _record("S-REF-03",
                    value=None if not denominator else shared / denominator,
                    n=shared, denominator=denominator, unit="ratio",
-                   evidence={"declared": declared, "referenced": referenced,
+                   evidence={"count": len(observed),
+                             "sample": observed[:_SAMPLE_LIMIT],
+                             "declared": declared, "referenced": referenced,
                              "dangling": dangling, "uncited": uncited},
                    warnings=warnings)
+
+
+_METRIC_IDS: Final[tuple[str, ...]] = ("S-CAP-01", "S-NUM-02", "S-REF-03")
+
+
+def unavailable_records(warning: str) -> dict[str, dict[str, dm.JsonValue]]:
+    """The three metrics as explicit "not measured" records.
+
+    Used when the base artifact cannot be parsed: absent metrics would let the
+    corpus summary report the paper as if it had no figures at all.
+    """
+    return {
+        metric_id: _record(metric_id, value=None, n=0, denominator=0, unit="ratio",
+                           evidence={"count": 0, "sample": []},
+                           warnings=[warning])
+        for metric_id in _METRIC_IDS
+    }
 
 
 def stream_metrics(model: dm.DocumentModel) -> dict[str, dict[str, dm.JsonValue]]:

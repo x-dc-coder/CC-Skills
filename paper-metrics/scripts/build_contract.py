@@ -489,6 +489,24 @@ def apply_holdout(summary: dict, summary_path: Path, holdout: list[str]) -> tupl
     return filtered, jsonl_sha
 
 
+def _is_draft_checkable(stats: object) -> bool:
+    """May this metric appear in a DRAFT contract?
+
+    Only prose-stream metrics can be computed from a Markdown draft.  A summary
+    written before scope existed carries no scope field; those are treated as prose
+    so old contracts stay buildable.
+    """
+    if not isinstance(stats, dict):
+        return False
+    scope = stats.get("scope")
+    if not isinstance(scope, list) or not scope:
+        # Absent or empty means "unspecified" (legacy summaries): produce the clause
+        # rather than silently dropping a metric, because the profile already reports
+        # METRIC_SCOPE_MISSING for it.
+        return True
+    return "prose" in scope
+
+
 def build_contract(
     summary: dict,
     *,
@@ -511,6 +529,7 @@ def build_contract(
     metrics_block = summary.get("metrics")
     if not isinstance(metrics_block, dict) or not metrics_block:
         raise BuildContractError("summary has no non-empty 'metrics' object")
+    excluded: list[str] = []
     if metrics is not None:
         missing = [mid for mid in metrics if mid not in metrics_block]
         if missing:
@@ -519,11 +538,23 @@ def build_contract(
             )
         ids = list(metrics)
     else:
-        ids = sorted(metrics_block)
+        # Stream metrics (figures/tables/...) cannot be graded against a text draft:
+        # a Markdown draft has no block inventory, so such a clause could only ever
+        # come out "skipped".  They stay in the profile and out of the contract.
+        ids = sorted(mid for mid in metrics_block
+                     if _is_draft_checkable(metrics_block[mid]))
+        excluded = sorted(set(metrics_block) - set(ids))
 
     clauses: list[dict] = []
     contract_warnings: list[dict] = []
     n_valids: list[int] = []
+    if excluded:
+        # Transparency: a metric quietly dropped from a contract is as bad as one
+        # silently included; the profile keeps all of them.
+        contract_warnings.append({
+            "code": "NON_PROSE_METRICS_EXCLUDED", "metric": None,
+            "detail": "kept in the profile, not draft-checkable: " + ", ".join(excluded),
+        })
 
     corpus_id = _summary_corpus_id(summary)
     if corpus_id is None:

@@ -218,13 +218,24 @@ def _verify_span(text: str | None, sample: dict) -> tuple[bool | None, str | Non
 
 
 def _verify_block(blocks: list[dict] | None, sample: dict) -> tuple[bool | None, str | None]:
-    """Form B: blocks[block_index] must exist and its text must start with excerpt."""
+    """Form B: blocks[block_index] exists and the named field starts with excerpt.
+
+    A sample may name the field it read ("text" when absent). Figure/table metrics
+    keep their evidence in a caption or table_body, so verifying those against the
+    block's prose text would either fail or pass vacuously on an empty string.
+    """
     if blocks is None:
         return None, None
     idx = sample.get("block_index")
     if not isinstance(idx, int) or idx < 0 or idx >= len(blocks):
         return False, None
-    block_text = (blocks[idx].get("text") or "").strip()
+    block = blocks[idx]
+    field = sample.get("field")
+    raw: object = (block.get(field) if isinstance(field, str) and field
+                   else block.get("text"))
+    if isinstance(raw, list):
+        raw = " ".join(str(item) for item in raw)
+    block_text = str(raw or "").strip()
     excerpt = sample.get("excerpt") or ""
     return block_text.startswith(excerpt), block_text[:_EVIDENCE_EXCERPT_MAX]
 
@@ -275,6 +286,7 @@ def collect_evidence(records: list[dict], contexts: dict[str, dict]) -> dict:
                     forms["block"]["checked"] += 1
                     forms["block"]["matched"] += 1 if ok else 0
                     item.update({"form": "block", "block_index": s.get("block_index"),
+                                 "field": s.get("field"),
                                  "section": s.get("section"),
                                  "source_slice": block_text, "verified": bool(ok)})
                 else:

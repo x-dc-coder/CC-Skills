@@ -435,6 +435,28 @@ def test_holdout_interval_excludes_the_held_out_paper(tmp_path):
     assert second.read_bytes() == out_path.read_bytes()
 
 
+def test_stream_metrics_are_excluded_from_draft_contracts() -> None:
+    """A Markdown draft has no figure/table inventory, so a stream metric could only
+    ever come out "skipped": it stays in the profile, out of the contract, and the
+    exclusion is reported rather than silent."""
+    summary = _summary(metrics={
+        "M-HED-14": _metric_stats(scope=["prose"]),
+        "S-CAP-01": _metric_stats(scope=["figures", "tables"]),
+    })
+    contract = _build(summary)
+    assert [c["metric"] for c in contract["clauses"]] == ["M-HED-14"]
+    codes = [w["code"] for w in contract["contract_warnings"]]
+    assert codes == ["NON_PROSE_METRICS_EXCLUDED"]
+
+
+def test_legacy_summary_without_scope_keeps_every_clause() -> None:
+    """Summaries written before the scope field existed must stay buildable: an
+    absent (or empty) scope is 'unspecified', which the profile flags separately."""
+    contract = _build(_summary(metrics={"M-HED-14": _metric_stats()}))
+    assert [c["metric"] for c in contract["clauses"]] == ["M-HED-14"]
+    assert contract["contract_warnings"] == []
+
+
 def test_holdout_metadata_is_wired_through_build_contract():
     filtered = _full_corpus_summary()
     filtered["n_papers"] = 12          # what apply_holdout() hands over

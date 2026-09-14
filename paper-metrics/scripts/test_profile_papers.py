@@ -568,6 +568,38 @@ def test_base_artifact_and_metric_scopes_are_declared(synthetic_corpus: Path,
     assert "指标基座" in md and "未被指标读取的流" in md
 
 
+def test_stream_metrics_reach_the_products_with_their_scope(tmp_path: Path) -> None:
+    """Non-prose metrics must arrive in BOTH products and keep declaring their
+    streams through aggregation.
+
+    A metric whose scope is implicit is exactly how "digits that live in tables"
+    was once mistaken for "digits lost in conversion", so aggregation must inherit
+    the scope instead of stamping every metric as prose.
+    """
+    corpus = tmp_path / "paper-analysis"
+    _write_paper(corpus, "Paper One", "p1", [
+        _make_block("text", "As shown in Figure 1, the method works."),
+        _make_block("image", "f1", caption=["Figure 1", "Framework"]),
+        _make_block("table", "t1", caption=["Table 1", "Results"]),
+    ])
+    out_dir = tmp_path / "out"
+    pp.run_profile(corpus, out_dir)
+
+    record = json.loads((out_dir / "_per_paper_metrics.jsonl")
+                        .read_text(encoding="utf-8").splitlines()[0])
+    stream_specs = ("S-CAP-01", "S-NUM-02", "S-REF-03")
+    for metric_id in stream_specs:
+        assert metric_id in record["metrics"], metric_id
+        assert record["metrics"][metric_id]["scope"] == ["figures", "tables"]
+
+    summary = json.loads((out_dir / "_corpus_summary.json").read_text(encoding="utf-8"))
+    for metric_id in stream_specs:
+        assert summary["metrics"][metric_id]["scope"] == ["figures", "tables"], metric_id
+        assert summary["metrics"][metric_id]["unit"] == "ratio"
+        assert summary["metrics"][metric_id]["n_valid"] == 1
+    assert summary["metrics"]["M-SLEN-01"]["scope"] == ["prose"]
+
+
 def test_tga_paper_real_profile(tmp_path: Path) -> None:
     """Profile the real TGA paper alone and verify counts match the source PDF."""
     # Build a 1-paper corpus by symlinking

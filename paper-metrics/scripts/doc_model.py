@@ -146,8 +146,15 @@ def latex_to_text(raw: str) -> str:
 
 @dataclass(frozen=True, slots=True)
 class Block:
-    """One canonical block, normalised to a single stream."""
+    """One canonical block, normalised to a single stream.
 
+    index is the position in the source content_list: evidence samples point at it
+    so a reader (or the baseline evidence verifier) can re-open the exact block.
+    caption_field names the *_caption key the caption came from, for the same
+    reason - "which field was read" must be answerable, not guessed.
+    """
+
+    index: int
     kind: Stream
     text_plain: str
     raw_chars: int
@@ -155,6 +162,7 @@ class Block:
     caption: str
     caption_digits: int
     level: int | None
+    caption_field: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -214,17 +222,29 @@ def _items_str(block: dict[str, JsonValue], key: str) -> str:
     return " ".join(item for item in value if isinstance(item, str))
 
 
-def _captions(block: dict[str, JsonValue]) -> str:
-    """Every *_caption key, because the corpus uses four different ones."""
+def _captions(block: dict[str, JsonValue]) -> tuple[str, str | None]:
+    """(joined caption text, first key that carried one).
+
+    Every *_caption key counts: the real corpus uses four different ones
+    (image_/table_/chart_/code_caption), so a fixed pair of names would silently
+    drop most captions.  The key is kept because evidence has to be able to say
+    which field it read.
+    """
     parts: list[str] = []
+    source: str | None = None
     for key, value in block.items():
         if not key.endswith("_caption"):
             continue
         if isinstance(value, list):
-            parts.extend(item for item in value if isinstance(item, str))
+            items = [item for item in value if isinstance(item, str)]
         elif isinstance(value, str):
-            parts.append(value)
-    return " ".join(parts)
+            items = [value]
+        else:
+            items = []
+        if items and source is None:
+            source = key
+        parts.extend(items)
+    return " ".join(parts), source
 
 
 def _plain_text(kind: Stream, block: dict[str, JsonValue]) -> tuple[str, str]:
@@ -248,15 +268,16 @@ def _plain_text(kind: Stream, block: dict[str, JsonValue]) -> tuple[str, str]:
             assert_never(unreachable)
 
 
-def _to_block(raw_block: dict[str, JsonValue]) -> Block:
+def _to_block(index: int, raw_block: dict[str, JsonValue]) -> Block:
     kind = stream_of_type(_field_str(raw_block, "type"))
     raw, plain = _plain_text(kind, raw_block)
-    caption = _captions(raw_block)
+    caption, caption_field = _captions(raw_block)
     level = raw_block.get("text_level")
-    return Block(kind=kind, text_plain=plain, raw_chars=len(raw),
+    return Block(index=index, kind=kind, text_plain=plain, raw_chars=len(raw),
                  digits=count_digits(plain), caption=caption,
                  caption_digits=count_digits(caption),
-                 level=level if isinstance(level, int) else None)
+                 level=level if isinstance(level, int) else None,
+                 caption_field=caption_field)
 
 
 def _load_blocks(path: Path) -> list[dict[str, JsonValue]]:
@@ -285,4 +306,6 @@ def _load_blocks(path: Path) -> list[dict[str, JsonValue]]:
 def parse_document(path: Path) -> DocumentModel:
     """Parse a content_list.json into a typed document model."""
     blocks = _load_blocks(path)
-    return DocumentModel(blocks=tuple(_to_block(b) for b in blocks), source=path)
+    return DocumentModel(blocks=tuple(_to_block(index, block)
+                                      for index, block in enumerate(blocks)),
+                         source=path)
