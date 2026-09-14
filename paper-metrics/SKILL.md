@@ -145,7 +145,8 @@ uv run python paper-metrics/scripts/pas_spotcheck.py --corpus <paper-analysis> -
 - 每条指标的定义、公式、分母、evidence 坐标系，以及**不能推断什么**，见 `references/metric-definitions.md`。
 - `n_valid < 5` 时**禁止**断言"该期刊偏好 X"；只能呈现单篇表并说明样本不足。
 - 禁止任何"87/100"式百分制综合分：只输出逐指标实际值、目标区间与偏差。
-- **非正文流指标（2026-09-14）**：`S-CAP-01` 图表题注覆盖率、`S-NUM-02` 编号一致性、`S-REF-03` 正文引用一致性——三条只读 `figures`/`tables` 流（产物里 `scope` 写明），**绝不并入 prose**。它们**不进草稿契约**（Markdown 草稿没有块结构、无法复算），`build_contract` 会以 `NON_PROSE_METRICS_EXCLUDED` 显式说明"留在画像、不进契约"。实测中文语料 10 篇均值：**0.9667 / 0.98 / 0.4829**。
+- **非正文流指标（2026-09-14，5 条）**：`S-CAP-01` 图表题注覆盖率、`S-NUM-02` 编号一致性、`S-REF-03` 正文引用一致性、`S-SIZ-04` 图像分辨率充裕度（只读 `figures`）、`S-CAPL-05` 题注长度中位。它们只读 `figures`/`tables` 流（产物里 `scope` 写明），**绝不并入 prose**；**不进草稿契约**（Markdown 草稿没有块结构、无法复算），`build_contract` 会以 `NON_PROSE_METRICS_EXCLUDED` 显式说明"留在画像、不进契约"。
+  实测（2026-09-14）：中文 10 篇 **0.9667 / 0.98 / 0.4829 / 图 6.7% / 18.0 字符**；英文 34 篇 **图 424 张合并达标率 28.3%**。`S-SIZ-04` 只读文件头（纯 stdlib，已用系统 `file` 命令交叉核验）；读不了的图不计入分母而列入 `unreadable`——"读不了"是未测量，不是不达标。
 
 ## 词表校准（中文 release 的质量闭环）
 
