@@ -1129,3 +1129,105 @@ def test_unmapped_titles_stay_verbatim() -> None:
     """A domain-specific heading with no canonical meaning must survive as-is rather
     than being forced into a wrong bucket."""
     assert _label("行程时间模糊集下的鲁棒优化") == "行程时间模糊集下的鲁棒优化"
+
+
+# ---------------------------------------------------------------------------
+# 11. Reference structure: freshness + citation/list two-way check (C-2)
+# ---------------------------------------------------------------------------
+
+def _ref_paper(tmp_path: Path, name: str, body: str,
+               entries: list[str]) -> pp.Paper:
+    corpus = tmp_path / "paper-analysis-ref"
+    blocks = [_make_block("text", "Title", level=1),
+              _make_block("text", "1 Introduction", level=2),
+              _make_block("text", body),
+              _make_block("text", "References", level=2)]
+    blocks.extend(_make_block("text", entry) for entry in entries)
+    return pp.Paper(name=name, content_list_path=_write_paper(
+        corpus, name, "p-ref", blocks) / "mineru" / "p-ref" / "auto"
+        / "p-ref_content_list.json")
+
+
+_REF_ENTRIES = [
+    "[1] A. Author, Title of work, Journal, 2023.",
+    "[2] B. Author, Another work, Journal, 2022.",
+    "[3] C. Author, Older work, Journal, 2015.",
+    "[4] D. Author, Much older work, Journal, 2010.",
+    "[5] E. Author, Ancient work, Journal, 2001.",
+]
+
+
+def test_cited_numbers_rejects_math_intervals() -> None:
+    """[0,1] and [-1,1] are intervals in this domain, not citations; a range is only
+    accepted as citations when every number lies inside the reference list."""
+    assert pp._cited_numbers("[0,1] and [1] and [-1,1] and [3-5] and [12]", 5) == {
+        1, 3, 4, 5, 12}
+
+
+def test_reference_metrics_numeric_style(tmp_path: Path) -> None:
+    paper = _ref_paper(tmp_path, "Numeric Ref Paper",
+                       "Prior work [1] and [2]; see [3-4]. The interval [0,1] is common.",
+                       _REF_ENTRIES)
+    records = pp._reference_metrics(paper, paper.canonical_text())
+
+    link = records["M-REFLINK-54"]
+    assert link["scope"] == ["prose", "references"]
+    assert link["unit"] == "ratio"
+    assert link["n"] == 5                       # entries
+    assert link["evidence"]["cited_count"] == 4  # 1, 2, 3, 4 (not 0 from [0,1])
+    assert link["evidence"]["dangling"] == []
+    assert link["evidence"]["uncited"] == [5]
+    assert link["value"] == pytest.approx(4 / 9, abs=1e-6)
+    assert "UNCITED_REFERENCES" in link["warnings"]
+
+    age = records["M-REFAGE-53"]
+    assert age["scope"] == ["prose", "references"]
+    assert age["unit"] == "ratio"
+    assert age["n"] == 5
+    assert age["evidence"]["newest_year"] == 2023
+    assert age["evidence"]["recent_window_years"] == 5
+    assert age["value"] == pytest.approx(2 / 5, abs=1e-6)   # 2023, 2022 within 5 years
+    assert age["evidence"]["year_coverage"] == pytest.approx(1.0)
+
+
+def test_reference_metrics_author_year_style_is_not_measured(tmp_path: Path) -> None:
+    """Author-year papers must report "not measured", never a fake 100% uncited: the
+    numeric matcher finds nothing there, and a zero would look like a real finding."""
+    paper = _ref_paper(tmp_path, "Author Year Paper",
+                       "Desaulniers et al. (2018) showed X. See also Toth and Vigo (2001).",
+                       _REF_ENTRIES)
+    records = pp._reference_metrics(paper, paper.canonical_text())
+    link = records["M-REFLINK-54"]
+    assert link["value"] is None
+    assert "CITATION_STYLE_NOT_NUMERIC" in link["warnings"]
+    assert link["n"] == 5
+    # freshness does not depend on the citation style, so it is still measured
+    assert records["M-REFAGE-53"]["value"] is not None
+
+
+def test_reference_metrics_without_entries_are_null(tmp_path: Path) -> None:
+    paper = _ref_paper(tmp_path, "No Ref Paper", "Body with a citation [1].", [])
+    records = pp._reference_metrics(paper, paper.canonical_text())
+    for metric_id in ("M-REFAGE-53", "M-REFLINK-54"):
+        assert records[metric_id]["value"] is None
+        assert "NO_REFERENCE_ENTRIES" in records[metric_id]["warnings"]
+
+
+def test_reference_metrics_evidence_is_traceable(tmp_path: Path) -> None:
+    """Evidence must be re-openable: citations by exact span (form A), entries by
+    block/field (form B).  A sample with neither is what baseline_eval calls "opaque",
+    and the corpus-level acceptance forbids any opaque sample - this test is the local
+    guard for that contract."""
+    paper = _ref_paper(tmp_path, "Traceable Ref Paper",
+                       "Prior work [1] and [2]; see [3-4].", _REF_ENTRIES)
+    text = paper.canonical_text()
+    records = pp._reference_metrics(paper, text)
+    link_samples = records["M-REFLINK-54"]["evidence"]["sample"]
+    assert link_samples
+    for sample in link_samples:
+        start, end = sample["span"]
+        assert text[start:end][:80] == sample["excerpt"]
+    for sample in records["M-REFAGE-53"]["evidence"]["sample"]:
+        assert isinstance(sample["block_index"], int)
+        assert sample["field"] in {"text", "list_items"}
+        assert sample["excerpt"] and sample["entry"]

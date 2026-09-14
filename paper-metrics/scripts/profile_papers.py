@@ -730,6 +730,19 @@ def extract_asset_patterns(papers: list[Paper]) -> tuple[list[dict], list[dict],
 #: 《运筹与管理》 papers every in-text citation is ［12］, so a half-width-only
 #: pattern reported 0 numeric citations and citation_style = unknown.
 _BRACKET_NUMERIC_RE = re.compile(r"[\[\uff3b]\s*\d+\s*[\]\uff3d]")
+#: Numeric citation with ranges/lists ("[3-5]", "[1,2]"); the style detector above only
+#: needs the single-bracket form, but the two-way check must expand ranges.
+_CITATION_REF_RE = re.compile(r"[\[\uff3b]\s*(\d+(?:\s*[-\u2013,\uff0c]\s*\d+)*)\s*[\]\uff3d]")
+
+#: A reference counts as "recent" when it is at most this many years older than the
+#: newest reference of the same paper (self-referential on purpose: the paper's own
+#: publication year is not reliably available).
+_RECENT_REFERENCE_YEARS = 5
+
+#: These metrics read the reference SECTION (excluded from canonical_text) plus the
+#: body citations.  Not exactly "prose", so they stay out of draft contracts until a
+#: draft-side implementation exists.
+_SCOPE_REFERENCES = ("prose", "references")
 _AUTHOR_YEAR_PAREN_RE = re.compile(
     r"\([A-Z][A-Za-z''-]+(?:\s+(?:et al\.?|and|&)\s+[A-Z][A-Za-z''-]+)*,?\s*\d{4}[a-z]?\)"
 )
@@ -915,10 +928,14 @@ def _split_reference_entries(chunks: list[str]) -> list[str]:
     return [e for e in entries if _looks_like_reference(e)]
 
 
-def _reference_chunks(paper: Paper) -> list[str]:
-    """Raw reference-section text/list chunks of one paper (headings excluded)."""
-    chunks: list[str] = []
-    for section, b in paper.labelled_blocks():
+def _reference_chunks_with_source(paper: Paper) -> list[tuple[int, str, str]]:
+    """(block_index, field, chunk) for the reference section (headings excluded).
+
+    The block index and field name are what the evidence contract needs to re-open the
+    source (form B); the chunk text alone cannot be verified.
+    """
+    out: list[tuple[int, str, str]] = []
+    for block_index, (section, b) in enumerate(paper.labelled_blocks()):
         if _is_title_block(b):
             continue
         # Two independent signals, either is sufficient:
@@ -930,21 +947,204 @@ def _reference_chunks(paper: Paper) -> list[str]:
         if btype == "text":
             t = (b.get("text") or "").strip()
             if t:
-                chunks.append(t)
+                out.append((block_index, "text", t))
         elif btype == "list":
             items = b.get("list_items") or b.get("items")
             if isinstance(items, list) and items:
-                chunks.extend(str(i).strip() for i in items if str(i).strip())
+                out.append((block_index, "list_items",
+                            " ".join(str(i).strip() for i in items
+                                     if str(i).strip())))
             else:
                 t = (b.get("text") or "").strip()
                 if t:
-                    chunks.append(t)
-    return chunks
+                    out.append((block_index, "text", t))
+    return out
+
+
+def _reference_chunks(paper: Paper) -> list[str]:
+    """Raw reference-section text/list chunks of one paper (headings excluded)."""
+    return [chunk for _index, _field, chunk in _reference_chunks_with_source(paper)]
 
 
 def count_references_for_paper(paper: Paper) -> tuple[int, list[str]]:
     entries = _split_reference_entries(_reference_chunks(paper))
     return len(entries), entries
+
+
+def _cited_numbers(text: str, entry_count: int) -> set[int]:
+    """Numeric citations in the body, with math intervals excluded.
+
+    A range or list counts as citations only when EVERY number lies inside the
+    reference list (1..entry_count): "[0,1]", "[-1,1]" and "[0,2]" are intervals in
+    this domain, and counting them would invent citations of entries 0/1/2.  A single
+    bracket is kept whatever its value, because an out-of-range single IS the dangling
+    citation this metric exists to find.
+    """
+    cited: set[int] = set()
+    for match in _CITATION_REF_RE.finditer(text):
+        parts = [p.strip() for p in re.split(r"[,\uff0c]", match.group(1)) if p.strip()]
+        numbers: list[int] = []
+        single = len(parts) == 1
+        for part in parts:
+            rng = re.match(r"(\d+)\s*[-\u2013]\s*(\d+)", part)
+            if rng:
+                numbers.extend(range(int(rng.group(1)), int(rng.group(2)) + 1))
+                single = False
+            elif part.isdigit():
+                numbers.append(int(part))
+            else:
+                single = False
+        if not numbers:
+            continue
+        if single and len(numbers) == 1:
+            cited.add(numbers[0])
+        elif all(1 <= number <= entry_count for number in numbers):
+            cited.update(numbers)
+    return cited
+
+
+def _reference_entry_sources(paper: Paper) -> list[dict]:
+    """One record per reference entry, carrying a VERIFIABLE evidence coordinate.
+
+    The excerpt is the BLOCK's field prefix, not the entry text: the evidence contract
+    verifies form B with startswith() against the block field, and an entry that is the
+    third in a block would never match.  The parsed entry travels beside it as "entry".
+    """
+    out: list[dict] = []
+    for block_index, field, chunk in _reference_chunks_with_source(paper):
+        prefix = chunk[:80]
+        for entry in _split_reference_entries([chunk]):
+            out.append({"block_index": block_index, "field": field,
+                        "excerpt": prefix, "entry": entry})
+    return out
+
+
+def _citation_spans(text: str, limit: int) -> list[dict]:
+    """Form-A evidence: the first few numeric citations with exact character spans."""
+    spans: list[dict] = []
+    for match in _CITATION_REF_RE.finditer(text):
+        if len(spans) >= limit:
+            break
+        start = match.start()
+        end = min(len(text), start + 80)
+        spans.append({"span": [start, end], "excerpt": text[start:end],
+                      "citation": match.group(0)})
+    return spans
+
+
+def _parse_reference_years(entries: list[str]) -> list[int]:
+    """One publication year per entry, in entry order.
+
+    The FIRST year-like token wins (in both GB/T and author-year shapes the publication
+    year precedes volume/page numbers), and the optional LNCS-style suffix is stripped
+    ("2020a" is a 2020 reference, and int("2020a") is simply a crash).  One year per
+    entry keeps year_coverage a genuine share instead of letting a multi-year entry
+    count twice - the first version of this function reported 100.8% coverage, which is
+    impossible and was caught by the real-corpus run.
+    """
+    years: list[int] = []
+    for entry in entries:
+        matches = _REF_YEAR_RE.findall(entry)
+        if not matches:
+            continue
+        digits = re.sub(r"\D", "", matches[0])
+        if len(digits) == 4:
+            years.append(int(digits))
+    return years
+
+
+def _reference_record(metric_spec: str, *, value, n: int, denominator: int,
+                      evidence: dict, warnings: list[str]) -> dict:
+    """Product-shaped record for the reference metrics (same contract as the streams)."""
+    return {
+        "value": None if value is None else round(value, 6),
+        "n": int(n), "denominator": int(denominator), "unit": "ratio",
+        "state": "OBSERVED", "method": "rule", "metric_spec": metric_spec,
+        "scope": list(_SCOPE_REFERENCES), "evidence": evidence,
+        "warnings": sorted(set(warnings)),
+    }
+
+
+def _reference_metrics(paper: Paper, text: str) -> dict:
+    """M-REFAGE-53 (freshness) and M-REFLINK-54 (citation <-> list two-way check).
+
+    The citation style is decided on the BODY text only: the numbered reference list
+    itself would otherwise make every paper look numeric-style, and an author-year
+    paper would then be reported as "100% uncited" instead of "not measurable here".
+    """
+    entries = _split_reference_entries(_reference_chunks(paper))
+    count = len(entries)
+    # Evidence must be re-openable: reference entries point at their block/field (form B),
+    # and the citation metric points at exact character spans in the body (form A).
+    entry_sources = _reference_entry_sources(paper)
+    entry_samples = entry_sources[:3]
+    if not count:
+        return {
+            metric_id: _reference_record(metric_id, value=None, n=0, denominator=0,
+                                         evidence={"count": 0, "sample": []},
+                                         warnings=["NO_REFERENCE_ENTRIES"])
+            for metric_id in ("M-REFAGE-53", "M-REFLINK-54")}
+    years = sorted(_parse_reference_years(entries))
+    if not years:
+        age = _reference_record(
+            "M-REFAGE-53", value=None, n=0, denominator=0,
+            evidence={"count": count, "sample": entry_samples,
+                      "year_coverage": 0.0,
+                      "recent_window_years": _RECENT_REFERENCE_YEARS},
+            warnings=["NO_REFERENCE_YEARS"])
+    else:
+        newest = years[-1]
+        window = newest - (_RECENT_REFERENCE_YEARS - 1)
+        recent = sum(1 for year in years if year >= window)
+        age_warnings = []
+        if len(years) < count:
+            age_warnings.append("REFERENCE_YEARS_INCOMPLETE")
+        age = _reference_record(
+            "M-REFAGE-53", value=recent / len(years), n=len(years),
+            denominator=len(years),
+            evidence={"count": len(years), "sample": entry_samples,
+                      "year_coverage": round(len(years) / count, 6),
+                      "newest_year": newest, "oldest_year": years[0],
+                      "median_year": years[len(years) // 2],
+                      "recent_entries": recent,
+                      "recent_window_years": _RECENT_REFERENCE_YEARS},
+            warnings=age_warnings)
+
+    numeric = len(_BRACKET_NUMERIC_RE.findall(text))
+    author_year = (len(_AUTHOR_YEAR_PAREN_RE.findall(text))
+                   + len(_NARRATIVE_RE.findall(text)))
+    style = {"numeric_matches": numeric, "author_year_matches": author_year}
+    if numeric == 0 or author_year > numeric:
+        link = _reference_record(
+            "M-REFLINK-54", value=None, n=count, denominator=count,
+            evidence={"count": count, "sample": entry_samples, "cited_count": 0,
+                      "dangling": [], "uncited": [], "uncited_count": 0,
+                      "citation_style": style},
+            warnings=["CITATION_STYLE_NOT_NUMERIC"])
+        return {"M-REFAGE-53": age, "M-REFLINK-54": link}
+
+    cited = _cited_numbers(text, count)
+    citation_samples = _citation_spans(text, 3)
+    shared = len({number for number in cited if 1 <= number <= count})
+    dangling = sorted(number for number in cited if number > count)
+    uncited = [index for index in range(1, count + 1) if index not in cited]
+    link_warnings = []
+    if dangling:
+        link_warnings.append("DANGLING_CITATIONS")
+    if uncited:
+        link_warnings.append("UNCITED_REFERENCES")
+    if not cited:
+        link_warnings.append("NO_CITATIONS_FOUND")
+    link = _reference_record(
+        "M-REFLINK-54", value=shared / (len(cited) + count), n=count,
+        denominator=count,
+        evidence={"count": count, "sample": citation_samples or entry_samples,
+                  "cited_count": len(cited),
+                  "cited": sorted(cited)[:50], "dangling": dangling,
+                  "uncited": uncited[:50], "uncited_count": len(uncited),
+                  "citation_style": style},
+        warnings=link_warnings)
+    return {"M-REFAGE-53": age, "M-REFLINK-54": link}
 
 
 def _count_references(papers: list[Paper]) -> dict:
@@ -1198,6 +1398,7 @@ def compute_paper_metrics(paper: Paper, bundles, text_metrics_mod) -> dict:
         text, _bundle_for(bundles, language["language"])))
     metrics["M-PCNT-25"] = compute_paragraph_metric(paper, language["language"])
     metrics.update(_stream_metrics(paper))
+    metrics.update(_reference_metrics(paper, text))
     # Every metric declares the stream it reads; the prose metrics never carried
     # that field, which is how the scope stayed implicit until 2026-09-14.
     for record in metrics.values():
