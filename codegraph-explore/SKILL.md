@@ -1,12 +1,7 @@
 ---
 name: codegraph-explore
 description: >
-  代码库符号级检索与变更影响面分析（CodeGraph 本地索引 + MCP 工具）。当任务涉及「理解某段代码怎么工作 / 找符号定义在哪 /
-  谁调用了它 / 改这个会影响哪些地方 / 该跑哪些测试 / 重构前调研 / 架构梳理 / 跨文件调用链追踪 / 新人接手陌生代码库」时使用，
-  尤其针对大仓。替代 grep + 逐个 Read 的探索循环：一次 codegraph_explore 返回相关符号的逐行源码 + 调用路径 + 影响面。
-  已索引仓库：cloudreve / RuoYi-AI / grm-repro / grm-upstream / github-release-monitor / container-homework / D2 /
-  Soul-Spark / lab-monitor / monitor-panel / Custom-Agents / Vision-MCP / dsh-llm-agentrouter / ~/.claude/skills。
-  小仓（<50 源文件）或查配置/文档/未索引语言时仍用 grep/read。
+  用 CodeGraph 做代码库符号检索、调用链追踪和变更影响分析。理解大仓代码、定位定义或调用者、评估重构影响、选择测试时使用；一次返回相关源码与调用路径。小仓、配置和 Markdown 仍用 grep/read。
 ---
 
 # codegraph-explore — 符号级代码检索与影响面分析

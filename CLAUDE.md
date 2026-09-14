@@ -50,7 +50,7 @@ uv run --directory ~/.claude/skills python scripts/github_issues.py ...
 
 ### skill-output-root 命名
 
-- 论文类 skill（diagram-*、thesis-*、md-to-thesis-latex）：统一用 `thesis-output/`
+- 论文类 skill（`diagram` 的各子类型、thesis-*、md-to-thesis-latex）：统一用 `thesis-output/`
 - 数据库类（db-skill）：用 `db-output/`
 - 文档提取类（word-extractor、paper-reader）：用 `doc-output/`
 - 其他：用 `<skill-name>-output/`
@@ -72,12 +72,12 @@ uv run --directory ~/.claude/skills python scripts/github_issues.py ...
 
 | Skill | 输出文件名 |
 |------|-----------|
-| diagram-er | `er-diagram.png` |
-| diagram-ers | `ers-diagram.png` |
-| diagram-module | `module-diagram.png` |
-| diagram-sequence | `sequence-diagram.png` |
-| diagram-usecase | `usecase-diagram.png` |
-| diagram-flow | `flow.mmd` / `flow.png` |
+| diagram / er | `er-diagram.png` |
+| diagram / ers | `ers-diagram.png` |
+| diagram / module | `module-diagram.png` |
+| diagram / sequence | `sequence-diagram.png` |
+| diagram / usecase | `usecase-diagram.png` |
+| diagram / flow | `flow.mmd` / `flow.png` |
 | thesis-writing | `第X章-章节名.md` / `full-thesis.md` |
 | md-to-thesis-latex | `main.tex`（在 `thesis-output/latex/` 下） |
 | word-extractor | `<basename>.md` + `images/` |
