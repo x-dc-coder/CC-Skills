@@ -388,7 +388,7 @@ def test_mtld_pinned_parameters_are_frozen():
 def test_every_metric_id_is_present_with_contract_fields():
     metrics = tm.compute_text_metrics(SAMPLE_TEXT, BUNDLE)
     assert set(metrics) == set(tm.METRIC_IDS)
-    assert len(tm.METRIC_IDS) == 17  # 13 frozen + 4 clause-layer (issue #22)
+    assert len(tm.METRIC_IDS) == 20  # 13 frozen + 4 clause-layer (#22) + 3 stance (#23) placeholders
     for metric_id, record in metrics.items():
         assert REQUIRED_FIELDS <= set(record), metric_id
         assert record["metric_spec"] == metric_id
@@ -718,6 +718,11 @@ ENGLISH_GOLDEN = {
     "M-CLS-32": [None, 0, 0],
     "M-SLEN-34": [None, 0, 0],
     "M-SLEN-35": [None, 0, 0],
+    # Stance layer (issue #23): INFERRED placeholders, null on every language
+    # until the calibration set with kappa >= 0.6 is frozen.
+    "M-STNC-41": [None, 0, 0],
+    "M-STNC-42": [None, 0, 0],
+    "M-STNC-43": [None, 0, 0],
 }
 
 
@@ -771,7 +776,11 @@ def test_chinese_measures_the_supported_subset_and_names_the_rest():
     for metric_id, record in metrics.items():
         languages = tm._METRIC_LANGUAGE_CAPABILITY.get(
             metric_id, tm._DEFAULT_METRIC_LANGUAGES)
-        assert record["state"] == "OBSERVED" and record["method"] == "rule", metric_id
+        # OBSERVED rule metrics carry the measurement; the stance layer (#23)
+        # is INFERRED and pending its calibration set, so it is exempt from the
+        # state assertion but must never carry a value.
+        if record["state"] != "INFERRED":
+            assert record["state"] == "OBSERVED" and record["method"] == "rule", metric_id
         assert record["metric_spec"] == metric_id
         assert record["unit"], metric_id
         assert record["evidence_rule"], metric_id
@@ -787,15 +796,30 @@ def test_chinese_measures_the_supported_subset_and_names_the_rest():
         else:
             assert record["value"] is None, metric_id
             assert record["n"] == 0 and record["denominator"] == 0, metric_id
-            assert record["warnings"] == ["CAPABILITY_NOT_SUPPORTED"], metric_id
-            assert record["evidence"] == {"count": 0, "sample": []}, metric_id
+            # INFERRED-pending metrics name a different reason than the
+            # language-capability ones, so both stay distinguishable downstream
+            if record["state"] == "INFERRED":
+                assert record["warnings"] == ["NOT_IMPLEMENTED"], metric_id
+            else:
+                assert record["warnings"] == ["CAPABILITY_NOT_SUPPORTED"], metric_id
+                assert record["evidence"] == {"count": 0, "sample": []}, metric_id
     # 12 of the 14 metrics are measurable for Chinese; only the two that need an
     # annotation set (M-NOM-10) or do not exist in the language (M-TENSE-28,
     # Chinese has no tense) stay unsupported.
     # 13 of the 14 metrics are measurable for Chinese: only M-TENSE-28 stays
     # unmeasurable, because Chinese has no tense and a number there would be
     # fabricated. M-NOM-10 is measurable as the abstract-noun-suffix variant.
-    assert set(measured) == set(tm.METRIC_IDS) - {"M-TENSE-28"}
+    # M-TENSE-28 is unmeasurable in Chinese (no tense); the stance layer
+    # (#23) is INFERRED and stays null + NOT_IMPLEMENTED until its calibration
+    # set lands, so it is excluded from the measured set by capability, not by
+    # language.
+    _STANCE_PLACEHOLDERS = {"M-STNC-41", "M-STNC-42", "M-STNC-43"}
+    assert set(measured) == set(tm.METRIC_IDS) - {"M-TENSE-28"} - _STANCE_PLACEHOLDERS
+    for placeholder in _STANCE_PLACEHOLDERS:
+        record = metrics[placeholder]
+        assert record["state"] == "INFERRED", placeholder
+        assert record["value"] is None and record["n"] == 0, placeholder
+        assert record["warnings"] == ["NOT_IMPLEMENTED"], placeholder
     assert metrics["M-NOM-10"]["variant"] == "cjk-abstract-noun-suffix"
     assert metrics["M-NOM-10"]["unit"] == tm._UNIT_PER_1000_CJK_UNITS
     assert "化" in metrics["M-NOM-10"]["excluded_suffixes"]
@@ -849,7 +873,10 @@ def test_unsupported_language_never_raises_on_empty_bundle():
     # empty and the warning says so), and nothing may raise.
     for mid, record in metrics.items():
         if record["value"] is None:
-            assert record["warnings"] == ["CAPABILITY_NOT_SUPPORTED"], mid
+            # two legitimate "not measured" reasons: wrong language, or an
+            # INFERRED metric whose calibration set is not frozen yet
+            assert record["warnings"] in (
+                ["CAPABILITY_NOT_SUPPORTED"], ["NOT_IMPLEMENTED"]), mid
         elif mid in {"M-HED-14", "M-BOO-15", "M-CONN-30c", "M-CONN-30k",
                      "M-CONN-30r", "M-AWR-03"}:
             assert any("is empty" in w for w in record["warnings"]), mid

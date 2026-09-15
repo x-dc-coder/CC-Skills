@@ -67,6 +67,7 @@ __all__ = [
     "SUPPORTED_LEXICON_LANGUAGES",
     "lexicon_dir_for",
     "CONNECTOR_GROUPS",
+    "CONNECTOR_GROUPS_ZH",
     "LexiconError",
     "Lexicon",
     "LexiconBundle",
@@ -82,7 +83,7 @@ DEFAULT_DIR = Path(__file__).resolve().parent.parent / "data" / "lexicons" / "v1
 #: equivalent for Chinese - see issue #11 group B), so the release version is
 #: per-language and validated against this table.
 LEXICON_DIRS: dict[str, str] = {"en": "v1", "zh": "v2-zh"}
-LEXICON_VERSIONS: dict[str, str] = {"en": "1.1", "zh": "2.1-zh"}
+LEXICON_VERSIONS: dict[str, str] = {"en": "1.1", "zh": "2.2-zh"}
 SUPPORTED_LEXICON_LANGUAGES: tuple[str, ...] = ("en", "zh")
 
 
@@ -94,8 +95,24 @@ def lexicon_dir_for(language: str) -> Path:
             % (language, sorted(LEXICON_DIRS)))
     return Path(__file__).resolve().parent.parent / "data" / "lexicons" / LEXICON_DIRS[language]
 
-#: The exact three connector sub-lists required in connectors.json.
+#: The connector sub-lists required in connectors.json. The first three are the
+#: frozen M-CONN-30 groups (M-CONN-30 = 30c + 30k + 30r) and are required for
+#: every language. Chinese additionally ships temporal/condition (issue #23,
+#: PDTB 2.0 sense counterparts) for the forthcoming M-CONN-30t/30q derivatives;
+#: they are validated and loaded, but never enter M-CONN-30 (see _metric_conn30,
+#: which names the three original groups explicitly). English stays at its
+#: frozen three-group v1 release.
 CONNECTOR_GROUPS: tuple[str, ...] = ("contrastive", "causal", "result")
+CONNECTOR_GROUPS_ZH: tuple[str, ...] = (
+    "contrastive", "causal", "result", "temporal", "condition",
+)
+
+
+def _connector_groups_for(language: str) -> tuple[str, ...]:
+    """The connector groups the release of `language` must declare."""
+    if language == "zh":
+        return CONNECTOR_GROUPS_ZH
+    return CONNECTOR_GROUPS
 
 _PLAIN_FILES: tuple[str, ...] = (
     "hedge",
@@ -293,7 +310,7 @@ def _load_plain(path: Path, stem: str) -> Lexicon:
     return _make_lexicon(path, json_name or stem, version, source, raw, entries)
 
 
-def _load_connectors(path: Path) -> dict[str, Lexicon]:
+def _load_connectors(path: Path, language: str) -> dict[str, Lexicon]:
     raw, obj = _read_raw(path)
     json_name = _checked_name(path, obj)
     version = _checked_version(path, obj)
@@ -304,7 +321,7 @@ def _load_connectors(path: Path) -> dict[str, Lexicon]:
     if not isinstance(groups, dict):
         raise LexiconError("%s: 'groups' must be a JSON object" % path.name)
     given = set(groups)
-    required = set(CONNECTOR_GROUPS)
+    required = set(_connector_groups_for(language))
     missing = sorted(required - given)
     extra = sorted(given - required)
     if missing or extra:
@@ -313,7 +330,7 @@ def _load_connectors(path: Path) -> dict[str, Lexicon]:
             % (path.name, sorted(required), missing, extra)
         )
     out: dict[str, Lexicon] = {}
-    for group in CONNECTOR_GROUPS:
+    for group in _connector_groups_for(language):
         entries = _normalize_entries(path, groups[group], "groups.%s" % group)
         # Frozen contract: the dict is keyed by the bare group name
         # ({contrastive, causal, result}); the Lexicon carries the qualified
@@ -376,7 +393,8 @@ def load_lexicons(directory: Path | None = None,
     plain: dict[str, Lexicon] = {
         stem: _load_plain(directory / ("%s.json" % stem), stem) for stem in _PLAIN_FILES
     }
-    connectors = _load_connectors(directory / ("%s.json" % _CONNECTOR_FILE))
+    connectors = _load_connectors(
+        directory / ("%s.json" % _CONNECTOR_FILE), language)
 
     # Release discipline: all eight files must declare the same version (a partial
     # bump is a release bug, not a per-file revision), and it must match the frozen

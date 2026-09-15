@@ -1591,19 +1591,25 @@ def _spearman(xs: list[float], ys: list[float]) -> float | None:
 
 
 def _aggregate_metric(per_paper_values: dict[str, float], unit: str,
-                      section_values: dict[str, list[float]]) -> dict:
+                      section_values: dict[str, list[float]],
+                      record_codes: frozenset[str] = frozenset()) -> dict:
     """Corpus-level summary of one metric over per-paper values."""
     valid = {k: v for k, v in per_paper_values.items() if v is not None}
     missing = sorted(k for k, v in per_paper_values.items() if v is None)
     n_valid = len(valid)
     warnings: list[str] = []
     if n_valid == 0:
+        # An INFERRED metric pending its calibration set (#23 stance layer) is
+        # null on every paper for one named reason; reporting the small-n trio
+        # here would bury that reason in noise, exactly the #13 failure mode.
+        zero_warnings = (["NOT_IMPLEMENTED"] if "NOT_IMPLEMENTED" in record_codes
+                         else ["NO_VALID_VALUES", "N_LT_5", "N_VALID_LT_3"])
         return {
             "unit": unit, "n_valid": 0, "n_missing": len(missing),
             "missing_papers": missing, "mean": None, "sd": None, "median": None,
             "p25": None, "p75": None, "iqr": None, "min": None, "max": None,
             "ci95_low": None, "ci95_high": None, "by_section": {},
-            "warnings": ["NO_VALID_VALUES", "N_LT_5", "N_VALID_LT_3"],
+            "warnings": zero_warnings,
         }
     vals = sorted(float(v) for v in valid.values())
     n = n_valid
@@ -1928,7 +1934,9 @@ def aggregate_corpus(records: list[dict], corpus_id: str | None = None) -> dict:
             for section, smap in (r.get("section_metrics") or {}).items():
                 if smap.get(mid) is not None:
                     section_values[section].append(float(smap[mid]))
-        summary = _aggregate_metric(per_paper, unit, section_values)
+        summary = _aggregate_metric(
+            per_paper, unit, section_values,
+            record_codes=frozenset(metric_record_codes[mid]))
         if metric_class:
             summary["class"] = metric_class
         if len(units_measured) > 1:

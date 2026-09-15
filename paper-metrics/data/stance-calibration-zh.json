@@ -1,0 +1,1787 @@
+{
+ "name": "stance-calibration-zh",
+ "version": "1.0-zh",
+ "language": "zh",
+ "purpose": "Calibration set for the INFERRED stance layer (M-STNC-41/42/43, issue #23). Two independent annotators labelled 220 cleaned Chinese sentences; disagreements were adjudicated by a third pass. Cohen's kappa between the two annotators is 0.7584, above the 0.6 admission threshold.",
+ "annotation_protocol": {
+  "annotators": "two independent passes with role-exclusive instructions (lexicon-rule annotator vs reviewer-role annotator)",
+  "adjudication": "a third pass ruled the disagreements",
+  "agreement": {
+   "metric": "cohens_kappa",
+   "value": 0.7584,
+   "n_sentences": 220,
+   "threshold": 0.6
+  }
+ },
+ "labels": [
+  "assertive",
+  "hedging",
+  "boosting"
+ ],
+ "splits": {
+  "train": 154,
+  "holdout": 66
+ },
+ "sentences": [
+  {
+   "id": 0,
+   "text": "OR-Tools类基线（Voronoi+OR-Tools、KNN+OR-Tools）在可解的小规模场景中同样表现优异（最佳相对占比分别为72.2%与52.8%），但在大规模高仓库数配置（M=15）下因超时导致部分场景未能完成求解（仅31个场景有效）。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "mpca",
+   "split": "train"
+  },
+  {
+   "id": 1,
+   "text": "第一部分为数学建模，第二部分介绍算法设计与分析，第三部分为数值实验，第四部分为案例分析，最后为结论及未来研究方向。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "ycgl",
+   "split": "train"
+  },
+  {
+   "id": 2,
+   "text": "然而，根据Rice[3]提出的算法选择问题（Algorithm Selection Problem, ASP）理论，不存在单一算法能在所有问题实例上均表现最优，这一\"无免费午餐\"特性在MDVRP的多场景环境下尤为突出。",
+   "label": "boosting",
+   "source": "agreed",
+   "corpus": "mpca",
+   "split": "train"
+  },
+  {
+   "id": 3,
+   "text": "式 (19) 表示每个客户都被访问到一次; 式 (20)表示节点流量守恒; 式 (21) 和 (22) 表示车辆从配送中心出发, 最终返回配送中心; 式 (23) 表示子回路消除约束.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "holdout"
+  },
+  {
+   "id": 4,
+   "text": "然而,在分类时,往往仅对问题的特点(不同约束条件和层次等)或求解方法(精确和启发式算法等)进行分析,尚未对目标函数种类和构成展开研究,更没有论述货物运输过程造成的环境污染问题.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "holdout"
+  },
+  {
+   "id": 5,
+   "text": "为验证划分潜力序列的必要性和有效性,进行算法删减的对比实验.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "holdout"
+  },
+  {
+   "id": 6,
+   "text": "针对偏远农户集货成本高、集货不便问题，设计考虑农户协作的运输模式，建立协作距离最小化模型，实现偏远农户的协作匹配。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "ycgl",
+   "split": "train"
+  },
+  {
+   "id": 7,
+   "text": "spatial_clustering与距离呈显著负相关（Pearson r = -0.2338, p < 0.001），表明订单空间聚类结构有助于降低配送距离——这一统计规律为聚类类划分算法（K-Means、DBSCAN）在高聚类场景下的适用性提供了数据支撑。",
+   "label": "hedging",
+   "source": "agreed",
+   "corpus": "mpca",
+   "split": "holdout"
+  },
+  {
+   "id": 8,
+   "text": "step 2: 利用式 (15) 和 (17) 求迭代方向, 利用式(18)求步长,利用式(16)更新拉格朗日乘子.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 9,
+   "text": "尽管通过随机或鲁棒优化方法可以提高路径的可靠性<sup>[16]</sup>,但也带来较高的模型刻画难度和计算复杂度.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 10,
+   "text": "上述结论共同支撑了M-PCA框架在多仓库VRP优化中的有效性与实用性。",
+   "label": "boosting",
+   "source": "adjudicated",
+   "corpus": "mpca",
+   "split": "holdout"
+  },
+  {
+   "id": 11,
+   "text": "零售物流配送到家属于末端配送，需物流配送人员、车辆和客户协作完成，但常因配送人员个体差异等不确定因素影响，导致配送时间拖后，物流成本居高不下。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "ycgl",
+   "split": "train"
+  },
+  {
+   "id": 12,
+   "text": "令限行区域半径以5的步长在[5,25]的范围内变动,其他参数不变,算例RC205的计算结果如表5所示.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 13,
+   "text": "而考虑速度与路径选择优化情况下，仅考虑优化总成本时，航线以及航速优化结果如表 2所示。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "ycgl",
+   "split": "holdout"
+  },
+  {
+   "id": 14,
+   "text": "特征引导搜索[4,5]利用可解释AI识别与高质量解相关的特征以引导元启发式的搜索方向，其本质是增强单一算法的搜索效率，而非在多个异构求解器之间选择。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "mpca",
+   "split": "train"
+  },
+  {
+   "id": 15,
+   "text": "长三角苏南五仓 350 网点的真实冷链配送案例表明，所提框架较行政划界调度方案降低总里程 10.23%、减少冷藏车 4 辆、平均满载率由 80.61% 提升至 89.33%（+8.72 个百分点）。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "mpca",
+   "split": "train"
+  },
+  {
+   "id": 16,
+   "text": "消融实验进一步验证了强化学习环节能为后续搜索提供优质初始解, 起到引导作用, 避免搜索的盲目性.",
+   "label": "boosting",
+   "source": "adjudicated",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 17,
+   "text": "这将直接影响车辆使用成本、油耗成本、碳排放成本和顾客满意度等优化目标,而这些目标有时又会相互冲突,如何在降低配送成本、减少油耗和碳排放、提高顾客满意度等多个目标间取得平衡是一个亟待解决的问题.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 18,
+   "text": "具体步骤如下:1) 获得越库中心、供应商和零售商节点坐标,将越库中心设立为极点,越库中心和上述节点连线设立为极轴的极坐标系.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 19,
+   "text": "对比发现,TSDMOGVRP模型及其求解算法在兼顾环境效益的同时,能够实现配送成本与顾客满意度的平衡.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "holdout"
+  },
+  {
+   "id": 20,
+   "text": "因此，本文构建了带服务时间窗的多目标绿色多式联运优化模型，考虑速度与路径优化从而最小化总运输成本和碳排放总量，提出一类ε约束法和模糊逻辑相结合的算法来求解该问题。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "ycgl",
+   "split": "holdout"
+  },
+  {
+   "id": 21,
+   "text": "然而上行生鲜农产品具有“产量小、分布广、密度低、易腐坏<sup>［1］</sup>”的特点，导致集货效率低、成本高，使得农产品上行的“最先一公里”集货难以高效实现，阻碍农村电商的发展。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "ycgl",
+   "split": "train"
+  },
+  {
+   "id": 22,
+   "text": "本文基于某珠宝公司的实际物流需求,研究考虑司机经验的车辆路径问题(vehicle routingproblem with driver experience, VRPWDE), 并提出相应的可靠度指标来度量司机经验.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 23,
+   "text": "其中OR-Tools[18]为Google开源的约束规划与路径优化工具包，本文将其作为精确/启发式混合求解器纳入候选。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "mpca",
+   "split": "train"
+  },
+  {
+   "id": 24,
+   "text": "疫情加速了数字化实体超市业务的发展，给零售物流带来机遇的同时，也带来了挑战。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "ycgl",
+   "split": "train"
+  },
+  {
+   "id": 25,
+   "text": "判断禁忌表是否被充满:如果禁忌表已满,则移除禁忌表的第一个元素后,将其他元素左移一位,将禁忌对象插入到禁忌表的尾部;如果禁忌表未满,则直接将禁忌对象插入到第一个不为0的位置.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 26,
+   "text": "根据限行区域与客户坐标将所有客户分为非限行区域客户集合N与限行区域客户集合M.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 27,
+   "text": "分布鲁棒模型则通过考虑一定数量的不确定参数的概率分布放松了随机规划模型需要不确定参数精确分布的要求。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "ycgl",
+   "split": "train"
+  },
+  {
+   "id": 28,
+   "text": "面对多元化的运输需求,基本送达服务已无法满足企业发展和大众的需求,例如在实际生活中,快递员既要将快递送达客户,又要从客户处带回需要邮寄的快递.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 29,
+   "text": "但在实际的物流配送领域,新增客户请求、改变配送地址和服务时间窗、交通拥堵、车辆抛锚等多种动态事件有可能同时发生,且智能交通系统和新一代信息技术的发展能为及时获得各类动态信息提供有力保障.",
+   "label": "hedging",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 30,
+   "text": "总体而言,该算法在缩短行驶距离的同时显著提升了路径可靠度,能够在节约物流成本的同时有效提高司机满意度,具有较高的现实意义.",
+   "label": "boosting",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "holdout"
+  },
+  {
+   "id": 31,
+   "text": "目前，将订单拆分与订单配送问题看作两个独立问题研究是大多数学者的普遍做法。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "ycgl",
+   "split": "train"
+  },
+  {
+   "id": 32,
+   "text": "供应链发展的过程是不断集成的过程,为了适应市场竞争,集成供应链管理(Integrated supply chain management, ISCM)应运而生.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "holdout"
+  },
+  {
+   "id": 33,
+   "text": "针对该NP难问题提出一种Memetic算法通过自底向上的方式进行求解.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 34,
+   "text": "关键点更新策略是一种比较有效的路线更新策略,与定时更新策略相比,信息更新更准确,调整路线更有效,与动态事件更新策略相比,计算量要小,与顾客处更新策略相比,信息更新和路线调整更及时<sup>[29]</sup>,但该策略要求能获得较为全面和准确的路网和交通状况信息.",
+   "label": "hedging",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 35,
+   "text": "其中,TSLHA中局部搜索的执行时间设置为总时间的10%,其余时间均执行改进次梯度算法以获取下界.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "holdout"
+  },
+  {
+   "id": 36,
+   "text": "当客户序列发生变化时,可通过RLOV(reverselargest-order-value)规则对个体的位置信息进行更新.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "holdout"
+  },
+  {
+   "id": 37,
+   "text": "TDGVRP、SDGVRP分别考虑车辆行驶速度受早晚出行高峰和城市中心拥堵区域影响,在不同时间段和不同区域路段存在较大差异.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "holdout"
+  },
+  {
+   "id": 38,
+   "text": "在有关多式联运的文献中，尚未发现同时考虑优化路径选择和运输速度的研究，而在班轮运输中已有学者考虑速度优化去最小化总成本和碳排放。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "ycgl",
+   "split": "holdout"
+  },
+  {
+   "id": 39,
+   "text": "采用 CPLEX和所设计的算法求解多组客户规模不同的算例，验证了模型的正确性和算法的有效性。",
+   "label": "boosting",
+   "source": "adjudicated",
+   "corpus": "ycgl",
+   "split": "train"
+  },
+  {
+   "id": 40,
+   "text": "在新城市物流背景下，伴随共享经济的发展，车辆协作与联合配送在城市“最后一公里”物流问题中被广泛应用。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "ycgl",
+   "split": "train"
+  },
+  {
+   "id": 41,
+   "text": "在上述假设的基础上,使用前摄性/响应性调度策略,构建由枢纽型配送中心、配送型物流中心和客户三级节点组成的多阶段两级配送服务体系,如图1和图2所示.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "holdout"
+  },
+  {
+   "id": 42,
+   "text": "基于此，本文提出带时间窗的时间依赖型卡车 －无人车协同配送路径优化问题（TimeDependentTruck and Unmanned Vehicle RoutinProblemwithTimeWindows，TDTUVRPTW）。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "ycgl",
+   "split": "holdout"
+  },
+  {
+   "id": 43,
+   "text": "由于TSLHA大部分时间用于获取下界,TSLHA从次梯度算法结束开始计时,每种算法的运行时间为2ns.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 44,
+   "text": "综上，3个仓库共花费 1615．62元，且订单基本能在规定时间内送达，多产生早到的惩罚成本。",
+   "label": "hedging",
+   "source": "adjudicated",
+   "corpus": "ycgl",
+   "split": "train"
+  },
+  {
+   "id": 45,
+   "text": "考虑不同情况下对参数进行灵敏度分析, 合理的配送重量可将配送总成本节约 69.28%、28.14% 和 38.61%; 合理的车辆载重量可将配送成本节约 31.2%和 62.3%.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "holdout"
+  },
+  {
+   "id": 46,
+   "text": "式（15）（16）表示配送中心车辆只能在配送中心开放时间段内执行任务。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "ycgl",
+   "split": "train"
+  },
+  {
+   "id": 47,
+   "text": "为了提高解的质量, 在后续路径优化方面引入变邻域搜索(variable neighborhood search, VNS), 实现在全局搜索与局部搜索间取得较好平衡, 更快找到较优解, 为实际 2L-CVRP 的求解提供高效的解决方案.",
+   "label": "boosting",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 48,
+   "text": "为解决该问题，本文分别建立了带订单选择限制的整车取送货路径问题的基于弧的混合整数规划模型和集划分模型，设计了基于列生成的标签算法和分支定价精确求解算法。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "ycgl",
+   "split": "holdout"
+  },
+  {
+   "id": 49,
+   "text": "因每次迭代过程中,修复操作得到的可行解不同,故次梯度的方向和步长会随可行解的变化而做出相应调整,从而驱动算法搜索不断地向可行域逼近.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "holdout"
+  },
+  {
+   "id": 50,
+   "text": "与传统单仓库 VRP 不同，MDVRP 需同时决策两层问题：第一层是订单-仓库分配决策，即每个订单由哪个仓库负责配送；第二层是单仓库 VRP 求解决策，即每个仓库在其服务区域内如何规划车辆路径。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "mpca",
+   "split": "holdout"
+  },
+  {
+   "id": 51,
+   "text": "在S/M小规模层级，自适应框架与Voronoi+OR-Tools基线均调用OR-Tools精确求解，解质量高度接近（差距在1.2%以内），两者在小规模场景中性能持平。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "mpca",
+   "split": "holdout"
+  },
+  {
+   "id": 52,
+   "text": "其基本思想是将被移除点集合Ls中的顾客点依次插入至被破坏路径的每个位置,计算插入后顾客满意度的增量,选择增量最大的点所对应的插入位置进行插入.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "holdout"
+  },
+  {
+   "id": 53,
+   "text": "实验结果表明,所提方法能在非常短的时间内给出符合决策者目标的混合车辆路径规划方案,有效降低总配送成本,减少燃油车油耗与碳排放,具有合理性、可行性与有效性.",
+   "label": "boosting",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 54,
+   "text": "这同时说明：在本文测试的场景族中，分区层的关键区分度主要来自\"最近仓归属\"与\"聚类类\"之间，而求解器层的切换是自适应收益的主要来源（见 3.4 节消融结果）。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "mpca",
+   "split": "train"
+  },
+  {
+   "id": 55,
+   "text": "三阶段拉格朗日启发式算法求解带同时取送货的绿色车辆路径问题[J].",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 56,
+   "text": "本文如实呈现这一退化事实，并在 §4.15 通过对抗性场景检验候选空间能否被更充分地激活。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "mpca",
+   "split": "train"
+  },
+  {
+   "id": 57,
+   "text": "可以看出，从解的平均值看，采用多个车型运营策略比单一车型运营策略，可使运营里程减少16.76%，车辆节省22.95%；从最优解看，采用多个车型运营策略比单一车型运营策略，可使运营里程减少18.84%，车辆节省33.33%.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 58,
+   "text": "Herdianto等[4]将可解释AI与元启发式结合，利用特征与SHAP值提升算法搜索性能，并通过多场景实验验证了问题特征对算法性能的重要影响，为特征驱动的优化方法提供了理论基础。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "mpca",
+   "split": "train"
+  },
+  {
+   "id": 59,
+   "text": "分支条件为：1）装载新订单后，计算该节点全部尚未装载的订单的配送量和车辆的剩余可用容积及重量，判断订单量是否超过剩余可用容积及重量，若不超过则继续分支；2）计算当前线路是否可行，即判断是否满足订单硬时间窗要求，若满足则继续分支。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "ycgl",
+   "split": "train"
+  },
+  {
+   "id": 60,
+   "text": "然而，消费者的需求和物流网络节点间的行程时间很难准确预测，因此零售商的需求和节点间的行程时间是不确定的。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "ycgl",
+   "split": "holdout"
+  },
+  {
+   "id": 61,
+   "text": "科学合理的配送中心选址 分配决策不但可以提高配送效率，还能降低运营成本。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "ycgl",
+   "split": "train"
+  },
+  {
+   "id": 62,
+   "text": "在STATLOG项目的研究基础上, 欧洲一些国家先后开展了其他基于元学习思想的算法选择研究项目, 如METAL项目和MiningMart项目.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 63,
+   "text": "分别设计基于序定的 NF，B和 FF，节约算法及插入算法的五种启发式算法以及分支定界算法。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "ycgl",
+   "split": "holdout"
+  },
+  {
+   "id": 64,
+   "text": "葛显龙和张雅婷<sup>［7］</sup>将前摄性调度引入农产品集货路径优化问题，实现主动集货，但在车辆路径阶段的集货方式较为单一。",
+   "label": "hedging",
+   "source": "adjudicated",
+   "corpus": "ycgl",
+   "split": "holdout"
+  },
+  {
+   "id": 65,
+   "text": "连锁影响因子用于定量评估客户 i 的时间窗扰动对后续路径上其他客户的累计影响.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "holdout"
+  },
+  {
+   "id": 66,
+   "text": "与现有研究中以解后特征为主的方法不同，本文的6维特征均可在求解前从原始数据直接计算，无需依赖预先生成的解，为特征驱动的算法选择提供了形式化输入表征。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "mpca",
+   "split": "train"
+  },
+  {
+   "id": 67,
+   "text": "在蚂蚁访问过程中,主要根据近期蚂蚁遗留的信息素和启发式信息作出抉择,这类似于依靠底层算子近期性能信息的抉择过程.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 68,
+   "text": "除上述常用启发式算法外,相关文献还提出了DVRP的一些其他求解方法.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 69,
+   "text": "该模型为NP-hard问题，精确求解在较大规模下计算代价高昂，因此本文采用两阶段启发式框架进行求解。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "mpca",
+   "split": "train"
+  },
+  {
+   "id": 70,
+   "text": "总体而言，框架在所有测试场景下均表现出良好的稳定性，结果可靠。",
+   "label": "boosting",
+   "source": "adjudicated",
+   "corpus": "mpca",
+   "split": "train"
+  },
+  {
+   "id": 71,
+   "text": "则总的货损成本可分为常温下的货损成本、冷藏车运输过程中的货损成本与冷藏车装卸过程中开关车门所造成的货损成本。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "ycgl",
+   "split": "train"
+  },
+  {
+   "id": 72,
+   "text": "在一小时的求解时限内，求得的上下界的差距为 0．02％，而 CPLEX直接求解的上下界的差距为 6．48％；并且基于列生成的标签算法所得上界平均比 CPLEX直接求解降低 1．46％。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "ycgl",
+   "split": "train"
+  },
+  {
+   "id": 73,
+   "text": "IALNS算法的优势在于：（1）IALNS算法设计了2-HST 算法替换掉 PLBH-LNS 算法中采用的 kmeans聚类方法；（2）IALNS算法设计的考虑惩罚的锦标赛算子选择策略要优于 PLBHLN算法的随机选择策略。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "ycgl",
+   "split": "train"
+  },
+  {
+   "id": 74,
+   "text": "Tarantilis 等<sup>[12]</sup> 提出了一种骨干路径 (Boneroute)算法,通过复用高质量解中的频繁序列来改进路径规划方案.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "holdout"
+  },
+  {
+   "id": 75,
+   "text": "未来将进一步考虑供应商供应的不确定性对冷链物流配送中心选址 分配决策的影响。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "ycgl",
+   "split": "train"
+  },
+  {
+   "id": 76,
+   "text": "蚁群算法属于启发式算法,具有启发式搜索、信息正反馈与分布计算等优点,能有效解决多种复杂组合优化问题<sup>[20]</sup>.",
+   "label": "boosting",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 77,
+   "text": "时间窗的松弛 (扩大) 会增加裕度, 提升调度灵活性; 时间窗的紧缩 (缩小) 则减少裕度, 增加调度难度.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 78,
+   "text": "假定补货概率阈值为0.5,则由式(2)可确定5个配送型物流中心的初始阶段需求配额,如表2所示.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "holdout"
+  },
+  {
+   "id": 79,
+   "text": "自适应框架则全程覆盖全部36个场景，在全覆盖方法中两项指标均保持最优，体现了全场景适应能力的综合优势。",
+   "label": "boosting",
+   "source": "agreed",
+   "corpus": "mpca",
+   "split": "holdout"
+  },
+  {
+   "id": 80,
+   "text": "RVND 定义多个邻域结构, 在每一轮迭代中随机打乱邻域结构的顺序, 依次尝试每一个邻域的改进操作, 直到找到更优解.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 81,
+   "text": "近年来,LRP备受各界关注,已有许多学者将其运用于现实生活中的实际问题,如药品配送、包裹邮递、玻璃回收等<sup>[6-8]</sup>.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 82,
+   "text": "同时，订单规模从数十单到上万单不等，仓库数量从几个到几十个不等，导致问题复杂度跨越多个数量级。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "mpca",
+   "split": "train"
+  },
+  {
+   "id": 83,
+   "text": "对于指针网络输出的离散概率分布, 模型在训练阶段采用Categorical 分布采样策略对客户节点采样; 推理阶段选择贪婪解码策略, 将最大概率节点作为下一步选择的客户节点.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 84,
+   "text": "如何在激烈的竞争环境下实现企业提质降本增效，提升零售物流管理水平，已成为一类亟待研究的问题。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "ycgl",
+   "split": "train"
+  },
+  {
+   "id": 85,
+   "text": "系统收到客户需求和实时交通状况等动态信息的时间是随机的,无法预测;动态信息的内容,如新增客户数、服务时间窗、交通拥堵程度等是不确定的.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 86,
+   "text": "后续工作可进一步引入数据驱动的阈值优化方法（如决策树学习或贝叶斯优化），从历史求解数据中自动校准阈值，提升选择精度。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "mpca",
+   "split": "holdout"
+  },
+  {
+   "id": 87,
+   "text": "近年来,随着电子商务的飞速发展,消费者的消费习惯发生了明显的变化,需求动态化趋势日趋明显,使得求解车辆路径问题(Vehicle routingproblem, VRP)变得越来越复杂.",
+   "label": "boosting",
+   "source": "adjudicated",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 88,
+   "text": "第一，多数方法采用固定区域划分与固定路径求解算法，未根据订单密度以及仓库分布等特征动态调整策略，在场景变化时稳定性不足。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "mpca",
+   "split": "train"
+  },
+  {
+   "id": 89,
+   "text": "深度学习方法[6]通过端到端学习实现隐式策略选择，虽具备自适应能力但决策过程缺乏可追溯的解释依据。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "mpca",
+   "split": "train"
+  },
+  {
+   "id": 90,
+   "text": "这种策略既保留了父代的优质片段, 又通过动态调整客户点顺序增强种群多样性, 有效避免算法早熟收敛.",
+   "label": "boosting",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 91,
+   "text": "Fonseca-Galindo 等<sup>[9]</sup> 通过挖掘历史路径中的频繁序列提高了大规模物流配送任务的处理能力.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 92,
+   "text": "并行求解显著提升了大规模场景的处理效率：当存在多个独立子区域时，求解耗时由各区域的串行累加降至最慢区域的耗时加少量并行开销。",
+   "label": "boosting",
+   "source": "agreed",
+   "corpus": "mpca",
+   "split": "holdout"
+  },
+  {
+   "id": 93,
+   "text": "NCS-ALA 求得BF的平均值为50626元,相比其他3类可降低5‰∼6‰的成本;就时间性能而言,NCS-ALA的运行时间最少,相比其他3种策略减少了14.7%∼25.1%,AS-SA耗时最多为180s.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "holdout"
+  },
+  {
+   "id": 94,
+   "text": "在50-200单的小规模区间，自适应框架利用OR-Tools等高质量算法，距离较固定Greedy基线降低约18%-28%；在5000-10000单的大规模区间，自适应框架启用快速模式（KNN+Greedy），距离与固定快速基线持平但保证了系统稳定性。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "mpca",
+   "split": "holdout"
+  },
+  {
+   "id": 95,
+   "text": "为有效求解该问题，将上述非线性模型转化为线性模型，并提出了一种基于 ε约束法和模糊逻辑相结合的算法。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "ycgl",
+   "split": "holdout"
+  },
+  {
+   "id": 96,
+   "text": "大规模场景 CV 更小（0.27%–0.37%），因触发确定性更强的快速算法；小规模场景 CV 相对较高（源于 OR-Tools 随机初始化的微小波动）。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "mpca",
+   "split": "train"
+  },
+  {
+   "id": 97,
+   "text": "随着物流高质量发展与电商末端配送需求持续增长，多仓库协同配送已成为城市物流、社区团购与供应链调度的主流模式。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "mpca",
+   "split": "holdout"
+  },
+  {
+   "id": 98,
+   "text": "当此时候选解为可行的禁忌解时，若改进解比目前所达到的最优解更优，则将其解禁并作为新的解。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "ycgl",
+   "split": "holdout"
+  },
+  {
+   "id": 99,
+   "text": "这一定位与 Rasku[30]、Hochbaum[23]的 VRP 算法选择工作同属一类，区别仅在于本文采用完全可追溯的白盒规则而非黑箱分类器（见 §4.8 方法论对比）。",
+   "label": "boosting",
+   "source": "agreed",
+   "corpus": "mpca",
+   "split": "train"
+  },
+  {
+   "id": 100,
+   "text": "目前关于VRP的研究,大多数文献假定客户需求和车辆在各路段的行驶时间等要素均为静态或已知,路径规划和实施过程中不会发生变化.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 101,
+   "text": "然而，OR-Tools类基线在大规模场景下因超时而无法完成求解（仅31个场景有效），而自适应框架在所有36个场景中均成功输出可行解。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "mpca",
+   "split": "train"
+  },
+  {
+   "id": 102,
+   "text": "本文算法求解的最好里程优于多阶段启发式算法所求得的最好解.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 103,
+   "text": "为求解带容量和软时间窗约束的DDVRP,王万良等<sup>[67]</sup> 将3-OPT局部搜索算法与量子算法相结合,设计了混合3-OPT量子进化算法.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 104,
+   "text": "此后 SATzilla 等工作在 SAT 求解中系统实现了“求解前低开销特征提取 + 机器学习性能预测 + 异构求解器匹配”，Kotthoff[22]、Kerschke 等[31]对这一范式做了系统综述；国内学者亦将 ASP 思想拓展至连续黑箱优化问题的元启发算法选择[32]。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "mpca",
+   "split": "holdout"
+  },
+  {
+   "id": 105,
+   "text": "故而，DRO模型最优成本高于 SP模型的部分是为了抵抗不确定参数分布不确定所付出的代价。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "ycgl",
+   "split": "train"
+  },
+  {
+   "id": 106,
+   "text": "遗传算法虽具有全局搜索能力,但不能保证大概率收敛最优,迭代也易早熟.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 107,
+   "text": "供应链作为联结供需双方的重要纽带,运作是否合理,直接决定着企业效率的高低;物流配送作为供应链中关键环节,配送路径优化是否合理,直接影响供应链整体效益.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 108,
+   "text": "目前关于DDRVRP的研究文献较少,主要包括带容量约束的DDRVRP、带时间窗约束的DDRVRP、带容量和时间窗约束的DDRVRP三种类型.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 109,
+   "text": "自适应框架通过动态切换机制，在小规模场景使用OR-Tools保证解质量，在大规模场景自动降级至Greedy/SA保证可解性，从而在跨场景平均表现上实现最优平衡。",
+   "label": "boosting",
+   "source": "agreed",
+   "corpus": "mpca",
+   "split": "train"
+  },
+  {
+   "id": 110,
+   "text": "BAP在平均 51．秒时间内求得了全部算例的最优解，并证明了其最优性。",
+   "label": "assertive",
+   "source": "adjudicated",
+   "corpus": "ycgl",
+   "split": "train"
+  },
+  {
+   "id": 111,
+   "text": "ZHEN等<sup>［11］</sup>考 虑 排 放 控 制 区 下 的 速 度 优化，探究排放控制区的建立对运输成本和硫排放的影响，并通过数值实验证明了速度优化对于降低成本具有重要意义。",
+   "label": "assertive",
+   "source": "adjudicated",
+   "corpus": "ycgl",
+   "split": "train"
+  },
+  {
+   "id": 112,
+   "text": "因此本文名义上的“5 种划分 × 5 种求解器”候选空间，在当前基准上实际收敛为“1 种最近仓归属划分 × 3 种求解器”。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "mpca",
+   "split": "train"
+  },
+  {
+   "id": 113,
+   "text": "说明在一定范围内增加电动车电池容量具有优化效果,应根据实际配送范围大小合理选择电动车进行配送,减少充电时间,缩短因充电而导致的车辆行驶距离.",
+   "label": "hedging",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "holdout"
+  },
+  {
+   "id": 114,
+   "text": "上述估计模型基于实验环境（Intel Core i7-13700H，14核20线程）的实测数据拟合得到，不同硬件环境下可重新校准。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "mpca",
+   "split": "train"
+  },
+  {
+   "id": 115,
+   "text": "若在距离 ηDIS内无满足容量约束的点，则协作车辆只对自身进行集货。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "ycgl",
+   "split": "train"
+  },
+  {
+   "id": 116,
+   "text": "常见的求解VRP问题的启发式算法包括变邻域搜索、模拟退火、遗传算法等.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 117,
+   "text": "类似于分层树形编码方法<sup>[15]</sup>,树根部分为行车路线,包含4条路线;枝干为车辆数,包含了4辆服务车辆即元胞数组的长度;树叶为每条路线的属性,包括起止车辆负载量、路线费用以及车辆类型等.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 118,
+   "text": "计算ALNS结果的总清运成本较于 CPLEX结果的总清运成本改进百分比，若改进百分比为正，则表示ALNS较优；反之，CPLEX优于 ALNS。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "ycgl",
+   "split": "train"
+  },
+  {
+   "id": 119,
+   "text": "值得注意的是,区别于传统以路径最短为目标的VRP问题,VRPWDE问题的目标是最大化可靠度与行驶距离的加权之差,如式(3)所示.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 120,
+   "text": "为确定 IALNS算法的最佳参数设置，考虑最大迭代次数在｛50，100，150，200｝中选择，一个周期的迭代次数在｛5，10，15，20｝中选择。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "ycgl",
+   "split": "train"
+  },
+  {
+   "id": 121,
+   "text": "对此的基本要求是协调好供应链中企业间协作关系,实现整体效益优化.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 122,
+   "text": "对于候选的分区算法（含初始选择和备选方案），框架通过多目标评分函数进行综合评估。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "mpca",
+   "split": "train"
+  },
+  {
+   "id": 123,
+   "text": "SCHNEIDER<sup>［5］</sup>引入配送人员的熟悉因子来体现不同配送人员对同一客户服务时间的差异。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "ycgl",
+   "split": "train"
+  },
+  {
+   "id": 124,
+   "text": "本文以兰州市某物流配送企业的车辆调度和路径规划作为应用场景, 对模型和算法的有效性进行分析.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "holdout"
+  },
+  {
+   "id": 125,
+   "text": "Memetic 算法(MA)<sup>[6]</sup>最早由 Moscato于1989年提出, 现已成为进化计算领域的一个研究热点, 它受达尔文的自然进化理论和道金斯的文化进化思想启发,将进化算法(EA)和局部搜索(LS)相结合, 也称为混合遗传算法、遗传局部搜索<sup>[7]</sup>等.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 126,
+   "text": "本研究成果可直接应用于物流配送、储藏管理等场景, 通过优化车辆路径与装载方案, 保障合理空间利用率, 降低运输成本, 为绿色物流以及可持续发展提供技术支撑.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 127,
+   "text": "因此, 本文认为对元特征的研究可以朝两个方向发展: 一方面, 可在现有特征测度基础上对数据集特征进行约简, 去除冗余的、不相关的特征测度; 另一方面, 也可尝试结合多种类型的特征测度(包括算法的特征)提高算法推荐的准确率.",
+   "label": "hedging",
+   "source": "adjudicated",
+   "corpus": "kzyjc",
+   "split": "holdout"
+  },
+  {
+   "id": 128,
+   "text": "在市场需求和政策的推动下, 物流行业加速智能化转型, 广泛应用智能调度、大数据和物联网等新兴技术<sup>[2]</sup>.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 129,
+   "text": "② 当车辆载重量由 200 kg 变大到 500 kg 时, 就各部分成本而言, 时间窗成本、货损成本变化最为显著, 充电成本变化较为显著, 变动成本、制冷成本变化较小.",
+   "label": "assertive",
+   "source": "adjudicated",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 130,
+   "text": "利用百度地图 API 对该市车辆实时速度进行统计<sup>[25]</sup>, 选取 6 月某工作日的速度数据.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "holdout"
+  },
+  {
+   "id": 131,
+   "text": "后续研究可构建多目标自适应选择机制，根据场景偏好动态调整优化策略。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "mpca",
+   "split": "train"
+  },
+  {
+   "id": 132,
+   "text": "对于本文混合算法得到的解值与 GTS 解值进行 RPD (相对百分比差异) 计算, 以∼便直观观察算法性能.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 133,
+   "text": "以上文献研究了工业产品的集货路径问题，而目前对生鲜集货路径问题的研究文献较少，但生鲜产品由于其保质期短的特点，对于运输环境要求较高，生鲜产品集货时需要考虑的目标不同。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "ycgl",
+   "split": "train"
+  },
+  {
+   "id": 134,
+   "text": "3)由ETD的结果可知,采用部分充电策略可有效减少电动车行驶距离,平均节省行驶距离4.42km.",
+   "label": "boosting",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 135,
+   "text": "另外,Rice的算法选择模型只考虑了问题特征, 忽略了各种算法的特征, 每种算法都有其相应的适用范围和局限性, 因此不但要提取问题集合的特征, 还要描述算法集合的特征.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 136,
+   "text": "在这一配置下, 其总成本、时间窗惩罚成 本、碳排放成本, 与纯电动车队相比, 分别节约了 10.33%、37.35%、–55.24%; 与纯燃油车队相比, 分别 节约了 36.04%、95.4%、44.05%.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 137,
+   "text": "在生鲜集货路径优化方面，DRENOVAC等<sup>［6］</sup>研究了考虑产品质量随时间损耗的动态随机车辆调度问题，并设计真实采集过程仿真模型进行优化，未考虑到生鲜产品的冷链物流运输，但冷链运输对于生鲜产品的保存至关重要。",
+   "label": "boosting",
+   "source": "agreed",
+   "corpus": "ycgl",
+   "split": "train"
+  },
+  {
+   "id": 138,
+   "text": "因此研究带订单选择的整车取送货路径优化问题具有重要的现实意义。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "ycgl",
+   "split": "holdout"
+  },
+  {
+   "id": 139,
+   "text": "城市交通拥堵具有时间和空间位置特性,体现在不同时间段和在不同区域路段的交通拥堵程度不同.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 140,
+   "text": "基于模型和基于基准思想的元特征间接通过模型的某些特性提取数据集特征, 两者的区别在于基于模型的特征测度是根据单个模型(如决策树)的结构特性刻画数据集特征; 基于基准思想的特征测度通过多个模型(基准分类器)的性能刻画数据集特征.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "holdout"
+  },
+  {
+   "id": 141,
+   "text": "元学习是指应用机器学习的方法(元算法)寻求问题的特征(元特征)与算法相对性能测度间的映射, 从而形成元知识的学习过程<sup>[20]</sup>.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 142,
+   "text": "定理1表明,VRP问题对应的图中,边的数量与频繁序列数量呈指数减少趋势.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 143,
+   "text": "动态事件更新策略更新信息准确,调整路线及时,能对具有紧迫性的动态需求给予优先调度,但计算量非常大<sup>[10]</sup>.",
+   "label": "boosting",
+   "source": "adjudicated",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 144,
+   "text": "订单数据基于真实省级坐标生成，坐标范围以省会城市为中心，经纬度偏移量模拟实际配送范围。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "mpca",
+   "split": "holdout"
+  },
+  {
+   "id": 145,
+   "text": "需要指出，检验不显著不等价于证明两者性能等效，上述结论的适用范围限于本文的算例集与求解预算。",
+   "label": "hedging",
+   "source": "agreed",
+   "corpus": "mpca",
+   "split": "train"
+  },
+  {
+   "id": 146,
+   "text": "特别是在遇到多车型、多配送中心、租赁车辆时,优势更加突出.",
+   "label": "boosting",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 147,
+   "text": "本文算法在真实数据中仍保持稳定性能, 求解质量优于其他对比算法, 算法能有效平衡成本和满意度, 验证了其在实际场景中的适应性.",
+   "label": "boosting",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 148,
+   "text": "此外,每种进化式策略的参数尽量采用文献中已调参数,否则参数按照经验值设置或者采用随机数的方式设置.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 149,
+   "text": "究其深层原因，SP模型属于风险中性的决策方法，其平均成本优于 DRO模型。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "ycgl",
+   "split": "train"
+  },
+  {
+   "id": 150,
+   "text": "对于多车场、多车型的VRPB问题，这方面的文献资料更少.Salhi8针对单一车场和多个车场的VRPB问题，提出一种新的插入法.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 151,
+   "text": "多场景基准对比与消融实验结果表明，自适应框架综合性能显著优于固定算法基线，且全部场景下结果波动极小、稳定可靠。",
+   "label": "boosting",
+   "source": "agreed",
+   "corpus": "mpca",
+   "split": "train"
+  },
+  {
+   "id": 152,
+   "text": "YU等<sup>［6］</sup>针对卡车搭载无人车的同时取送货问题，以总成本最小化为目标建立优化模型，并设计 ALNS算法求解。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "ycgl",
+   "split": "train"
+  },
+  {
+   "id": 153,
+   "text": "承运商需要在完成规定的多个运输任务的前提下，选择合理的运输路线并优化每个航程上的相应航行速度，使得完成所有货物运输的总成本和碳排放总量最低。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "ycgl",
+   "split": "train"
+  },
+  {
+   "id": 154,
+   "text": "框架采用贪心式预算分配策略：按区域规模从大到小排序，依次为各区域分配VRP算法并预估运行时间。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "mpca",
+   "split": "holdout"
+  },
+  {
+   "id": 155,
+   "text": "在 MDVRP求解上，辜勇等<sup>［13］</sup>、刘家利和马祖军<sup>［14］</sup>均采用将多中心 VRP分解为单中心 VRP求解的思路，有效降低了 MDVRP的求解难度。",
+   "label": "boosting",
+   "source": "agreed",
+   "corpus": "ycgl",
+   "split": "holdout"
+  },
+  {
+   "id": 156,
+   "text": "基于此，本文研究多品多仓的订单拆分与配送联合优化问题。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "ycgl",
+   "split": "holdout"
+  },
+  {
+   "id": 157,
+   "text": "（2）无人车可返回卡车更换电池后继续工作，不考虑卡车的充、换电。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "ycgl",
+   "split": "train"
+  },
+  {
+   "id": 158,
+   "text": "BOYSON等<sup>［1］</sup>考虑设无人车仓库补充无人车，以延迟送货客户数最少为目标建立模型，设计多起点局部搜索算法求解。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "ycgl",
+   "split": "train"
+  },
+  {
+   "id": 159,
+   "text": "在DVRP领域采用的启发式算法主要有禁忌搜索(TS)算法、邻域搜索(NS)算法、蚁群算法(ACO)、遗传算法(GA)、粒子群算法(PSO)和混合算法等.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 160,
+   "text": "存在波动的主要为直接单模型在部分算例上的表现，其中 p16 最为显著——该算例单次运行曾得到 0.00% 的最优解，但 3 次重复运行为 12.79%、12.79% 与 25.48%，均值 17.02%、标准差 5.99 个百分点，说明其单次结果为小概率极值。",
+   "label": "assertive",
+   "source": "adjudicated",
+   "corpus": "mpca",
+   "split": "train"
+  },
+  {
+   "id": 161,
+   "text": "历史配送路径中的频繁序列是司机经验的一种体现<sup>[21]</sup>,包括司机经常访问的特定路径段及访问不同地点时的优先顺序,揭示了司机的行为习惯和路径选择偏好.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 162,
+   "text": "李阳等<sup>[18]</sup> 针对VRPFD提出一种点重调度策略,当所有车辆确认失败点后,重新对所有失败点和未服务的客户进行调度.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 163,
+   "text": "其二为特征引导的搜索增强，如Herdianto等[4]利用特征识别高质量解区域以引导元启发式搜索方向，其作用层次为搜索行为引导。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "mpca",
+   "split": "train"
+  },
+  {
+   "id": 164,
+   "text": "在对该算法的实验验证中，ALNS求得所有算例的最优解，寻优能力较强，可有效求解 TDTUVRPTW问题。",
+   "label": "boosting",
+   "source": "agreed",
+   "corpus": "ycgl",
+   "split": "train"
+  },
+  {
+   "id": 165,
+   "text": "相比较而言，汽车物流的运作层研究则集中于入厂、厂内及出厂等物流业态，售后物流因为需求不确定性高，具有多品种、小批量与高频次特点，其运作层面的研究并不多见。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "ycgl",
+   "split": "train"
+  },
+  {
+   "id": 166,
+   "text": "相较 Rasku[30]、Hochbaum[23]的黑箱分类器方案，本文在牺牲部分泛化能力的前提下换取了完全的决策透明度与零训练成本。",
+   "label": "boosting",
+   "source": "agreed",
+   "corpus": "mpca",
+   "split": "holdout"
+  },
+  {
+   "id": 167,
+   "text": "结果表明，混合车队清运模式较之当前的联合清运模式，能更有效地降低清运成本，而所提出的自适应大邻域搜索算法可在合理时间内获得高质量的近似最优解，满足实际清运需求。",
+   "label": "boosting",
+   "source": "agreed",
+   "corpus": "ycgl",
+   "split": "holdout"
+  },
+  {
+   "id": 168,
+   "text": "大规模DVRP模型的求解计算量大,对实时性要求高,因此,充分利用并行结构的优势,加强并行算法研究,设计出运算速度快、适用于大规模DVRP的并行算法是一个值得深入研究的方向.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 169,
+   "text": "在城市多仓协同配送场景中，订单规模、空间分布与仓库布局的动态差异使单一固定算法难以在全场景保持稳定性能——这正是 Rice 提出的算法选择问题（Algorithm Selection Problem, ASP）在 MDVRP 上的具体体现。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "mpca",
+   "split": "holdout"
+  },
+  {
+   "id": 170,
+   "text": "上述统计结果从数据层面验证了特征驱动算法选择的合理性。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "mpca",
+   "split": "train"
+  },
+  {
+   "id": 171,
+   "text": "车辆行驶时,可能部分在非拥堵区域内以正常速度行驶,部分在拥堵区域以拥堵速度行驶;在上下班高峰,车辆行驶速度降低.",
+   "label": "hedging",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 172,
+   "text": "启发式算法不需建立 VRPPC的数学规划模型，灵活性高，适应性广，故大多数研究采用启发式算法<sup>［25］</sup>。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "ycgl",
+   "split": "holdout"
+  },
+  {
+   "id": 173,
+   "text": "类似于粒子群算法,通过调整矢量的方式控制算法的搜索方向与收敛速度.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 174,
+   "text": "在清运车最大的装载能力约束下，HVRPMC旨在清运所有垃圾、优化车辆的清运路线，以极小化总运输成本。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "ycgl",
+   "split": "train"
+  },
+  {
+   "id": 175,
+   "text": "将农户按照距离中心仓库的远近分为普通农户和偏远农户。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "ycgl",
+   "split": "train"
+  },
+  {
+   "id": 176,
+   "text": "主要原因在于C1与C2类型算例的各客户服务时间长达90min,其他类型算例仅10min. 说明客户服务时间是物流配送成本的主要影响因素之一,应少采用送货上门的配送模式,多采用智能快递柜、集中委托收货等末端收货模式,降低客户服务时间.",
+   "label": "hedging",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 177,
+   "text": "近年来，国内外研究学者对多式联运问题进行了大量的研究，多专注于考虑选择合理的运输方案以达到成本最小化。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "ycgl",
+   "split": "holdout"
+  },
+  {
+   "id": 178,
+   "text": "具有代表性的元特征可以分为3类: 基于统计和信息论的元特征、基于基准分类器的元特征、基于模型的元特征.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "holdout"
+  },
+  {
+   "id": 179,
+   "text": "评价解的质量主要考虑目标函数值和车辆是否超载两个层面.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 180,
+   "text": "由正态分布特征可知,所选染色体越靠近0,其概率越大,成为较优秀染色体的可能性越高.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 181,
+   "text": "与分区后的VRP求解成本相比，上述开销均可忽略，因此即使均匀度中等，最近仓划分亦可作为低风险默认选择。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "mpca",
+   "split": "train"
+  },
+  {
+   "id": 182,
+   "text": "然而，目前采用分布鲁棒优化方法研究冷链物流网络设计问题的研究鲜少。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "ycgl",
+   "split": "holdout"
+  },
+  {
+   "id": 183,
+   "text": "从不同订单规模下 IALNS算法的订单履行成本与 CPU时间变化结果可知：（1）仓库数量固定时，订单规模越大，订单履行成本越高；（2）同一订单规模下，仓库数量越多，算法运行时间越长。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "ycgl",
+   "split": "train"
+  },
+  {
+   "id": 184,
+   "text": "基于此,考虑司机经验的车辆路径问题,设计一个综合考虑路径可靠度和行驶距离的双重路径评价指标,建立对应的整数规划模型,在充分分析问题特征的基础上提出一种知识驱动型动态多起点变邻域搜索算法.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 185,
+   "text": "现有使用频繁序列支持度来度量司机经验的VRP文献往往只关注路径序列中客户点的访问顺序,而忽略了各客户点之间的距离<sup>[20]</sup>.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "holdout"
+  },
+  {
+   "id": 186,
+   "text": "然后对于排序好的订单，依据仓库与该订单客户的距离远近进行排列，距离近的仓库排在前列，距离远的仓库排在后列，此时即可构建订单 仓库优先序列矩阵 OW（OrderWarehouse）。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "ycgl",
+   "split": "train"
+  },
+  {
+   "id": 187,
+   "text": "整体而言，学习型选择在候选族层面与规则引擎结论一致，在表示层面展现出可行的学习能力，表明从求解历史中学习算法选择具有一定的可行性。",
+   "label": "hedging",
+   "source": "agreed",
+   "corpus": "mpca",
+   "split": "train"
+  },
+  {
+   "id": 188,
+   "text": "实验表明, 适应性学习曲线能获得更高的预测准确率, 且预测准确率随着采样个数的增加而提高.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 189,
+   "text": "文献[46]考虑的算法性能测度有算法的准确率和训练时间, 并通过 ARR(adjust ratio of ratios) 测度综合二者.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "holdout"
+  },
+  {
+   "id": 190,
+   "text": "车辆 1 从仓库出发, 依次服务客户 1、客户 3、客户 2, 在不违背车辆载重与二维装载约束的前提下将每个客户的所有货物按照一定方案装配在车辆上, 最后回到仓库.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 191,
+   "text": "在TSHOA的第1阶段,设计了具有多种排序操作的改进灰狼优化算法 (improved grey wolfoptimizer,IGWO).",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 192,
+   "text": "卡车作为无人车移动仓库与无人车联合配送，可克服无人车单独配送弊端，奔驰与 Starship合作，研发卡车和无人车一体化送货服务用于末端配送。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "ycgl",
+   "split": "train"
+  },
+  {
+   "id": 193,
+   "text": "蛙跳算法利用计算步长的更新策略对当前蛙的位置实现更新和转移.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "holdout"
+  },
+  {
+   "id": 194,
+   "text": "显然,Gap越小,表明所对应算法的性能越好,其所得解的质量越高.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 195,
+   "text": "据统计，清运成本占垃圾总处理成本的 60％～80％<sup>［3］</sup>，如何降低分类清运的成本是这一政策执行的关键。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "ycgl",
+   "split": "holdout"
+  },
+  {
+   "id": 196,
+   "text": "王连锋等<sup>[15]</sup> 基于模糊可信性理论对VRPFD中服务失败事件进行可能性分析,构建了VRPFD的模糊期望值模型,并设计了一种带双层禁忌搜索的并行粒子群算法进行求解.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 197,
+   "text": "超启发蚁群优化算法求解带柔性时间窗的绿色两级多周期车辆路径问题[J].",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "mpca",
+   "split": "train"
+  },
+  {
+   "id": 198,
+   "text": "即使 QS-GD 在最低成本的数量、平均值以及中位值优于NCS-ALA,然而在其他性能指标上却劣于NCS-ALA,表明NCS-ALA在求解Tuzun算例时性价比(较少的时间内获得较低的适应度)优于QS-GD.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "holdout"
+  },
+  {
+   "id": 199,
+   "text": "针对新增客户需求,Armas等<sup>[15]</sup>考虑新增客户需求对时间窗的影响,如果在原有路径中插入新客户违背时间窗约束,则对目标客户进行调整;Kuo等<sup>[16]</sup> 根据剩余工作时间和后续服务时间,确定是当天还是第2天为新客户服务.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "holdout"
+  },
+  {
+   "id": 200,
+   "text": "该模型为NP-hard问题，精确求解在较大规模下计算代价高昂，因此本文采用两阶段启发式框架进行求解。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "mpca",
+   "split": "holdout"
+  },
+  {
+   "id": 201,
+   "text": "为避免算法陷入局部最优,需判断邻域解是否优于历史最优解.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 202,
+   "text": "由表 2可知，对 200订单算例，相比 CPLEX直接求解，CGBL算法用 1183s的平均时间找到 20个最好解。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "ycgl",
+   "split": "train"
+  },
+  {
+   "id": 203,
+   "text": "受订单规模、空间分布、仓库布局及场景差异的影响，不同配送环境下算法性能差异显著，如何根据问题特征自适应选择求解策略，在保证解质量的同时提升计算效率，成为多仓库调度中亟待解决的关键问题。",
+   "label": "boosting",
+   "source": "adjudicated",
+   "corpus": "mpca",
+   "split": "train"
+  },
+  {
+   "id": 204,
+   "text": "针对实时交通信息,Wang等<sup>[31]</sup>考虑交通拥堵对道路容量的影响,利用BPR函数计算实时交通信息条件下的道路容量.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 205,
+   "text": "在解的构建过程中,基于贪心准则选择最优候选序列,即冲突序列集中与当前解不冲突且支持度最高的序列,并以随机顺序访问通用序列及剩余客户点,这两种方式的结合有助于提升算法的鲁棒性.",
+   "label": "hedging",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 206,
+   "text": "而海上运输则相反，海运运量大，运费低廉且碳排放量相对较低，但运输速度较慢。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "ycgl",
+   "split": "train"
+  },
+  {
+   "id": 207,
+   "text": "式(18)表示电动车从上一个节点到达下一个节点的剩余电量计算方法.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 208,
+   "text": "3）最小距离差插入算子：选择路径距离增量最小插入点将客户插入到路径中。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "ycgl",
+   "split": "holdout"
+  },
+  {
+   "id": 209,
+   "text": "框架在50至10000单的规模范围内均保持可解性，鲁棒性实验中全部场景变异系数低于2.1%，具备良好的工程实用性。",
+   "label": "boosting",
+   "source": "adjudicated",
+   "corpus": "mpca",
+   "split": "holdout"
+  },
+  {
+   "id": 210,
+   "text": "但所提的 IALNS算法先对订单进行初始聚类，然后循环迭代优化，最后确定订单的履行方案。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "ycgl",
+   "split": "train"
+  },
+  {
+   "id": 211,
+   "text": "实验结果表明, 相较于经典启发式算法, 该智能求解器在保持解质量的前提下可实现计算效率提升约 20 倍, 同时展现出稳定的收敛特性.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 212,
+   "text": "中心车辆将为其最终集货路线上的每位农户服务且仅服务一次。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "ycgl",
+   "split": "train"
+  },
+  {
+   "id": 213,
+   "text": "因此，本节针对解的每条路径建立线性数学模型来优化每个客户的服务开始时间以最小化惩罚成本。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "ycgl",
+   "split": "train"
+  },
+  {
+   "id": 214,
+   "text": "需要指出的是，Voronoi+OR-Tools的平均排名为1.45，优于自适应框架的1.75，但该组合仅能在31个场景（86.1%）中完成求解，在5个大场景下因超时无法输出可行解。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "mpca",
+   "split": "holdout"
+  },
+  {
+   "id": 215,
+   "text": "为提高DVRP模型优化解的质量,学者们提出了多种混合启发式算法.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "train"
+  },
+  {
+   "id": 216,
+   "text": "算法禁忌搜索过程中,对当前解决方案进行邻域变换,拓展可搜索到的解空间范围,从而增加算法的寻优能力.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "holdout"
+  },
+  {
+   "id": 217,
+   "text": "该抽象模型由4部分构成: 1)问题空间𝑃表示问题实例的集合;2)特征空间𝐹表示对问题实例𝑃进行特征提取得到的可测特征; 3)算法空间𝐴表示适用于问题实例𝑃的算法集合; 4)性能空间𝑌表示每个算法到其性能测度集的映射.",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "kzyjc",
+   "split": "holdout"
+  },
+  {
+   "id": 218,
+   "text": "T1交换算子：随机截取一个农户点插入到路径中的另一个位置。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "ycgl",
+   "split": "train"
+  },
+  {
+   "id": 219,
+   "text": "主实验设置36个基准场景，由4个订单规模（80、200、800、3000）× 3种分布类型（聚类、随机、混合）× 3种仓库配置（3个、8个、15个）构成。",
+   "label": "assertive",
+   "source": "agreed",
+   "corpus": "mpca",
+   "split": "train"
+  }
+ ]
+}

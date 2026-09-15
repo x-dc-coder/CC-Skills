@@ -975,8 +975,16 @@ def test_chinese_paragraph_stats_use_the_cjk_caliber(tmp_path: Path) -> None:
     unmeasured = {mid: m for mid, m in summary["metrics"].items()
                   if m.get("n_valid", 0) == 0}
     assert measured, "the surface metrics must be measurable for Chinese"
+    # The stance layer (#23) is INFERRED and intentionally unmeasured: its
+    # calibration set is pending, so it surfaces NOT_IMPLEMENTED rather than a
+    # fabricated number. It is excluded from the missingness audit below, which
+    # is about OBSERVED metrics hiding a real cause.
+    _STANCE_PENDING = {"M-STNC-41", "M-STNC-42", "M-STNC-43"}
     for mid, m in unmeasured.items():
         codes = set(m.get("warnings") or [])
+        if mid in _STANCE_PENDING:
+            assert codes == {"NOT_IMPLEMENTED"}, (mid, codes)
+            continue
         assert not (codes & {"NO_VALID_VALUES", "N_LT_5", "N_VALID_LT_3"}), (mid, codes)
         # An unmeasured metric must name WHY it is unmeasured: the language /
         # capability layer, or a structural cause (this fixture has no

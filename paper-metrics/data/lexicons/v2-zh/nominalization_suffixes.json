@@ -1,6 +1,6 @@
 {
   "name": "nominalization_suffixes",
-  "version": "2.1-zh",
+  "version": "2.2-zh",
   "source": "占位：中文 M-NOM-10 未启用（capability=CAPABILITY_NOT_SUPPORTED）。中文名词化无法用\"后缀 + 动词基\"规则可靠判定，需标注集校准后才能开启——此处仅满足 bundle 契约。",
   "language": "zh",
   "entries": [

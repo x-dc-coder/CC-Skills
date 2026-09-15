@@ -173,6 +173,13 @@ METRIC_IDS = (
     "M-CLS-32",
     "M-SLEN-34",
     "M-SLEN-35",
+    # Stance layer (issue #23): INFERRED, gated on a frozen annotation set with
+    # kappa >= 0.6.  Until the calibration set lands the records are emitted as
+    # null + NOT_IMPLEMENTED (never a fabricated number), mirroring
+    # figure_profile's placeholders.
+    "M-STNC-41",
+    "M-STNC-42",
+    "M-STNC-43",
 )
 
 #: A text is treated as Chinese (and therefore outside the validated language of
@@ -216,6 +223,11 @@ _METRIC_LANGUAGE_CAPABILITY: dict[str, tuple[str, ...]] = {
     "M-CLS-32": ("zh",),
     "M-SLEN-34": ("zh",),
     "M-SLEN-35": ("zh",),
+    # Stance (issue #23): validated for zh once the annotation set lands; until
+    # then the capability tuple is empty, which yields null + NOT_IMPLEMENTED.
+    "M-STNC-41": (),
+    "M-STNC-42": (),
+    "M-STNC-43": (),
 }
 _DEFAULT_METRIC_LANGUAGES: tuple[str, ...] = ("en",)
 #: Distinct from LANGUAGE_NOT_SUPPORTED: the language is measurable, this
@@ -309,6 +321,10 @@ _METRIC_UNITS = {
     "M-PAS-09": _UNIT_RATIO,
     "M-NOM-10": _UNIT_RATIO,
     "M-TENSE-28": _UNIT_RATIO,
+    # Stance layer (issue #23): INFERRED, pending the calibration set.
+    "M-STNC-41": _UNIT_RATIO,
+    "M-STNC-42": _UNIT_RATIO,
+    "M-STNC-43": _UNIT_RATIO,
 }
 
 #: Frozen per-metric evidence sampling rules (see module docstring rule 5).
@@ -1635,6 +1651,43 @@ def _unsupported_metric(metric_spec: str, language: dict[str, Any],
     }
 
 
+def _pending_or_unsupported(metric_spec: str,
+                              language: dict[str, Any]) -> dict[str, Any]:
+    """Fallback for a metric the zh path does not compute.
+
+    Two cases must stay distinguishable to a consumer: the metric is not
+    validated for this language at all (CAPABILITY_NOT_SUPPORTED), or it is an
+    INFERRED metric whose calibration set is still missing (NOT_IMPLEMENTED).
+    """
+    if not _METRIC_LANGUAGE_CAPABILITY.get(metric_spec, _DEFAULT_METRIC_LANGUAGES):
+        return _not_implemented_metric(metric_spec, language)
+    return _unsupported_metric(metric_spec, language,
+                               warning=CAPABILITY_NOT_SUPPORTED)
+
+
+def _not_implemented_metric(metric_spec: str, language: dict[str, Any]):
+    """Contract-shaped placeholder for an INFERRED metric whose calibration set
+    has not landed yet (issue #23 stance layer).
+
+    Distinct from _unsupported_metric: the language *is* in scope and the metric
+    *is* designed for it, but the frozen annotation set with kappa >= 0.6 that
+    the INFERRED admission rules require does not exist yet.  A value here would
+    be an uncalibrated semantic claim, so it stays null + NOT_IMPLEMENTED -
+    exactly the placeholder pattern figure_profile uses.
+    """
+    record = _unsupported_metric(metric_spec, language,
+                                 warning="NOT_IMPLEMENTED")
+    record["state"] = "INFERRED"
+    record["method"] = "model_pending_calibration"
+    record["annotation_set"] = {
+        "status": "not_frozen",
+        "required_kappa": 0.6,
+        "required_sentences": 200,
+        "measured_kappa": None,
+    }
+    return record
+
+
 def _zh_cjk_unit_count(span_text: str) -> int:
     """Chinese sentence-length unit: CJK characters + ASCII alpha tokens.
 
@@ -1978,8 +2031,7 @@ def _zh_metrics(text: str, sentences: Sequence[Span], language: dict[str, Any],
         record["cjk_ratio"] = language["cjk_ratio"]
     return {
         metric_id: (computed[metric_id] if metric_id in computed
-                    else _unsupported_metric(metric_id, language,
-                                             warning=CAPABILITY_NOT_SUPPORTED))
+                    else _pending_or_unsupported(metric_id, language))
         for metric_id in METRIC_IDS
     }
 
