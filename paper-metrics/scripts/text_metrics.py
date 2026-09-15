@@ -140,6 +140,8 @@ import statistics
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Iterable, Mapping, Sequence
 
+import language_registry
+
 if TYPE_CHECKING:  # pragma: no cover - typing only, never executed
     from lexicon_loader import LexiconBundle
 
@@ -1730,24 +1732,25 @@ def compute_text_metrics(text: str, bundle: Any) -> dict[str, dict[str, Any]]:
     academic_words and stopwords, each exposing an entries tuple of lower-case
     strings.  No import of lexicon_loader happens here.
 
-    Language gate (Round A): when detect_language() reports an unsupported
-    language (cjk_ratio > LANGUAGE_SUPPORT_CJK_THRESHOLD), every metric is
-    returned as a null "not measured" record carrying the warning
-    LANGUAGE_NOT_SUPPORTED - the module never emits a fabricated 0 for a
-    language it is not validated for, and it never raises.
+    Language dispatch goes through language_registry.adapter_for(): the detected
+    language code selects the adapter that owns that language's compute path
+    (English or Chinese).  A new language is wired by adding an adapter to the
+    registry, never by adding another branch here.
     """
     if not isinstance(text, str):
         text = ""
     language = detect_language(text)
-    if language["language"] == "zh":
-        # Per-metric capability matrix (issue #13): Chinese gets the metrics
-        # whose pinned rules are language-independent; the rest are null with
-        # CAPABILITY_NOT_SUPPORTED. Never 0 - a fabricated zero would look like
-        # a measurement.
-        return _zh_metrics(text, split_sentences(text), language, bundle)
-    if not language["supported"]:
-        return {metric_id: _unsupported_metric(metric_id, language)
-                for metric_id in METRIC_IDS}
+    return language_registry.adapter_for(language["language"]).compute(
+        text, language, bundle)
+
+
+def _english_metrics(text: str, language: dict[str, Any],
+                     bundle: Any) -> dict[str, dict[str, Any]]:
+    """English compute path (frozen): the code that used to live inline.
+
+    Moved verbatim out of compute_text_metrics so EnglishAdapter can delegate to
+    it; the metric algorithms, fields and warnings are unchanged.
+    """
     sentences = split_sentences(text)
     sentence_counts = [len(tokenize(span.text)) for span in sentences]
     tokens = tokenize(text)

@@ -141,6 +141,13 @@ uv run python paper-metrics/scripts/pas_spotcheck.py --corpus <paper-analysis> -
 - 为什么这条是红线：在真实中文语料上，本层曾**静默**产出 `citation_style=unknown`、`reference_count=0`、hedge/连接词/被动/名词化**全为 0.0**、句数中位 **2 句**，而 `n_missing` 全为 0、无任何语言告警——看起来像"合法结果"，实际是垃圾。证据：`/mnt/e/AllProjects202601/M-PCA/_paper-metrics-run/运筹与管理/报告.md`。
 - 中文支持路线见 GitHub issue #10；中文词表/标注集等缺口见 issue #11 的评审意见。
 
+## 语言分派注册表（issue #10 Phase 1）
+
+- 计算分派收敛到 `scripts/language_registry.py`：`LanguageAdapter`（协议）+ `EnglishAdapter` / `ChineseAdapter`（各自委托 `_english_metrics` 与 `_zh_metrics`），显式注册表 `ADAPTERS` + `adapter_for(code)`。
+- `compute_text_metrics` 只做 `adapter_for(detect_language()["language"]).compute(...)`——**不再有 `if language == "zh"` 之类的硬编码语言字面量分支**（issue #10 §14 禁止的扩展形态）。
+- 新增语言 = 加一个 adapter + 一条 `ADAPTERS` 条目，而不是在 `compute_text_metrics` 里再写一个分支；未注册代码（含 `unknown`）回退到 `EnglishAdapter`，与历史"非 zh 一律走英文路径"行为一致。
+- 三条锁测试见 `scripts/test_language_registry.py`：① 冻结 spec `lang_spec_cases.json` 全用例的判定一致性；② 注入 FakeAdapter 证明分派是数据驱动的；③ 结构化断言分派路径不再含 `== "zh"` 字面量比较。
+
 ## 指标定义（可解释性的事实源）
 
 - 每条指标的定义、公式、分母、evidence 坐标系，以及**不能推断什么**，见 `references/metric-definitions.md`。
