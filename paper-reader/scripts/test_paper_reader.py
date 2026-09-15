@@ -1233,3 +1233,111 @@ def test_conflict_blocks_keep_both_variants_and_report_their_scores(tmp_path: Pa
     assert "**Marker**" in merged and "**MinerU**" in merged
     assert "preferred=" in merged and "score_marker=" in merged and "score_mineru=" in merged
     assert "conflict" in merged[-4000:].lower() or "merge" in merged[-4000:].lower()
+
+
+# ── Source-PDF figure path (issue #16) ────────────────────────────────────────
+
+def _tiny_jpeg(tmp_path: Path, width: int, height: int) -> bytes:
+    from PIL import Image
+    import io as _io
+    buffer = _io.BytesIO()
+    Image.new("RGB", (width, height), (200, 30, 30)).save(buffer, format="JPEG", quality=80)
+    return buffer.getvalue()
+
+
+def _minimal_pdf(tmp_path: Path, jpeg: bytes, image_size: tuple[int, int],
+                 place: tuple[float, float, float, float]) -> Path:
+    """One page, one JPEG XObject drawn at 'place' (PDF points, top-left origin)."""
+    page_w, page_h = 612.0, 792.0
+    x0, top, x1, bottom = place
+    w_pt, h_pt = x1 - x0, bottom - top
+    content = (f"q {w_pt:.2f} 0 0 {h_pt:.2f} {x0:.2f} {page_h - bottom:.2f} cm /Im0 Do Q"
+               ).encode("ascii")
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        (f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {page_w} {page_h}] "
+         f"/Resources << /XObject << /Im0 4 0 R >> >> /Contents 5 0 R >>").encode("ascii"),
+        (f"<< /Type /XObject /Subtype /Image /Width {image_size[0]} "
+         f"/Height {image_size[1]} /ColorSpace /DeviceRGB /BitsPerComponent 8 "
+         f"/Filter /DCTDecode /Length {len(jpeg)} >>\nstream\n").encode("ascii")
+        + jpeg + b"\nendstream",
+        (f"<< /Length {len(content)} >>\nstream\n").encode("ascii") + content + b"\nendstream",
+    ]
+    out = bytearray(b"%PDF-1.4\n")
+    offsets = []
+    for number, body in enumerate(objects, start=1):
+        offsets.append(len(out))
+        out += f"{number} 0 obj\n".encode("ascii") + body + b"\nendobj\n"
+    xref_at = len(out)
+    out += f"xref\n0 {len(objects) + 1}\n".encode("ascii")
+    out += b"0000000000 65535 f \n"
+    for offset in offsets:
+        out += f"{offset:010d} 00000 n \n".encode("ascii")
+    out += (f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n"
+            f"{xref_at}\n%%EOF\n").encode("ascii")
+    path = tmp_path / "source.pdf"
+    path.write_bytes(bytes(out))
+    return path
+
+
+def _figure_content_list(tmp_path: Path, blocks: list[dict]) -> Path:
+    path = tmp_path / "p1_content_list.json"
+    path.write_text(json.dumps(blocks), encoding="utf-8")
+    return path
+
+
+def test_source_pdf_figures_prefer_the_native_embedded_bitmap(tmp_path: Path) -> None:
+    """Issue #16 path (b): an embedded bitmap is written at its NATIVE size - the file
+    bytes are the PDF's own JPEG, never re-encoded or resampled.  Path (a) rendering
+    only runs where nothing usable is embedded."""
+    jpeg = _tiny_jpeg(tmp_path, 1200, 800)
+    place = (100.0, 100.0, 400.0, 300.0)
+    pdf = _minimal_pdf(tmp_path, jpeg, (1200, 800), place)
+    # bbox is the 0-1000 normalized box MinerU writes, derived from the placement
+    x0, top, x1, bottom = place
+    block = {"type": "image", "page_idx": 0, "img_path": "images/a.jpg",
+             "bbox": [x0 / 612 * 1000, top / 792 * 1000, x1 / 612 * 1000, bottom / 792 * 1000]}
+    cl = _figure_content_list(tmp_path, [block])
+    out = tmp_path / "figures"
+    manifest = pr.extract_pdf_figures(pdf, cl, out, dpi=600)
+    assert manifest["n_figures"] == 1
+    record = manifest["figures"][0]
+    assert record["method"] == "embedded"
+    assert (record["width"], record["height"]) == (1200, 800)
+    assert (out / record["path"]).read_bytes() == jpeg, "the original bytes must survive"
+
+
+def test_source_pdf_figures_render_vector_regions_at_the_requested_dpi(tmp_path: Path) -> None:
+    """Path (a): nothing embedded over the region -> render the page at the requested
+    DPI and crop.  More pixels, not more detail; the pixel width follows the region."""
+    jpeg = _tiny_jpeg(tmp_path, 1200, 800)
+    pdf = _minimal_pdf(tmp_path, jpeg, (1200, 800), (100.0, 100.0, 400.0, 300.0))
+    region = (72.0, 400.0, 360.0, 600.0)          # empty area -> render path
+    block = {"type": "chart", "page_idx": 0, "img_path": "images/b.jpg",
+             "bbox": [region[0] / 612 * 1000, region[1] / 792 * 1000,
+                      region[2] / 612 * 1000, region[3] / 792 * 1000]}
+    out = tmp_path / "figures"
+    manifest = pr.extract_pdf_figures(pdf, _figure_content_list(tmp_path, [block]),
+                                      out, dpi=600)
+    record = manifest["figures"][0]
+    assert record["method"] == "render" and record["rendered_dpi"] == 600
+    expected = (region[2] - region[0]) * 600 / 72
+    assert abs(record["width"] - expected) <= 2, (record["width"], expected)
+
+
+def test_source_pdf_figures_are_deterministic_and_timestamp_free(tmp_path: Path) -> None:
+    jpeg = _tiny_jpeg(tmp_path, 600, 400)
+    pdf = _minimal_pdf(tmp_path, jpeg, (600, 400), (100.0, 100.0, 300.0, 200.0))
+    block = {"type": "image", "page_idx": 0, "img_path": "images/a.jpg",
+             "bbox": [100 / 612 * 1000, 100 / 792 * 1000, 300 / 612 * 1000, 200 / 792 * 1000]}
+    cl = _figure_content_list(tmp_path, [block])
+    first = pr.extract_pdf_figures(pdf, cl, tmp_path / "one")
+    second = pr.extract_pdf_figures(pdf, cl, tmp_path / "two")
+    assert first == second
+    key = first["figures"][0]["path"]
+    assert (tmp_path / "one" / key).read_bytes() == (tmp_path / "two" / key).read_bytes()
+    import re as _re
+    payload = json.dumps(first)
+    assert not _re.search(r"\b\d{4}-\d{2}-\d{2}", payload), "no wall-clock date"
+    assert "timestamp" not in payload and "merged_at" not in payload

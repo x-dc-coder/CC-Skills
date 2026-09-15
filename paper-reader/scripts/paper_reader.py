@@ -2204,6 +2204,222 @@ def copy_figure_images(
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+#     Figure  —     PDF (issue #16)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+#: MinerU's content_list bbox is normalized to a 0-1000 page box, NOT PDF points:
+#: scoring both hypotheses against the PDF's own image placements gives the
+#: normalized one ~4x the IoU on 22 of the 23 corpus papers that have any embedded
+#: bitmap at all (measured 2026-09-15).  points = bbox / 1000 * page size.
+_BBOX_SCALE: Final = 1000.0
+#: Below this an XObject is a mask/noise tile rather than a figure.
+_MIN_EMBEDDED_PX: Final = 8
+#: An embedded bitmap is accepted as THE figure only when it covers this share of
+#: the block region: a partial overlap would crop the figure or pull in a neighbour.
+_EMBED_OVERLAP_MIN: Final = 0.5
+_FIGURE_DPI_DEFAULT: Final = 600
+
+
+def _rect_coverage(block: tuple[float, float, float, float],
+                   cand: tuple[float, float, float, float]) -> float:
+    """Share of 'block' covered by 'cand' (asymmetric on purpose)."""
+    ix0, iy0 = max(block[0], cand[0]), max(block[1], cand[1])
+    ix1, iy1 = min(block[2], cand[2]), min(block[3], cand[3])
+    if ix1 <= ix0 or iy1 <= iy0:
+        return 0.0
+    area = (block[2] - block[0]) * (block[3] - block[1])
+    return ((ix1 - ix0) * (iy1 - iy0) / area) if area else 0.0
+
+
+def _png_size(data: bytes) -> tuple[int, int] | None:
+    if data[:8] != b"\x89PNG\r\n\x1a\n" or data[12:16] != b"IHDR":
+        return None
+    w = int.from_bytes(data[16:20], "big")
+    h = int.from_bytes(data[20:24], "big")
+    return (w, h) if w and h else None
+
+
+def _jpeg_size(data: bytes) -> tuple[int, int] | None:
+    if data[:2] != b"\xff\xd8":
+        return None
+    i = 2
+    while i < len(data) - 9:
+        if data[i] != 0xFF:
+            i += 1
+            continue
+        marker = data[i + 1]
+        if marker in (0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7,
+                      0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF):
+            h = int.from_bytes(data[i + 5:i + 7], "big")
+            w = int.from_bytes(data[i + 7:i + 9], "big")
+            return (w, h) if w and h else None
+        if marker in (0xD8, 0xD9) or 0xD0 <= marker <= 0xD7:
+            i += 2
+            continue
+        i += 2 + int.from_bytes(data[i + 2:i + 4], "big")
+    return None
+
+
+def _image_size(data: bytes) -> tuple[int, int] | None:
+    return _png_size(data) or _jpeg_size(data)
+
+
+def _embedded_bytes(stream, attrs: dict) -> tuple[bytes, str] | None:
+    """Original bytes of an embedded XObject, or None when it cannot be read losslessly.
+
+    DCTDecode is the interesting case: the raw stream IS the original JPEG, so the
+    figure is taken without ever re-encoding it.  Other filters are decoded and
+    re-encoded as PNG (lossless container, no pixel resampling).
+    """
+    from pdfminer.pdftypes import resolve1  # noqa: PLC0415 - optional dependency
+    filt = str(resolve1(attrs.get("Filter")) or "").upper()
+    raw = getattr(stream, "rawdata", b"") or b""
+    if "DCT" in filt and _jpeg_size(raw):
+        return raw, "jpg"
+    try:
+        import io  # noqa: PLC0415
+        from PIL import Image  # noqa: PLC0415
+        width = int(resolve1(attrs.get("Width")) or 0)
+        height = int(resolve1(attrs.get("Height")) or 0)
+        if width <= _MIN_EMBEDDED_PX or height <= _MIN_EMBEDDED_PX:
+            return None
+        colorspace = str(resolve1(attrs.get("ColorSpace")) or "").upper()
+        mode = "RGB" if "RGB" in colorspace else ("L" if "G" in colorspace else "RGB")
+        image = Image.frombytes(mode, (width, height), stream.get_data())
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+        return buffer.getvalue(), "png"
+    except Exception:  # noqa: BLE001 - an undecodable XObject falls back to rendering
+        return None
+
+
+def _page_embedded_figures(pdf_path: Path) -> dict[int, list[dict]]:
+    """{page_index: [{"rect", "data", "ext", "size"}]} for the real embedded bitmaps."""
+    import pdfplumber  # noqa: PLC0415 - optional dependency (skills venv)
+
+    out: dict[int, list[dict]] = {}
+    with pdfplumber.open(pdf_path) as doc:
+        for index, page in enumerate(doc.pages):
+            found = []
+            for item in page.images:
+                src = item.get("srcsize") or (0, 0)
+                if src[0] <= _MIN_EMBEDDED_PX or src[1] <= _MIN_EMBEDDED_PX:
+                    continue
+                stream = item.get("stream")
+                attrs = getattr(stream, "attrs", {}) or {}
+                decoded = _embedded_bytes(stream, attrs)
+                if decoded is None:
+                    continue
+                data, ext = decoded
+                size = _image_size(data)
+                if size is None:
+                    continue
+                found.append({"rect": (item["x0"], item["top"], item["x1"], item["bottom"]),
+                              "data": data, "ext": ext, "size": size})
+            if found:
+                out[index] = found
+    return out
+
+
+def extract_pdf_figures(
+    pdf_path: Path,
+    content_list_path: Path,
+    out_dir: Path,
+    *,
+    dpi: int = _FIGURE_DPI_DEFAULT,
+) -> dict:
+    """Write print-usable figure copies from the SOURCE pdf (issue #16).
+
+    Combination of the issue's paths (a) and (b): an embedded bitmap that already
+    covers the block region is written at its NATIVE resolution (no resampling);
+    everything else (vector figures, tiled graphics, undecodable XObjects) is
+    rendered from the page at 'dpi' and cropped to the block region.
+
+    Rendering raises the PIXEL count, not the information content: the figure was
+    printed at that physical size, so a 600 dpi render only guarantees print
+    sampling density.  The manifest and SKILL.md say so, because more pixels is not
+    more detail.
+
+    Returns the manifest, which is also written to _FIGURE_SOURCE.json.
+    """
+    import json as _json  # noqa: PLC0415
+
+    blocks = _json.loads(content_list_path.read_text(encoding="utf-8"))
+    figures = [b for b in blocks
+               if isinstance(b, dict) and b.get("type") in ("image", "chart") and b.get("bbox")]
+    out_dir.mkdir(parents=True, exist_ok=True)
+    embedded = _page_embedded_figures(pdf_path)
+
+    import pypdfium2 as pdfium  # noqa: PLC0415 - optional dependency
+    pdf = pdfium.PdfDocument(str(pdf_path))
+    page_sizes = [tuple(pdf[i].get_size()) for i in range(len(pdf))]
+    by_page: dict[int, list[tuple[int, dict]]] = {}
+    for order, block in enumerate(figures):
+        page_index = int(block.get("page_idx") or 0)
+        if page_index < len(page_sizes):
+            by_page.setdefault(page_index, []).append((order, block))
+
+    records = []
+    # One page bitmap at a time, released before the next page: a 600 dpi letter page
+    # is ~134 MB in memory, so caching every figure page of a paper swaps before the
+    # paper finishes (measured: the first full-corpus run stalled).
+    for page_index in sorted(by_page):
+        bitmap = None
+        page = None
+        for order, block in by_page[page_index]:
+            width_pt, height_pt = page_sizes[page_index]
+            x0, y0, x1, y1 = (float(v) for v in block["bbox"])
+            region = (x0 / _BBOX_SCALE * width_pt, y0 / _BBOX_SCALE * height_pt,
+                      x1 / _BBOX_SCALE * width_pt, y1 / _BBOX_SCALE * height_pt)
+            candidates = embedded.get(page_index, [])
+            best = max(candidates, key=lambda c: _rect_coverage(region, c["rect"]), default=None)
+            name = f"fig-{page_index + 1:03d}-{order:03d}-{block.get('type', 'image')}"
+            record = {"figure_id": name, "page": page_index + 1, "block_index": order,
+                      "region_pt": [round(v, 2) for v in region], "rendered_dpi": None}
+            if best is not None and _rect_coverage(region, best["rect"]) >= _EMBED_OVERLAP_MIN:
+                target = out_dir / f"{name}-embedded.{best['ext']}"
+                target.write_bytes(best["data"])
+                record.update({"method": "embedded", "path": target.name,
+                               "width": best["size"][0], "height": best["size"][1]})
+            else:
+                if bitmap is None:
+                    page = pdf[page_index]          # keep the page alive for the bitmap
+                    bitmap = page.render(scale=dpi / 72.0)
+                scale = dpi / 72.0
+                box = (max(0, int(region[0] * scale)), max(0, int(region[1] * scale)),
+                       min(bitmap.width, int(region[2] * scale)),
+                       min(bitmap.height, int(region[3] * scale)))
+                if box[2] <= box[0] or box[3] <= box[1]:
+                    continue
+                image = bitmap.to_pil().crop(box)
+                target = out_dir / f"{name}-render-{dpi}dpi.png"
+                image.save(target, format="PNG")
+                record.update({"method": "render", "path": target.name,
+                               "width": image.width, "height": image.height,
+                               "rendered_dpi": dpi})
+            records.append(record)
+        bitmap = None
+
+    manifest = {
+        "schema_version": "1.0",
+        "source_pdf": pdf_path.name,
+        "figure_source": "pdf",
+        "dpi": dpi,
+        "n_figures": len(records),
+        "n_embedded": sum(1 for r in records if r["method"] == "embedded"),
+        "n_rendered": sum(1 for r in records if r["method"] == "render"),
+        "note": ("embedded = the PDF's own bitmap at native resolution (no resampling); "
+                 "render = page rendered at the requested dpi and cropped - more pixels, "
+                 "not more detail than the PDF holds"),
+        "figures": sorted(records, key=lambda r: r["figure_id"]),
+    }
+    (out_dir / "_FIGURE_SOURCE.json").write_text(
+        _json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8")
+    return manifest
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 #      — v2   (  /  /  )
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -2619,6 +2835,8 @@ def process_one(
     state: PipelineState | None = None,
     force: bool = False,
     textlayer_probe: bool = True,
+    figure_source: str = "engine",
+    figure_dpi: int = _FIGURE_DPI_DEFAULT,
 ) -> PaperResult:
     """   PDF  ."""
     stem = pdf.stem
@@ -2788,6 +3006,22 @@ def process_one(
             print(f"  [{stem}] ⚠️    : {e}", file=sys.stderr)
             images_copied = -1
 
+        source_figures = None
+        if figure_source == "pdf" and mineru_md_p:
+            # Issue #16: keep the engine copies AND add a print-usable set from the
+            # source PDF, so the two can be compared instead of one silently
+            # replacing the other.
+            content_list_p = mineru_md_p.parent / f"{mineru_md_p.stem}_content_list.json"
+            if not content_list_p.exists():
+                fallback = sorted(mineru_md_p.parent.glob("*_content_list.json"))
+                content_list_p = fallback[0] if fallback else content_list_p
+            try:
+                source_figures = extract_pdf_figures(
+                    pdf, content_list_p, merged_dir / "figures", dpi=figure_dpi)
+            except Exception as exc:  # noqa: BLE001 - a figure path must never fail the paper
+                print(f"  [{stem}] source-PDF figures failed: {exc}", file=sys.stderr)
+                source_figures = None
+
         phase2_status = "degraded" if not (marker_ok and mineru_ok) else "done"
         phase2_record = {
             "status": phase2_status,
@@ -2795,6 +3029,10 @@ def process_one(
             "images_copied": images_copied,
             "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         }
+        if source_figures is not None:
+            phase2_record["source_pdf_figures"] = {
+                key: source_figures[key]
+                for key in ("n_figures", "n_embedded", "n_rendered", "dpi")}
         if images_copied < 0:
             phase2_record["img_copy_error"] = str(e) if 'e' in dir() else "unknown"
 
@@ -3021,6 +3259,14 @@ def main() -> int:
                     help="run the stage 1.5 text-layer probe for already-converted "
                          "papers (no engines, no GPU): writes _textlayer_probe.json "
                          "next to each existing _META.json")
+    ap.add_argument("--figure-source", choices=["engine", "pdf"], default="engine",
+                    help="engine = keep the Marker/MinerU image copies (default); "
+                         "pdf = additionally extract print-usable figures from the "
+                         "source PDF (embedded bitmaps at native size, the rest "
+                         "rendered at --figure-dpi)")
+    ap.add_argument("--figure-dpi", type=int, default=_FIGURE_DPI_DEFAULT, metavar="N",
+                    help=f"DPI used by --figure-source pdf when a figure is rendered "
+                         f"(default {_FIGURE_DPI_DEFAULT})")
     ap.add_argument("--no-textlayer-probe", dest="textlayer_probe",
                     action="store_false",
                     help="skip the stage 1.5 text-layer probe for this run "
@@ -3257,6 +3503,8 @@ def main() -> int:
                     state=state,
                     force=args.force,
                     textlayer_probe=args.textlayer_probe,
+                    figure_source=args.figure_source,
+                    figure_dpi=args.figure_dpi,
                 )
                 results.append(r)
             except KeyboardInterrupt:
@@ -3303,6 +3551,8 @@ def main() -> int:
                         state=state,
                         force=args.force,
                         textlayer_probe=args.textlayer_probe,
+                        figure_source=args.figure_source,
+                        figure_dpi=args.figure_dpi,
                     )
                 except Exception as e:
                     print(f"  ERROR: {e}", file=sys.stderr)
