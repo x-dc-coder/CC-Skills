@@ -150,6 +150,14 @@ def test_find_entry_unknown_name_exits():
 def test_load_registry_reads_the_shipped_file():
     registry = ac.load_registry()
     names = sorted(entry["name"] for entry in registry["corpora"])
-    assert names == ["vrp-en", "ycgl-zh"]
+    # dzz-revision-pair is a local-only real revision pair (issue #22 field
+    # use): registered so the audit layer knows it exists, but it carries no
+    # expected_metrics to compare against.
+    assert names == ["dzz-revision-pair", "vrp-en", "ycgl-zh"]
     for entry in registry["corpora"]:
-        assert entry["corpus_id"] and entry["recorded_with"] and entry["expected_metrics"]
+        # every registered corpus must be identifiable and version-pinned; only
+        # audited baselines additionally carry expected_metrics (a local-only
+        # provenance pair is registered for traceability, not for comparison).
+        assert entry["corpus_id"] and entry["recorded_with"]
+        if entry["name"] != "dzz-revision-pair":
+            assert entry["expected_metrics"]

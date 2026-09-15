@@ -255,6 +255,40 @@
         "digest": "6ac89bdc6575d992e510629f1d67c7cc27a08201dc2c7385cec4daaccc155547",
         "n_entries": 49
       }
+    },
+    {
+      "name": "dzz-revision-pair",
+      "path": "/mnt/g/文献资料/多柱融合/（用户本地；见 paper-conversion 与 修改稿v2.docx）",
+      "purpose": "真实返修回归对：同一论文的「修改稿v2 docx」与「见刊 PDF」，加 回复2.docx 的审稿意见。验证 canonical_import 能吃无 Heading 样式的中文模板 docx，且返修→见刊的指标移动方向可复现。版权属于用户，不入库",
+      "corpus_id": "dzz-revision-pair-local-only",
+      "recorded_with": {
+        "profiler_version": "2.5",
+        "schema_version": "2.4",
+        "text_metrics_version": "1.6"
+      },
+      "expected_metrics": {},
+      "source_sha256": {
+        "dzz-v2-revision": "a5f73a9d695d5fb560182acae74b3a3ee293763af374fa35f7416ce27e81f2b3",
+        "dzz-published": "7f29447e4746b4548e37a0bdc3863ab5e63b9fbadcb2b90c9a41e534672228dd"
+      },
+      "papers": [
+        {
+          "id": "dzz-v2-revision",
+          "source": "基于多柱特征融合的点云目标检测方法_修改稿v2.docx",
+          "via": "canonical_import（docx，修复后识别 16 个数字编号标题）"
+        },
+        {
+          "id": "dzz-published",
+          "source": "基于多柱特征融合的点云目标检测方法_傅梓寒.pdf",
+          "via": "paper-reader（MinerU，47s）"
+        }
+      ],
+      "known_defects": [
+        "修改稿v2 的章节标题用 Normal 样式（中文模板通病），导入器修复前整篇被判 front_matter、语言检测为 unknown、sections 全空；修复后 cjk_ratio 0.83、zh",
+        "profiler 的标准章节名映射未覆盖该稿的标题（1 引言/3.1 柱体编码器…），只归出 4 个通用章节；这不影响指标测量，但 by_section 分层不完整，故本对不做章节级断言",
+        "修改稿v2 无参考文献区块（reference_count 0），见刊 PDF 有 13 条；引用类指标不可跨版本比较",
+        "回复2.docx 的审稿意见（补充 DAIR-V2X 实验、明确研究动机）只在 v2→见刊之间部分落实：见刊版 M-PAS-09 反而更高（0.0461→0.0829），说明返修加了实验描述但被动语态惯例不变；这不是回归，是真实修订模式"
+      ]
     }
   ],
   "draft_samples": [

@@ -368,6 +368,37 @@ def markdown_to_blocks(text: str, *, slim: bool = False) -> list[dict[str, JsonV
 # docx parsing
 # ---------------------------------------------------------------------------
 
+#: A numbered Chinese section heading in a docx that does not use real Heading
+#: styles: "1 引言", "3.1 柱体编码器", "4实验与结果".  Required because real
+#: revision manuscripts (the 返修稿 this importer exists to serve) are exported
+#: from Chinese templates whose headings sit in Normal.  Deliberately strict so
+#: it cannot swallow prose: no terminator, no digit after the title, <= 24 chars.
+_ZH_NUMBERED_HEADING = re.compile(r"^(\d{1,2}(?:\.\d{1,2}){0,3})\s*"
+                                 r"([^\d].{0,23})$")
+#: Characters that, if present, prove a line is a sentence and not a heading.
+_SENTENCE_TERMINATORS = "。！？!?…;；"
+
+
+def _docx_heading_level(text: str) -> int | None:
+    """Level 1-4 for a numbered Chinese heading, else None.
+
+    Only fires when the line carries no sentence terminator and the title part
+    is short - a real prose sentence starting with a number ("3 个仓库被使用。")
+    fails both checks and stays body text.
+    """
+    if any(ch in text for ch in _SENTENCE_TERMINATORS):
+        return None
+    match = _ZH_NUMBERED_HEADING.match(text)
+    if match is None:
+        return None
+    numbering = match.group(1)
+    title = match.group(2).strip()
+    if not title:
+        return None
+    # "1.2.3.4 实验" is 4 levels deep; clamp to the 3 the profiler uses
+    return min(len(numbering.split(".")), 3)
+
+
 def docx_to_blocks(path: Path, *, slim: bool = False) -> list[dict[str, JsonValue]]:
     """Convert a .docx to canonical blocks (python-docx, already a dependency).
 
@@ -396,7 +427,14 @@ def docx_to_blocks(path: Path, *, slim: bool = False) -> list[dict[str, JsonValu
             blocks.append({"type": "text", "text": text,
                            "text_level": min(int(heading.group(1)), 3)})
         else:
-            blocks.append({"type": "text", "text": text})
+            # A Chinese template heading in Normal style: numbered, short,
+            # terminator-free.  Detected, never guessed from the style table.
+            zh_level = _docx_heading_level(text)
+            if zh_level is not None:
+                blocks.append({"type": "text", "text": text,
+                               "text_level": zh_level})
+            else:
+                blocks.append({"type": "text", "text": text})
     for table in document.tables:
         rows: list[list[str]] = []
         for row in table.rows:

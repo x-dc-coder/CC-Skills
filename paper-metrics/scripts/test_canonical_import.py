@@ -205,6 +205,37 @@ def test_docx_headings_paragraphs_and_table(tmp_path: Path) -> None:
     assert doc_model.html_to_text(table_html).split() == ["a", "b", "1", "2"]
 
 
+def test_docx_numbered_zh_heading_in_normal_style(tmp_path: Path) -> None:
+    """A real 返修稿 export from a Chinese template puts headings in Normal.
+
+    "1 引言" / "3.1.2 多柱特征融合模块" are headings; a prose sentence starting
+    with a digit is not.  Without this probe the whole document becomes
+    front_matter, every section vanishes and the paper measures as language
+    unknown - the failure this test pins was found on a real manuscript.
+    """
+    import docx as python_docx
+
+    source = tmp_path / "zh.docx"
+    document = python_docx.Document()
+    document.add_paragraph("1 引言")
+    document.add_paragraph("3.1.2 多柱特征融合模块")
+    document.add_paragraph("4实验与结果")
+    # prose that must NOT become a heading: terminator present, and long
+    document.add_paragraph("3 个仓库被使用，且订单总量达到 200 个。")
+    document.add_paragraph("2.5 是本实验得到的平均距离，见表 3。")
+    document.save(str(source))
+
+    blocks = ci.docx_to_blocks(source)
+    levels = {b["text"]: b.get("text_level") for b in blocks
+              if b.get("type") == "text"}
+    assert levels["1 引言"] == 1
+    assert levels["3.1.2 多柱特征融合模块"] == 3
+    assert levels["4实验与结果"] == 1
+    for prose in ("3 个仓库被使用，且订单总量达到 200 个。",
+                  "2.5 是本实验得到的平均距离，见表 3。"):
+        assert levels[prose] is None, prose
+
+
 # ---------------------------------------------------------------------------
 # Determinism + layout + provenance
 # ---------------------------------------------------------------------------
