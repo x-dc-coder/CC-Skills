@@ -164,6 +164,10 @@ METRIC_IDS = (
     "M-CONN-30c",
     "M-CONN-30k",
     "M-CONN-30r",
+    # PDTB temporal/condition senses (issue #23): Chinese-only; the two
+    # groups are loaded but never enter M-CONN-30 (which stays 30c+30k+30r).
+    "M-CONN-30t",
+    "M-CONN-30q",
     "M-AWR-03",
     "M-PAS-09",
     "M-NOM-10",
@@ -205,6 +209,10 @@ _METRIC_LANGUAGE_CAPABILITY: dict[str, tuple[str, ...]] = {
     "M-CONN-30c": ("en", "zh"),
     "M-CONN-30k": ("en", "zh"),
     "M-CONN-30r": ("en", "zh"),
+    # PDTB temporal/condition (issue #23): zh-only - the English v1 release
+    # has no such groups, so en gets null + CAPABILITY_NOT_SUPPORTED.
+    "M-CONN-30t": ("zh",),
+    "M-CONN-30q": ("zh",),
     "M-AWR-03": ("en", "zh"),
     "M-PAS-09": ("en", "zh"),
     # M-NOM-10(zh): Chinese derives nouns from verbs by ZERO derivation
@@ -318,6 +326,8 @@ _METRIC_UNITS = {
     "M-CONN-30c": _UNIT_PER_1000,
     "M-CONN-30k": _UNIT_PER_1000,
     "M-CONN-30r": _UNIT_PER_1000,
+    "M-CONN-30t": _UNIT_PER_1000,
+    "M-CONN-30q": _UNIT_PER_1000,
     "M-AWR-03": _UNIT_RATIO,
     "M-PAS-09": _UNIT_RATIO,
     "M-NOM-10": _UNIT_RATIO,
@@ -341,6 +351,8 @@ _EVIDENCE_RULES = {
     "M-CONN-30c": "unit=phrase_span|match=longest_nonoverlapping" + _EVIDENCE_SUFFIX,
     "M-CONN-30k": "unit=phrase_span|match=longest_nonoverlapping" + _EVIDENCE_SUFFIX,
     "M-CONN-30r": "unit=phrase_span|match=longest_nonoverlapping" + _EVIDENCE_SUFFIX,
+    "M-CONN-30t": "unit=phrase_span|match=longest_nonoverlapping|group=temporal" + _EVIDENCE_SUFFIX,
+    "M-CONN-30q": "unit=phrase_span|match=longest_nonoverlapping|group=condition" + _EVIDENCE_SUFFIX,
     "M-AWR-03": "unit=phrase_span|match=longest_nonoverlapping" + _EVIDENCE_SUFFIX,
     "M-PAS-09": "unit=passive_phrase_span|filter=aux(+adverb<=2)+past_participle|lead=perfect_or_modal" + _EVIDENCE_SUFFIX,
     "M-NOM-10": "unit=token_span|filter=suffix_and_verb_base_and_not_denylisted" + _EVIDENCE_SUFFIX,
@@ -2038,11 +2050,18 @@ def _zh_metrics(text: str, sentences: Sequence[Span], language: dict[str, Any],
     hedge_hits = _match_cjk_entries(sentences, hedge_entries)
     booster_hits = _match_cjk_entries(sentences, booster_entries)
     academic_hits = _match_cjk_entries(sentences, academic_entries)
+    # The three M-CONN-30 groups plus the two PDTB derivatives (issue #23).
+    # They are matched together so all five groups stay mutually exclusive,
+    # but M-CONN-30 itself is assembled over _CONN30_GROUPS only - the
+    # 30c+30k+30r identity must survive the new groups unchanged.
     group_specs = (
         ("M-CONN-30c", "contrastive"),
         ("M-CONN-30k", "causal"),
         ("M-CONN-30r", "result"),
+        ("M-CONN-30t", "temporal"),
+        ("M-CONN-30q", "condition"),
     )
+    _CONN30_GROUPS = {"contrastive", "causal", "result"}
     group_entries = {group: _connector_entries(bundle, group) for _, group in group_specs}
     group_hits = _match_cjk_groups(sentences, group_entries)
     passive_hits = _cjk_passive_hits(sentences)
@@ -2079,10 +2098,14 @@ def _zh_metrics(text: str, sentences: Sequence[Span], language: dict[str, Any],
             n_lexicon_entries=len(entries), denominator_unit="cjk-units")
         computed[spec] = component_records[spec]
 
-    all_connector_hits = sorted(hit for _, group in group_specs
+    # M-CONN-30 totals only the three frozen groups; 30t/30q are separate
+    # metrics and must never feed the union total.
+    conn30_specs = [(spec, group) for spec, group in group_specs
+                    if group in _CONN30_GROUPS]
+    all_connector_hits = sorted(hit for _, group in conn30_specs
                                 for hit in group_hits[group])
-    component_values = [component_records[spec]["value"] for spec, _ in group_specs]
-    total_n = sum(len(group_hits[group]) for _, group in group_specs)
+    component_values = [component_records[spec]["value"] for spec, _ in conn30_specs]
+    total_n = sum(len(group_hits[group]) for _, group in conn30_specs)
     total_warnings: list[str] = []
     if n_units <= 0:
         total_warnings.append(
@@ -2099,8 +2122,13 @@ def _zh_metrics(text: str, sentences: Sequence[Span], language: dict[str, Any],
         evidence=_evidence(all_connector_hits, text, total_n),
         warnings=total_warnings, denominator_unit="cjk-units",
         components={spec: {"value": component_records[spec]["value"],
-                           "n": component_records[spec]["n"]} for spec, _ in group_specs},
+                           "n": component_records[spec]["n"]} for spec, _ in conn30_specs},
     )
+
+    # PDTB derivatives (issue #23): separate per-1000-cjk-unit rates, emitted
+    # by the same component loop above (empty-group warning included).
+    computed["M-CONN-30t"] = component_records["M-CONN-30t"]
+    computed["M-CONN-30q"] = component_records["M-CONN-30q"]
 
     computed["M-AWR-03"] = _density("M-AWR-03", academic_hits, academic_entries)
     abstract_hits = _cjk_abstract_noun_hits(sentences)

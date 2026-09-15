@@ -59,6 +59,8 @@ class FakeBundle:
                  contrastive=("however", "in contrast", "whereas"),
                  causal=("because", "due to"),
                  result=("therefore", "as a result", "consequently"),
+                 temporal=("meanwhile", "then", "after that", "subsequently"),
+                 condition=("if", "unless", "provided that", "only if"),
                  suffixes=("tion", "sion", "ment", "ness", "ity", "ance", "ence"),
                  verb_bases=("create", "measure", "develop", "apply", "decide", "compute",
                              "inform", "specify", "achieve", "perform", "propose",
@@ -72,6 +74,8 @@ class FakeBundle:
             "contrastive": FakeLexicon(tuple(contrastive)),
             "causal": FakeLexicon(tuple(causal)),
             "result": FakeLexicon(tuple(result)),
+            "temporal": FakeLexicon(tuple(temporal)),
+            "condition": FakeLexicon(tuple(condition)),
         }
         self.nominalization_suffixes = FakeLexicon(tuple(suffixes))
         self.nominalization_verb_bases = FakeLexicon(tuple(verb_bases))
@@ -389,7 +393,7 @@ def test_mtld_pinned_parameters_are_frozen():
 def test_every_metric_id_is_present_with_contract_fields():
     metrics = tm.compute_text_metrics(SAMPLE_TEXT, BUNDLE)
     assert set(metrics) == set(tm.METRIC_IDS)
-    assert len(tm.METRIC_IDS) == 20  # 13 frozen + 4 clause-layer (#22) + 3 stance (#23) placeholders
+    assert len(tm.METRIC_IDS) == 22  # 13 frozen + 4 clause (#22) + 3 stance (#23) + 2 PDTB connectors (#23)
     for metric_id, record in metrics.items():
         assert REQUIRED_FIELDS <= set(record), metric_id
         assert record["metric_spec"] == metric_id
@@ -724,6 +728,9 @@ ENGLISH_GOLDEN = {
     "M-STNC-41": [None, 0, 0],
     "M-STNC-42": [None, 0, 0],
     "M-STNC-43": [None, 0, 0],
+    # PDTB temporal/condition (#23): zh-only, so English is suppressed.
+    "M-CONN-30t": [None, 0, 0],
+    "M-CONN-30q": [None, 0, 0],
 }
 
 
@@ -963,6 +970,31 @@ def test_real_corpus_excerpt_if_available():
                for m in ("M-HED-14", "M-BOO-15", "M-AWR-03", "M-NOM-10", "M-PAS-09", "M-TENSE-28"))
     print(f"corpus excerpt: {path.name} chars={len(text)}")
 
+
+def test_pdtb_connectors_never_leak_into_conn30():
+    """M-CONN-30 must stay exactly 30c+30k+30r once temporal/condition exist."""
+    # The PDTB groups (issue #23) are matched in the same pass so all five
+    # stay exclusive, but the union total must ignore them: a temporal hit
+    # that silently inflated M-CONN-30 would break the frozen identity.
+    loader = pytest.importorskip("lexicon_loader")
+    try:
+        zh = loader.load_lexicons(language="zh")
+    except Exception as exc:
+        pytest.skip("zh lexicon release unavailable: %s: %s" % (type(exc).__name__, exc))
+    text = ("首先提出方法。如果约束满足，则可行。与此同时，结果如下。"
+            "因此该方法显著有效。随后，实验完成。只有满足条件，才能收敛。")
+    metrics = tm.compute_text_metrics(text, zh)
+    parts = (metrics["M-CONN-30c"]["value"] + metrics["M-CONN-30k"]["value"]
+             + metrics["M-CONN-30r"]["value"])
+    assert metrics["M-CONN-30"]["value"] == pytest.approx(parts), \
+        "M-CONN-30 must equal 30c+30k+30r exactly"
+    assert metrics["M-CONN-30t"]["n"] >= 1, "temporal hits must register"
+    assert metrics["M-CONN-30q"]["n"] >= 1, "condition hits must register"
+    assert metrics["M-CONN-30t"]["unit"] == tm._UNIT_PER_1000_CJK_UNITS
+    assert set(metrics["M-CONN-30"]["components"]) == {
+        "M-CONN-30c", "M-CONN-30k", "M-CONN-30r"}, \
+        "components must list the frozen three only"
+    assert "M-CONN-30t" not in metrics["M-CONN-30"]["components"]
 
 # ---------------------------------------------------------------------------
 # Stance layer (issue #23): INFERRED, calibrated on the frozen annotation set.
