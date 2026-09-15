@@ -145,7 +145,7 @@ import language_registry
 if TYPE_CHECKING:  # pragma: no cover - typing only, never executed
     from lexicon_loader import LexiconBundle
 
-TEXT_METRICS_VERSION = "1.5"  # 1.5: Chinese clause layer (issue #22): M-CLS-31/32 + sentence-length P90/P95
+TEXT_METRICS_VERSION = "1.6"  # 1.5: Chinese clause layer (issue #22): M-CLS-31/32 + sentence-length P90/P95
 
 _LONG_SENTENCE_WORDS = 40
 _MTLD_TTR_THRESHOLD = 0.720
@@ -340,7 +340,13 @@ _TERMINATORS = ".!?"
 #: CJK sentence terminators. Kept separate from _TERMINATORS because their
 #: boundary rule differs: Chinese prose puts no space after the terminator, so
 #: the ASCII rule ("the stop must be followed by whitespace") would never fire.
-_CJK_TERMINATORS = "\u3002\uff01\uff1f\u2026"  # 。！？…
+#: The half-width stop is included (issue #22 follow-up): some CNKI journals
+#: terminate Chinese sentences with "." instead of "。", and omitting it merges
+#: every such pair of sentences and inflates sentence-length metrics.  It is
+#: guarded below by _is_cjk_half_stop_end (digits and ASCII letters around it
+#: keep the decimal / abbreviation reading), so an English paper that reaches
+#: this branch is unaffected.
+_CJK_TERMINATORS = "\u3002\uff01\uff1f\u2026."  # 。！？….
 #: Closing punctuation that belongs to the sentence it terminates ("好。」").
 _CJK_TRAILING_CLOSERS = "\u300d\u300f\u3011\u300b\uff09\uff3d\uff1e\u3009"  # 」』】》（）＞〉
 #: A run of terminators ("……", "！！") ends one sentence at its last character;
@@ -512,6 +518,26 @@ def _is_sentence_end(text: str, index: int) -> bool:
     return True
 
 
+def _is_cjk_half_stop_end(text: str, index: int) -> bool:
+    """A half-width "." in CJK mode ends a sentence only when it is not part of
+    a number, a citation-style run or an ASCII abbreviation.
+
+    Rejected as boundaries: "3.14", "v1.2", "[12].5", "U.S." and the like.  The
+    rule is deliberately conservative - a true sentence stop in Chinese prose is
+    preceded by a CJK character or a closing bracket and followed by whitespace
+    or a CJK character.
+    """
+    prev = text[index - 1] if index > 0 else ""
+    nxt = text[index + 1] if index + 1 < len(text) else ""
+    if prev.isdigit() or nxt.isdigit():
+        return False
+    if prev.isascii() and prev.isalpha():
+        return False  # "U.S." / "et al." - ASCII abbreviation
+    if nxt.isascii() and nxt.isalpha() and not nxt.isspace():
+        return False
+    return True
+
+
 def _is_cjk_sentence_end(text: str, index: int) -> bool:
     """True when a CJK terminator at `index` ends a sentence.
 
@@ -520,6 +546,8 @@ def _is_cjk_sentence_end(text: str, index: int) -> bool:
     """
     nxt = text[index + 1] if index + 1 < len(text) else ""
     if nxt in _CJK_TERMINATORS:
+        return False
+    if text[index] == "." and not _is_cjk_half_stop_end(text, index):
         return False
     return True
 

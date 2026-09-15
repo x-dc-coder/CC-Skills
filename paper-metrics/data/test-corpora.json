@@ -19,13 +19,13 @@
         "profiler_version": "2.5",
         "schema_version": "2.4",
         "metric_spec_version": "1.0",
-        "text_metrics_version": "1.5",
+        "text_metrics_version": "1.6",
         "lexicon_version": "1.1",
         "lexicon_language": "en"
       },
       "expected_metrics": {
-        "M-SLEN-01": 26.157916,
-        "M-LSF-16": 0.116284,
+        "M-SLEN-01": 26.100766,
+        "M-LSF-16": 0.115905,
         "M-MTLD-02": 73.819095,
         "M-HED-14": 0.00576,
         "M-BOO-15": 0.005455,
@@ -34,7 +34,7 @@
         "M-CONN-30k": 0.866071,
         "M-CONN-30r": 1.687163,
         "M-AWR-03": 0.045327,
-        "M-PAS-09": 0.286362,
+        "M-PAS-09": 0.286131,
         "M-NOM-10": 0.024939,
         "M-TENSE-28": 0.496894,
         "M-PCNT-25": 89.990934,
@@ -61,7 +61,8 @@
         "英文语料的 citation_style 由 marker_markdown 参与判定，缺 marker 路径时会退化",
         "2026-09-15 重登记（issue #17）：附录上下文继承使 9/34 篇正文变短（合计 −57,714 字符），14 条期望值随之更新；profiler_version 2.4 → 2.5。ycgl-zh 不受影响（0/10 篇变化），仅同步 profiler_version。",
         "2026-09-15 重登记（issue #17/#18）：附录上下文继承改变正文口径（vrp-en 9/34 篇）；inputs 纳入图片 sha256（corpus_id 变化）；登记表新增 expected_corpus_warnings / expected_language_supported / expected_by_section / expected_section_skeleton。",
-        "2026-09-15 重登记（issue #22 分句层）：TEXT_METRICS_VERSION 1.4 → 1.5，新增 M-CLS-31/32 与 M-SLEN-34/35（仅中文）。vrp-en 的 13 个冻结英文指标逐位不变，4 个新指标为 null（故 expected_null_metrics 增加 4 条、NO_VALID_VALUES/N_LT_5/N_VALID_LT_3 各 +4）；ycgl-zh 的 4 个新指标有实测值，M-TENSE-28 仍是唯一 null 指标。"
+        "2026-09-15 重登记（issue #22 分句层）：TEXT_METRICS_VERSION 1.4 → 1.5，新增 M-CLS-31/32 与 M-SLEN-34/35（仅中文）。vrp-en 的 13 个冻结英文指标逐位不变，4 个新指标为 null（故 expected_null_metrics 增加 4 条、NO_VALID_VALUES/N_LT_5/N_VALID_LT_3 各 +4）；ycgl-zh 的 4 个新指标有实测值，M-TENSE-28 仍是唯一 null 指标。",
+        "2026-09-15 重登记（issue #22 后续，半角句点）：TEXT_METRICS_VERSION 1.5 → 1.6。发现《控制与决策》等 CNKI 期刊用半角 . 而非 。 结尾，原终止符集不含半角点导致句子合并、句长虚高（实测一篇 10740 字符仅切 53 句，修复后 86 句，+62%）。修复带护栏：数字间（3.14）、ASCII 缩写后（U.S. / et al.）不切。ycgl-zh（全角文本）所有值逐位不变；vrp-en 仅 3 个值微动（M-SLEN-01 26.157916→26.100766 即 −0.22%、M-PAS-09、M-LSF-16），均在小数点后第 4 位，英文路径不受影响。"
       ],
       "reproduce": [
         "cd ~/.claude/skills && uv run python paper-metrics/scripts/profile_papers.py --corpus \"<path>\" --out \"<out>\"",
@@ -99,14 +100,14 @@
           "method": 0.024159
         },
         "M-PAS-09": {
-          "experiments": 0.297468,
-          "introduction": 0.203455,
-          "method": 0.332365
+          "experiments": 0.297452,
+          "introduction": 0.203387,
+          "method": 0.332039
         },
         "M-SLEN-01": {
-          "experiments": 24.034758,
-          "introduction": 26.820543,
-          "method": 27.903467
+          "experiments": 23.980042,
+          "introduction": 26.761339,
+          "method": 27.886854
         }
       },
       "expected_section_skeleton": {
@@ -132,7 +133,7 @@
         "profiler_version": "2.5",
         "schema_version": "2.4",
         "metric_spec_version": "1.0",
-        "text_metrics_version": "1.5",
+        "text_metrics_version": "1.6",
         "lexicon_version": "1.1",
         "lexicon_language": "zh",
         "lexicon_release_version": "2.1-zh",
@@ -199,7 +200,8 @@
         "1 篇（考虑渔业生产区布局…）无 content_list.json → 只能作为转换失败样本",
         "_draft_validation*.json 与 _writing_contract.cn.yaml 是历史产物，口径早于 2026-09-13 的中文化改造，不可当基线",
         "2026-09-15 重登记（issue #17/#18）：附录上下文继承改变正文口径（vrp-en 9/34 篇）；inputs 纳入图片 sha256（corpus_id 变化）；登记表新增 expected_corpus_warnings / expected_language_supported / expected_by_section / expected_section_skeleton。",
-        "2026-09-15 重登记（issue #22 分句层）：TEXT_METRICS_VERSION 1.4 → 1.5，新增 M-CLS-31/32 与 M-SLEN-34/35（仅中文）。vrp-en 的 13 个冻结英文指标逐位不变，4 个新指标为 null（故 expected_null_metrics 增加 4 条、NO_VALID_VALUES/N_LT_5/N_VALID_LT_3 各 +4）；ycgl-zh 的 4 个新指标有实测值，M-TENSE-28 仍是唯一 null 指标。"
+        "2026-09-15 重登记（issue #22 分句层）：TEXT_METRICS_VERSION 1.4 → 1.5，新增 M-CLS-31/32 与 M-SLEN-34/35（仅中文）。vrp-en 的 13 个冻结英文指标逐位不变，4 个新指标为 null（故 expected_null_metrics 增加 4 条、NO_VALID_VALUES/N_LT_5/N_VALID_LT_3 各 +4）；ycgl-zh 的 4 个新指标有实测值，M-TENSE-28 仍是唯一 null 指标。",
+        "2026-09-15 重登记（issue #22 后续，半角句点）：TEXT_METRICS_VERSION 1.5 → 1.6。发现《控制与决策》等 CNKI 期刊用半角 . 而非 。 结尾，原终止符集不含半角点导致句子合并、句长虚高（实测一篇 10740 字符仅切 53 句，修复后 86 句，+62%）。修复带护栏：数字间（3.14）、ASCII 缩写后（U.S. / et al.）不切。ycgl-zh（全角文本）所有值逐位不变；vrp-en 仅 3 个值微动（M-SLEN-01 26.157916→26.100766 即 −0.22%、M-PAS-09、M-LSF-16），均在小数点后第 4 位，英文路径不受影响。"
       ],
       "reproduce": [
         "cd ~/.claude/skills && uv run python paper-metrics/scripts/profile_papers.py --corpus \"<path>\" --out \"<out>\"",

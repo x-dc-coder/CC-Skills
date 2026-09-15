@@ -378,7 +378,7 @@ def test_mtld_pinned_parameters_are_frozen():
     assert tm._LONG_SENTENCE_WORDS == 40
     # 1.1: pre-split non-prose masking changed the sentence denominators
     # (issues #2 / #3) -> the version must move with the numbers.
-    assert tm.TEXT_METRICS_VERSION == "1.5"
+    assert tm.TEXT_METRICS_VERSION == "1.6"
 
 
 # ---------------------------------------------------------------------------

@@ -125,6 +125,59 @@
         "clauses": []
       },
       "note": "no sentences, no clauses, no exception"
+    },
+    {
+      "id": "zh_half_stop_ends_sentence",
+      "text": "建立了多车场模型.首先采用混合编码，使问题变得更简洁.",
+      "expected": {
+        "n_sentences": 2,
+        "n_clauses": 3,
+        "clauses": [
+          "建立了多车场模型.",
+          "首先采用混合编码，",
+          "使问题变得更简洁."
+        ]
+      },
+      "note": "half-width stop terminates a Chinese sentence (some CNKI journals use . instead of 。); without it every such pair of sentences merges and inflates M-SLEN"
+    },
+    {
+      "id": "zh_decimal_not_terminator",
+      "text": "准确率达到 98.73，高于基线方法.",
+      "expected": {
+        "n_sentences": 1,
+        "n_clauses": 2,
+        "clauses": [
+          "准确率达到 98.73，",
+          "高于基线方法."
+        ]
+      },
+      "note": "a stop between digits is a decimal separator, not a boundary - the 98.73 must stay whole"
+    },
+    {
+      "id": "zh_ascii_abbreviation_not_terminator",
+      "text": "采用 U.S. 学者的 et al. 建议，改进算法.",
+      "expected": {
+        "n_sentences": 1,
+        "n_clauses": 2,
+        "clauses": [
+          "采用 U.S. 学者的 et al. 建议，",
+          "改进算法."
+        ]
+      },
+      "note": "a stop after ASCII letters is an abbreviation marker (U.S. / et al.), never a sentence end"
+    },
+    {
+      "id": "zh_version_number_not_terminator",
+      "text": "框架从 v1.2 升级到 v2.0，性能提升 12.5%.",
+      "expected": {
+        "n_sentences": 1,
+        "n_clauses": 2,
+        "clauses": [
+          "框架从 v1.2 升级到 v2.0，",
+          "性能提升 12.5%."
+        ]
+      },
+      "note": "version numbers and percentages keep their internal stops; only the final stop after % ends the sentence"
     }
   ]
 }
