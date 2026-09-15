@@ -145,7 +145,7 @@ import language_registry
 if TYPE_CHECKING:  # pragma: no cover - typing only, never executed
     from lexicon_loader import LexiconBundle
 
-TEXT_METRICS_VERSION = "1.4"  # 1.4: Chinese M-NOM-10 (abstract-noun suffix variant) -> 13/14 (issue #13)
+TEXT_METRICS_VERSION = "1.5"  # 1.5: Chinese clause layer (issue #22): M-CLS-31/32 + sentence-length P90/P95
 
 _LONG_SENTENCE_WORDS = 40
 _MTLD_TTR_THRESHOLD = 0.720
@@ -168,6 +168,11 @@ METRIC_IDS = (
     "M-PAS-09",
     "M-NOM-10",
     "M-TENSE-28",
+    # Clause layer (issue #22): Chinese only, see _METRIC_LANGUAGE_CAPABILITY.
+    "M-CLS-31",
+    "M-CLS-32",
+    "M-SLEN-34",
+    "M-SLEN-35",
 )
 
 #: A text is treated as Chinese (and therefore outside the validated language of
@@ -204,6 +209,13 @@ _METRIC_LANGUAGE_CAPABILITY: dict[str, tuple[str, ...]] = {
     "M-NOM-10": ("en", "zh"),
     # M-TENSE-28: Chinese has no tense at all - reporting a number would be a
     # fabricated measurement, so it stays unmeasurable for zh by design.
+    # Clause layer (issue #22): the boundary rules are Chinese-specific, so the
+    # metrics are validated for zh only.  English gets null +
+    # CAPABILITY_NOT_SUPPORTED, never a fabricated value.
+    "M-CLS-31": ("zh",),
+    "M-CLS-32": ("zh",),
+    "M-SLEN-34": ("zh",),
+    "M-SLEN-35": ("zh",),
 }
 _DEFAULT_METRIC_LANGUAGES: tuple[str, ...] = ("en",)
 #: Distinct from LANGUAGE_NOT_SUPPORTED: the language is measurable, this
@@ -215,6 +227,24 @@ _UNIT_CJK_UNITS_PER_SENTENCE = "cjk-units/sentence"
 #: Connector density for Chinese: hits per 1000 cjk-units (the Chinese analogue
 #: of "per-1000-words"; Chinese has no word boundaries).
 _UNIT_PER_1000_CJK_UNITS = "per-1000-cjk-units"
+#: Clause layer units (issue #22).  A Chinese clause is the text between two
+#: comma/semicolon/colon boundaries inside one sentence.
+_UNIT_CLAUSES_PER_SENTENCE = "clauses/sentence"
+_UNIT_CJK_UNITS_PER_CLAUSE = "cjk-units/clause"
+#: Clause separators for Chinese: ，；： plus their ASCII equivalents for mixed
+#: text.  A separator inside brackets or quotes is not a boundary (see
+#: _mask_brackets), and neither is one inside math or a keyword line.
+_CLAUSE_SEPARATORS = "\uff0c\uff1b\uff1a,;:"
+#: Bracket/quote pairs whose interior must not split a clause.
+_BRACKET_PAIRS = {
+    "\uff08": "\uff09", "(": ")",       # （ ）
+    "\u3010": "\u3011",                 # 【 】
+    "\u300c": "\u300d",                 # 「 」
+    "\u300e": "\u300f",                 # 『 』
+    "\u300a": "\u300b",                 # 《 》
+    "\u201c": "\u201d",                 # “ ”
+    "\u2018": "\u2019",                 # ‘ ’
+}
 #: Chinese token stream for M-MTLD-02: every CJK character and every ASCII word,
 #: in document order. Character-level diversity is NOT comparable with the
 #: English word-level value; the record says so via its tokenization field.
@@ -389,6 +419,29 @@ class Span:
     text: str
 
 
+@dataclass(frozen=True)
+class ClauseSpan:
+    """One clause: a comma/semicolon/colon-delimited unit inside a sentence.
+
+    sentence_index ties the clause back to the sentence it came from, so clause
+    counts and sentence counts can never disagree about the document's shape.
+
+    function / rhetorical_role / confidence are the INFERRED layer and are null
+    placeholders until a frozen annotation set with inter-annotator agreement
+    exists (the same admission gate every INFERRED metric must pass, see the
+    metric-definitions reference).  They are present in the record so a consumer
+    can tell "not implemented yet" from "implemented and empty".
+    """
+
+    start: int
+    end: int
+    text: str
+    sentence_index: int
+    function: str | None = None
+    rhetorical_role: str | None = None
+    confidence: float | None = None
+
+
 def _word_ending_at(text: str, index: int) -> str:
     """Alpha token (dotted words kept, e.g. i.e) ending at text[index]."""
     match = _WORD_ENDING_RE.search(text[max(0, index - _LOCAL_WINDOW):index])
@@ -538,6 +591,104 @@ def split_sentences(text: str) -> list[Span]:
 # ---------------------------------------------------------------------------
 # Tokenization
 # ---------------------------------------------------------------------------
+
+def _mask_brackets(text: str) -> str:
+    """Replace the interior of every bracket/quote pair with spaces.
+
+    A clause separator inside a bracket or quote pair must not end a clause:
+    Chinese uses bracketed commas for enumeration and inline comment, and
+    splitting there would shred every list into pseudo-clauses.  Unclosed openers
+    are left alone rather than blanking to end-of-text (a stray opener in a title
+    should not nuke the rest of the document).
+    """
+    if not text:
+        return text
+    characters = list(text)
+    closers = {closer: opener for opener, closer in _BRACKET_PAIRS.items()}
+    stack: list[list] = []  # [opener_char, opener_index]
+    for index, char in enumerate(characters):
+        if char in _BRACKET_PAIRS:
+            stack.append([char, index])
+            continue
+        opener = closers.get(char)
+        if opener is None:
+            continue
+        for position in range(len(stack) - 1, -1, -1):
+            if stack[position][0] == opener:
+                start = stack[position][1]
+                for offset in range(start, index + 1):
+                    characters[offset] = " "
+                del stack[position:]
+                break
+    return "".join(characters)
+
+
+def _has_letter_or_cjk(fragment: str) -> bool:
+    """A fragment worth keeping as a clause: it carries letters or CJK characters."""
+    return (_ALPHA_TOKEN_RE.search(fragment) is not None
+            or _CJK_CHAR_RE.search(fragment) is not None)
+
+
+def split_sentences_zh(text: str) -> list[Span]:
+    """Chinese sentence spans.
+
+    split_sentences already handles CJK terminators (。！？…), trailing closers and
+    non-prose masking language-agnostically - the Chinese metric path runs through
+    it today.  This name exists so the Chinese adapter and the clause layer say
+    what they mean.  If Chinese rules ever need to diverge from English (for
+    instance not treating an ASCII full stop inside Chinese prose as a boundary),
+    the divergence lives here and the frozen English path is untouched.
+    """
+    return split_sentences(text)
+
+
+def split_clauses_zh(text: str) -> list[ClauseSpan]:
+    """Split every sentence into clauses at ，；： boundaries.
+
+    Deterministic: the mask is rebuilt from the same text, separators are a
+    closed set, and spans slice back out of the original.  Clause evidence can
+    therefore be re-opened and re-checked by hand, like every other span here.
+    """
+    sentences = split_sentences_zh(text)
+    if not sentences:
+        return []
+    masked = _mask_brackets(_mask_non_prose(text))
+    clauses: list[ClauseSpan] = []
+    for sentence_index, sentence in enumerate(sentences):
+        region = masked[sentence.start:sentence.end]
+        previous = 0
+        for position, char in enumerate(region):
+            if char not in _CLAUSE_SEPARATORS:
+                continue
+            if _has_letter_or_cjk(region[previous:position]):
+                start = sentence.start + previous
+                end = sentence.start + position + 1  # keep the separator
+                clauses.append(ClauseSpan(start, end, text[start:end],
+                                          sentence_index))
+            previous = position + 1
+        if _has_letter_or_cjk(region[previous:]):
+            start = sentence.start + previous
+            clauses.append(ClauseSpan(start, sentence.end, text[start:sentence.end],
+                                      sentence_index))
+    return clauses
+
+
+def tokenize_zh(text: str) -> list[Span]:
+    """Chinese word segmentation (jieba, precise mode with HMM).
+
+    jieba's default mode is deterministic: no randomness, no learned state
+    between calls, dictionary loaded once per process.  Spans, not bare strings,
+    so evidence can point into the source text like every other span in this
+    module.  Used only by the clause layer; the 14 frozen OBSERVED metrics stay
+    character/unit based and byte-identical.
+    """
+    import jieba
+
+    if not isinstance(text, str) or not text:
+        return []
+    return [Span(start, end, word)
+            for word, start, end in jieba.tokenize(text) if word.strip()]
+
 
 def tokenize(text: str) -> list[str]:
     """Lower-cased alpha tokens, keeping internal apostrophes and hyphens."""
@@ -1605,6 +1756,77 @@ def _zh_token_stream(text: str) -> tuple[list[str], list[tuple[int, int]]]:
     return tokens, spans
 
 
+def text_ctx(sentences: Sequence[Span]) -> str:
+    """Concatenated sentence text, for evidence excerpts of sentence-level stats."""
+    return "\n".join(span.text for span in sentences)
+
+
+def _metric_cls31(text: str, sentences: Sequence[Span],
+                   clauses: Sequence[ClauseSpan]) -> dict[str, Any]:
+    """M-CLS-31: mean clauses per sentence.
+
+    A low value is short, simple sentences; a high value is long multi-clause
+    sentences.  The denominator is the sentence count, so the metric is only
+    defined when at least one sentence was detected.
+    """
+    n_clauses = len(clauses)
+    n_sentences = len(sentences)
+    evidence = _evidence([(c.start, c.end) for c in clauses], text, n_clauses)
+    if n_sentences == 0:
+        return _metric(
+            "M-CLS-31", value=None, n=n_clauses, denominator=0,
+            unit=_UNIT_CLAUSES_PER_SENTENCE, evidence=evidence,
+            warnings=["M-CLS-31: no sentence detected; value is undefined"])
+    return _rate("M-CLS-31", n_clauses, n_sentences,
+                 _UNIT_CLAUSES_PER_SENTENCE, evidence,
+                 denominator_unit="sentences")
+
+
+def _metric_cls32(text: str, clauses: Sequence[ClauseSpan]) -> dict[str, Any]:
+    """M-CLS-32: mean clause length in cjk-units (CJK chars + ASCII words).
+
+    Complements M-CLS-31: the same clauses-per-sentence with longer clauses is a
+    different writing profile than the same count with short ones.  Units are the
+    Chinese length unit, so the value is not comparable with any English figure.
+    """
+    lengths = [_zh_cjk_unit_count(clause.text) for clause in clauses]
+    n_clauses = len(clauses)
+    evidence = _evidence([(c.start, c.end) for c in clauses], text, n_clauses)
+    if n_clauses == 0:
+        return _metric(
+            "M-CLS-32", value=None, n=0, denominator=0,
+            unit=_UNIT_CJK_UNITS_PER_CLAUSE, evidence=evidence,
+            warnings=["M-CLS-32: no clause detected; value is undefined"])
+    return _rate("M-CLS-32", sum(lengths), n_clauses,
+                 _UNIT_CJK_UNITS_PER_CLAUSE, evidence,
+                 denominator_unit="clauses")
+
+
+def _metric_slen_percentile(metric_spec: str, sentences: Sequence[Span],
+                            counts: Sequence[int], quantile: float) -> dict[str, Any]:
+    """M-SLEN-34/35: sentence-length P90/P95 in cjk-units.
+
+    The tail of the sentence-length distribution is what an editor actually
+    feels: a journal can share the mean (M-SLEN-01) and still differ sharply in
+    the longest 10% of sentences.  Linear interpolation, matching this module's
+    own _percentile; the corpus-level aggregation layer uses its own stated
+    convention, as it already does for the median.
+    """
+    ordered = sorted(counts)
+    evidence = _evidence([(s.start, s.end) for s in sentences], text_ctx(sentences),
+                         len(sentences))
+    if not ordered:
+        return _metric(
+            metric_spec, value=None, n=0, denominator=0,
+            unit=_UNIT_CJK_UNITS_PER_SENTENCE, evidence=evidence,
+            warnings=[f"{metric_spec}: no sentence detected; value is undefined"])
+    value = _percentile(ordered, quantile)
+    return _metric(
+        metric_spec, value=value, n=len(ordered), denominator=len(ordered),
+        unit=_UNIT_CJK_UNITS_PER_SENTENCE, evidence=evidence,
+        quantile=quantile, quantile_method="linear_interpolation")
+
+
 def _zh_metrics(text: str, sentences: Sequence[Span], language: dict[str, Any],
                 bundle: Any) -> dict[str, dict[str, Any]]:
     """Chinese metric set.
@@ -1711,6 +1933,17 @@ def _zh_metrics(text: str, sentences: Sequence[Span], language: dict[str, Any],
         [] if passive_hits or sentences else ["M-PAS-09: no sentence detected"],
         denominator_unit="sentences",
         passive_markers=list(_CJK_PASSIVE_MARKERS))
+
+    # Clause layer (issue #22): boundaries are Chinese-specific, so these stay
+    # zh-only in _METRIC_LANGUAGE_CAPABILITY; English records get null +
+    # CAPABILITY_NOT_SUPPORTED from the fallback below.
+    clauses = split_clauses_zh(text)
+    computed["M-CLS-31"] = _metric_cls31(text, sentences, clauses)
+    computed["M-CLS-32"] = _metric_cls32(text, clauses)
+    computed["M-SLEN-34"] = _metric_slen_percentile(
+        "M-SLEN-34", sentences, counts, 0.90)
+    computed["M-SLEN-35"] = _metric_slen_percentile(
+        "M-SLEN-35", sentences, counts, 0.95)
 
     for metric_id, record in computed.items():
         record["language"] = language["language"]
@@ -1851,7 +2084,16 @@ def _english_metrics(text: str, language: dict[str, Any],
         record["language"] = language["language"]
         record["cjk_ratio"] = language["cjk_ratio"]
 
-    return {metric_id: metrics[metric_id] for metric_id in METRIC_IDS if metric_id in metrics}
+    # Metrics not computed on the English path (the zh-only clause layer, issue
+    # #22) still appear in the record as null + CAPABILITY_NOT_SUPPORTED, so an
+    # English paper and a Chinese paper always carry the same key set and a
+    # consumer can tell "not measured for this language" from "missing".
+    return {
+        metric_id: (metrics[metric_id] if metric_id in metrics
+                    else _unsupported_metric(metric_id, language,
+                                             warning=CAPABILITY_NOT_SUPPORTED))
+        for metric_id in METRIC_IDS
+    }
 
 
 __all__ = [
@@ -1862,8 +2104,12 @@ __all__ = [
     "SUPPORTED_LANGUAGES",
     "detect_language",
     "Span",
+    "ClauseSpan",
     "split_sentences",
+    "split_sentences_zh",
+    "split_clauses_zh",
     "tokenize",
+    "tokenize_zh",
     "mtld",
     "compute_text_metrics",
     "PassiveHit",

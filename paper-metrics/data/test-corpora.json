@@ -19,7 +19,7 @@
         "profiler_version": "2.5",
         "schema_version": "2.4",
         "metric_spec_version": "1.0",
-        "text_metrics_version": "1.4",
+        "text_metrics_version": "1.5",
         "lexicon_version": "1.1",
         "lexicon_language": "en"
       },
@@ -60,14 +60,20 @@
         "语料目录内不含源 PDF（只有 marker/ 与 mineru/ 产物）→ 无法在此语料上跑阶段 1.5 文本层探针",
         "英文语料的 citation_style 由 marker_markdown 参与判定，缺 marker 路径时会退化",
         "2026-09-15 重登记（issue #17）：附录上下文继承使 9/34 篇正文变短（合计 −57,714 字符），14 条期望值随之更新；profiler_version 2.4 → 2.5。ycgl-zh 不受影响（0/10 篇变化），仅同步 profiler_version。",
-        "2026-09-15 重登记（issue #17/#18）：附录上下文继承改变正文口径（vrp-en 9/34 篇）；inputs 纳入图片 sha256（corpus_id 变化）；登记表新增 expected_corpus_warnings / expected_language_supported / expected_by_section / expected_section_skeleton。"
+        "2026-09-15 重登记（issue #17/#18）：附录上下文继承改变正文口径（vrp-en 9/34 篇）；inputs 纳入图片 sha256（corpus_id 变化）；登记表新增 expected_corpus_warnings / expected_language_supported / expected_by_section / expected_section_skeleton。",
+        "2026-09-15 重登记（issue #22 分句层）：TEXT_METRICS_VERSION 1.4 → 1.5，新增 M-CLS-31/32 与 M-SLEN-34/35（仅中文）。vrp-en 的 13 个冻结英文指标逐位不变，4 个新指标为 null（故 expected_null_metrics 增加 4 条、NO_VALID_VALUES/N_LT_5/N_VALID_LT_3 各 +4）；ycgl-zh 的 4 个新指标有实测值，M-TENSE-28 仍是唯一 null 指标。"
       ],
       "reproduce": [
         "cd ~/.claude/skills && uv run python paper-metrics/scripts/profile_papers.py --corpus \"<path>\" --out \"<out>\"",
         "cd ~/.claude/skills && uv run python paper-metrics/scripts/baseline_eval.py --corpus \"<path>\" --out \"<out>\""
       ],
-      "expected_null_metrics": [],
+      "expected_null_metrics": [
+        "M-CLS-31", "M-CLS-32", "M-SLEN-34", "M-SLEN-35"
+      ],
       "expected_corpus_warnings": {
+        "NO_VALID_VALUES": 4,
+        "N_LT_5": 4,
+        "N_VALID_LT_3": 4,
         "SECTION_SKEW": 3
       },
       "expected_language_supported": true,
@@ -126,7 +132,7 @@
         "profiler_version": "2.5",
         "schema_version": "2.4",
         "metric_spec_version": "1.0",
-        "text_metrics_version": "1.4",
+        "text_metrics_version": "1.5",
         "lexicon_version": "1.1",
         "lexicon_language": "zh",
         "lexicon_release_version": "2.1-zh",
@@ -161,7 +167,11 @@
         "S-TBL-10": 0.783333,
         "S-TBL-11": 0.764493,
         "S-TBL-12": 0.777747,
-        "S-TBL-13": 0.023299
+        "S-TBL-13": 0.023299,
+        "M-CLS-31": 3.386724,
+        "M-CLS-32": 15.392276,
+        "M-SLEN-34": 102.55,
+        "M-SLEN-35": 123.52
       },
       "null_metrics": {
         "M-TENSE-28": "CAPABILITY_NOT_SUPPORTED（中文无时态，给数字就是编造）"
@@ -176,7 +186,10 @@
         "M-AWR-03": "ratio（分母 cjk-units）",
         "M-PAS-09": "ratio（分母 = 句数）",
         "M-NOM-10": "per-1000-cjk-units（variant=cjk-abstract-noun-suffix）",
-        "M-PCNT-25": "cjk-units/paragraph"
+        "M-PCNT-25": "cjk-units/paragraph",
+        "M-CLS-31": "clauses/sentence",
+        "M-CLS-32": "cjk-units/clause",
+        "M-SLEN-34/35": "cjk-units/sentence（分位数 P90/P95，linear interpolation）"
       },
       "known_defects": [
         "只跑了 MinerU：各篇 _META.json 的 engines=\"mineru\"，没有 Marker 对照 → 本语料上引擎漂移（V7）是 N/A，不是\"已测量\"",
@@ -185,7 +198,8 @@
         "corpus_ycgl/ 是空目录：实际语料在 corpus_ycgl_pdf/paper-conversion/，两层之间的映射见 corpus_ycgl_pdf/paper-merged/*/_META.json",
         "1 篇（考虑渔业生产区布局…）无 content_list.json → 只能作为转换失败样本",
         "_draft_validation*.json 与 _writing_contract.cn.yaml 是历史产物，口径早于 2026-09-13 的中文化改造，不可当基线",
-        "2026-09-15 重登记（issue #17/#18）：附录上下文继承改变正文口径（vrp-en 9/34 篇）；inputs 纳入图片 sha256（corpus_id 变化）；登记表新增 expected_corpus_warnings / expected_language_supported / expected_by_section / expected_section_skeleton。"
+        "2026-09-15 重登记（issue #17/#18）：附录上下文继承改变正文口径（vrp-en 9/34 篇）；inputs 纳入图片 sha256（corpus_id 变化）；登记表新增 expected_corpus_warnings / expected_language_supported / expected_by_section / expected_section_skeleton。",
+        "2026-09-15 重登记（issue #22 分句层）：TEXT_METRICS_VERSION 1.4 → 1.5，新增 M-CLS-31/32 与 M-SLEN-34/35（仅中文）。vrp-en 的 13 个冻结英文指标逐位不变，4 个新指标为 null（故 expected_null_metrics 增加 4 条、NO_VALID_VALUES/N_LT_5/N_VALID_LT_3 各 +4）；ycgl-zh 的 4 个新指标有实测值，M-TENSE-28 仍是唯一 null 指标。"
       ],
       "reproduce": [
         "cd ~/.claude/skills && uv run python paper-metrics/scripts/profile_papers.py --corpus \"<path>\" --out \"<out>\"",

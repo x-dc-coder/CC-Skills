@@ -457,6 +457,28 @@ text_metrics.compute_text_metrics(text, bundle) 的返回值为 {metric_id: metr
 
 ---
 
+### 3.11 中文分句层 `M-CLS-31` / `M-CLS-32` / `M-SLEN-34` / `M-SLEN-35`（issue #22）
+
+四个**仅中文**的指标，随 `TEXT_METRICS_VERSION 1.5` 冻结。英文记录以 `null` + `CAPABILITY_NOT_SUPPORTED` 出现（键集保持对称，消费者能把"该语言不可测"与"键缺失"区分开）。
+
+**分句规则**（`split_clauses_zh`）：在 `split_sentences_zh` 产出的每个句子内，按全角 `，；：`（及混排 ASCII `,;:`）切分；**括号与引号内部的分隔符不切分**（`_mask_brackets` 把括号/引号对内部替换为空白）；数学式与关键词行仍走 `_mask_non_prose`。分隔符随其所在分句输出（与"句末标点随句子"的既有约定一致）。跨度一律从原文切片，可逐条回指。
+
+| 指标 | 定义 | 分子 n | 分母 | 单位 |
+|---|---|---|---|---|
+| `M-CLS-31` | 平均每句分句数 | 分句总数 | 句数 | `clauses/sentence` |
+| `M-CLS-32` | 分句平均长度 | 全部分句的 cjk-units 之和 | 分句数 | `cjk-units/clause` |
+| `M-SLEN-34` | 句长 P90 | — | 句数 | `cjk-units/sentence` |
+| `M-SLEN-35` | 句长 P95 | — | 句数 | `cjk-units/sentence` |
+
+- `M-CLS-32` 的 `n` 遵循 `_rate` 约定存"总 cjk-units"（而非分句数），因此语料层可用 `sum(n)/sum(denominator)` 直接重算语料级均值。
+- `M-SLEN-34/35` 用本模块 `_percentile`（**linear interpolation**，与 numpy 默认一致）；语料级聚合层另用其自己的分位数约定（已在 summary 的 `quantile_method` 声明，与 median 的既有差异同源）。
+- **冻结用例**：`data/clause_spec_cases.json`（11 条，全部人工核对）：括号内逗号不切分 / 引号内逗号随引语归属 / 省略号运行只在末字符终结 / 未闭合括号降级为"正常切分"而不是吞掉文档剩余部分。
+- **分词**：`tokenize_zh` 用 jieba 精确模式 + HMM，确定性、无进程间学习状态；jieba 是工具链的一部分，其版本变化会显式体现在 toolchain 指纹里（与词表版本同机制）。
+- **反映什么写作行为**：`M-CLS-31` 低 = 短句多、句式简单；高 = 长复句多。`M-CLS-31` 相同而 `M-CLS-32` 不同，是**不同的**写作画像（同分句数、每段更长）。`M-SLEN-34/35` 刻画句长分布的**尾部**——两本期刊可以有相同的均值（`M-SLEN-01`）而在最长 10% 的句子上差异巨大。
+- **不能推断什么**：不能推断"复句多 = 质量差"（中文复句是常态，分句密度高本身不是缺陷）；不能推断作者水平；不能推断语法正确性。
+- **已知失效场景**：① 表格单元格内的逗号（表格走 `table_body` 流，不进正文，本指标不读）；② 未闭合括号后的切分（已按可预测方式降级）；③ 极短文本（无句子时 `M-CLS-31` 为 `null` + 原因码，绝不报 0）。
+- **复算路径**：`cd ~/.claude/skills && uv run python -m pytest paper-metrics/scripts/test_clause_layer.py -q` 跑冻结用例；或对任意文本调 `split_clauses_zh` 手工核对每条跨度。
+
 ## 4. 复用类指标（profile 级，非 text_metrics 产出）
 
 本节 5 条由 `profile_papers.py` 直接在语料块序列上计算（**零新增开发**，只修遥测字段与已知缺陷），输出落在 `_domain_profile.json`。

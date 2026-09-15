@@ -378,7 +378,7 @@ def test_mtld_pinned_parameters_are_frozen():
     assert tm._LONG_SENTENCE_WORDS == 40
     # 1.1: pre-split non-prose masking changed the sentence denominators
     # (issues #2 / #3) -> the version must move with the numbers.
-    assert tm.TEXT_METRICS_VERSION == "1.4"
+    assert tm.TEXT_METRICS_VERSION == "1.5"
 
 
 # ---------------------------------------------------------------------------
@@ -388,7 +388,7 @@ def test_mtld_pinned_parameters_are_frozen():
 def test_every_metric_id_is_present_with_contract_fields():
     metrics = tm.compute_text_metrics(SAMPLE_TEXT, BUNDLE)
     assert set(metrics) == set(tm.METRIC_IDS)
-    assert len(tm.METRIC_IDS) == 13
+    assert len(tm.METRIC_IDS) == 17  # 13 frozen + 4 clause-layer (issue #22)
     for metric_id, record in metrics.items():
         assert REQUIRED_FIELDS <= set(record), metric_id
         assert record["metric_spec"] == metric_id
@@ -712,6 +712,12 @@ ENGLISH_GOLDEN = {
     "M-PAS-09": [0.25, 1, 4],
     "M-SLEN-01": [13.5, 4, 54],
     "M-TENSE-28": [0.428571, 3, 7],
+    # Clause layer (issue #22) is zh-only: on English the records exist so the
+    # key set stays symmetric, but they are null + CAPABILITY_NOT_SUPPORTED.
+    "M-CLS-31": [None, 0, 0],
+    "M-CLS-32": [None, 0, 0],
+    "M-SLEN-34": [None, 0, 0],
+    "M-SLEN-35": [None, 0, 0],
 }
 
 

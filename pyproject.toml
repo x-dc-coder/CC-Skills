@@ -18,6 +18,10 @@ dependencies = [
     "feedparser>=6.0.0",
     "playwright>=1.61.0",
     "pdfplumber>=0.11.10",
+    # Chinese word segmentation for paper-metrics issue #22 (clause layer).
+    # MIT, pure Python, CPU-only.  Only the new INFERRED-layer primitives use it;
+    # the 14 frozen OBSERVED metrics stay character/unit based and byte-identical.
+    "jieba>=0.42.1",
 ]
 
 [dependency-groups]

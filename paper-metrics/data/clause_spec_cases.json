@@ -1,0 +1,130 @@
+{
+  "spec_version": "1.0",
+  "frozen_for": "issue #22 clause layer (split_sentences_zh / split_clauses_zh / tokenize_zh)",
+  "note": "Golden cases for the Chinese clause layer. Every expected value below was produced by running the primitives and then verified by hand against the source text; changing a value here requires a documented reason, because downstream contract clauses pin numbers derived from these rules. Bracketed/quoted separators must not split (cases 4-5); an unclosed bracket degrades to normal splitting rather than swallowing the rest of the document (case 8).",
+  "segmenter": "jieba precise mode + HMM",
+  "cases": [
+    {
+      "id": "zh_one_sentence_two_clauses",
+      "text": "本文提出一种新方法，并在三个数据集上验证了其有效性。",
+      "expected": {
+        "n_sentences": 1,
+        "n_clauses": 2,
+        "clauses": [
+          "本文提出一种新方法，",
+          "并在三个数据集上验证了其有效性。"
+        ]
+      },
+      "note": "the baseline shape: one terminal, one comma, two clauses; the separator travels with the clause it ends"
+    },
+    {
+      "id": "zh_two_sentences",
+      "text": "第一句。第二句。",
+      "expected": {
+        "n_sentences": 2,
+        "n_clauses": 2,
+        "clauses": ["第一句。", "第二句。"]
+      },
+      "note": "sentence_index distinguishes the two clauses even though each has exactly one"
+    },
+    {
+      "id": "zh_ellipsis_run",
+      "text": "该方法存在一定局限……未来工作将解决这一问题。",
+      "expected": {
+        "n_sentences": 2,
+        "n_clauses": 2,
+        "clauses": ["该方法存在一定局限……", "未来工作将解决这一问题。"]
+      },
+      "note": "an ellipsis run is ONE terminator at its last character, so the sentence is not fragmented"
+    },
+    {
+      "id": "zh_colon_introduces",
+      "text": "李明指出：该算法的时间复杂度为O(n)。",
+      "expected": {
+        "n_sentences": 1,
+        "n_clauses": 2,
+        "clauses": ["李明指出：", "该算法的时间复杂度为O(n)。"]
+      },
+      "note": "a full-width colon is a clause boundary; the ASCII parenthesis inside does not contain a separator here"
+    },
+    {
+      "id": "zh_bracketed_comma_does_not_split",
+      "text": "测试（包含，逗号）的句子。",
+      "expected": {
+        "n_sentences": 1,
+        "n_clauses": 1,
+        "clauses": ["测试（包含，逗号）的句子。"]
+      },
+      "note": "the comma inside the bracket is masked: one clause, not two"
+    },
+    {
+      "id": "zh_quoted_comma_stays_inside",
+      "text": "他说“这里，有逗号”，然后继续。",
+      "expected": {
+        "n_sentences": 1,
+        "n_clauses": 2,
+        "clauses": ["他说“这里，有逗号”，", "然后继续。"]
+      },
+      "note": "the comma inside the quotes is masked; the comma after the closing quote still splits, and the quoted text stays with its reporting clause"
+    },
+    {
+      "id": "zh_enumeration_with_semicolons",
+      "text": "本文的主要贡献如下：（1）提出新模型；（2）验证其有效性。",
+      "expected": {
+        "n_sentences": 1,
+        "n_clauses": 3,
+        "clauses": [
+          "本文的主要贡献如下：",
+          "（1）提出新模型；",
+          "（2）验证其有效性。"
+        ]
+      },
+      "note": "semicolons outside brackets split; the （1） prefix stays with its item"
+    },
+    {
+      "id": "zh_mixed_ascii_terms",
+      "text": "我们采用 BERT-base 模型，参数量约 110M，在 GPU 上训练了 24 小时。",
+      "expected": {
+        "n_sentences": 1,
+        "n_clauses": 3,
+        "clauses": [
+          "我们采用 BERT-base 模型，",
+          "参数量约 110M，",
+          "在 GPU 上训练了 24 小时。"
+        ],
+        "n_tokens": 20
+      },
+      "note": "mixed CJK/ASCII: commas still split, ASCII terms are single tokens"
+    },
+    {
+      "id": "zh_unclosed_bracket_splits_normally",
+      "text": "未闭合的（括号还在后面，继续分句。",
+      "expected": {
+        "n_sentences": 1,
+        "n_clauses": 2,
+        "clauses": ["未闭合的（括号还在后面，", "继续分句。"]
+      },
+      "note": "an opener with no closer is left alone: subsequent separators still split, instead of blanking the rest of the document"
+    },
+    {
+      "id": "zh_keyword_line_is_not_prose",
+      "text": "Keywords: 关键词一，关键词二",
+      "expected": {
+        "n_sentences": 0,
+        "n_clauses": 0,
+        "clauses": []
+      },
+      "note": "keyword lines are masked as non-prose, so they yield neither sentences nor clauses - consistent with split_sentences"
+    },
+    {
+      "id": "empty_text",
+      "text": "",
+      "expected": {
+        "n_sentences": 0,
+        "n_clauses": 0,
+        "clauses": []
+      },
+      "note": "no sentences, no clauses, no exception"
+    }
+  ]
+}

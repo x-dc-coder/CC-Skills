@@ -43,7 +43,10 @@ PDF ──paper-reader──▶ paper-analysis/（Canonical Document）
               _writing_plan.md → 逐章生成 → validate_draft.py 校验
 ```
 
-- **上游 paper-reader**：本技能**不解析 PDF**。输入必须是已转换的 `paper-analysis/`（每篇含 `mineru/<id>/auto/<id>_content_list.json`）。用户尚未转换时，提示先跑 paper-reader，不要自行重跑。
+- **上游输入（两条来源，同一套块格式）**：本技能**不解析 PDF**，只吃 canonical 块格式（每篇含 `mineru/<id>/auto/<id>_content_list.json`）。
+  - **paper-reader** 转换的 `paper-analysis/`（GPU、分钟级/篇）；
+  - **`canonical_import.py`**（本技能自带，纯 stdlib、秒级、逐字节可复现）：把 **Markdown / docx / 纯文本**稿件转成同样的块格式。退稿稿、返修 v1/v2、response-to-reviewers 这类**从未发表为 PDF** 的文档由此进入；溯源记为 `engines: "import"`、引擎版本全 null，绝不伪造转换。
+  - **标题层级陷阱**：`#` 是论文标题（level 1），`##` 才是章节（level 2，profiler 只认它作章节边界）。一篇全用 `#` 的稿件没有章节，canonical 正文会**全空**——这是唯一「文档非空但指标全 null」的静默失败模式。
 - **下游 thesis-writing Mode B**：只消费 `_domain_profile.json` 的既有字段（`section_skeleton`、`figure|table|equation_placement_patterns`、`citation_style`、`reference_count`、`corpus`）。**字段与形状由本技能承诺，下游不得改写。**
 
 ## 五个产物（跑一次 `profile_papers.py` 全部产出）
@@ -83,6 +86,11 @@ cd ~/.claude/skills
 # 1) 语料 → 指标（主入口）
 uv run python paper-metrics/scripts/profile_papers.py \
   --corpus "<user_paper_dir>/paper-analysis/" --out "<output_dir>/" [--verify]
+
+# 1b) 退稿/返修稿件（Markdown / docx / 纯文本）→ 同一套块格式 → 指标
+#     从未发表为 PDF 的文档由此进入；engines 记为 import，不伪造转换。
+uv run python paper-metrics/scripts/canonical_import.py \
+  --source <rejected_or_revised.md> --out <imported_corpus>/ --id paper-001
 
 # 2) PDF → paper-analysis/ → 指标（串联 paper-reader 与本层）
 uv run python paper-metrics/scripts/run_pipeline.py \
@@ -141,6 +149,7 @@ uv run python paper-metrics/scripts/pas_spotcheck.py --corpus <paper-analysis> -
 - **英文（en）**：14 条指标全部可测，词表用 `data/lexicons/v1/`。
 - **中文（zh）是逐指标能力，不是一刀切门禁（2026-09-13，issue #13）**：
   - **已可测 13/14 条**：`M-SLEN-01`、`M-LSF-16`、`M-MTLD-02`、`M-HED-14`、`M-BOO-15`、`M-CONN-30(c/k/r)`、`M-AWR-03`、`M-PAS-09`、`M-PCNT-25`、`M-NOM-10`（词表用 `data/lexicons/v2-zh/`）；
+  - **新增分句层 4 条（2026-09-15，issue #22，随 `TEXT_METRICS_VERSION 1.5` 冻结）**：`M-CLS-31`（clauses/sentence）、`M-CLS-32`（cjk-units/clause）、`M-SLEN-34`/`M-SLEN-35`（句长 P90/P95）；规则见 〈3.11〉，冻结用例 `data/clause_spec_cases.json`；分词用 jieba（工具链版本入指纹，与词表同机制）；
   - **尚不可测 1 条**：`M-TENSE-28`（**中文没有时态**，给数字就是编造）→ `null` + **`CAPABILITY_NOT_SUPPORTED`**（`LANGUAGE_NOT_SUPPORTED` 的逐指标版本；**仍然不是 0**）；
   - **两个"同槽不同量"的指标要特别小心**：`M-MTLD-02` 中文是**字符级**、`M-NOM-10` 中文是**抽象名词后缀（性/度/率）密度**——与英文同名指标**不是同一个统计量**，记录里带 `tokenization` / `variant` 标记，禁止跨语言比较；
   - **中文口径（与英文不可混用，跨语言不可比）**：句长单位 **`cjk-units/sentence`**（汉字数 + ASCII 字母 token，混合句不漏计）；长句阈值 **80 单位**（不是英文的 40 词）；密度类分母为 **cjk-units**、连接词单位 **`per-1000-cjk-units`**；段落单位 **`cjk-units/paragraph`**（下限 40 单位）；`M-MTLD-02` 是 **字符级**（`tokenization=cjk-char+ascii-token`，与英文词级值不可比）；
@@ -270,14 +279,17 @@ uv run python paper-metrics/scripts/lexicon_calibration.py mine \
 ## 环境与依赖
 
 - **A 类（统一共享环境）**：纯 stdlib（Python 3.10.12），共享仓库根 `.venv`（`paper-metrics/.venv -> ../.venv`）。
-- **零第三方依赖、零 LLM token、零 GPU**；无外部二进制依赖。
+- **一个第三方依赖**：`jieba>=0.42.1`（issue #22 起，仅新的 INFERRED 层分词基元 `tokenize_zh` 使用）。**14 条冻结的 OBSERVED 指标不经过 jieba，数值逐字节不变**——已用两个已登记语料审计逐位确认。jieba 是工具链的一部分，版本进 `toolchain` 指纹；零 LLM token、零 GPU，无外部二进制依赖。
 - 词表数据：`data/lexicons/v1/`（英文，8 个 JSON）、`data/lexicons/v2-zh/`（中文，同样 8 个），均含版本、source 与 sha256 自校验；loader 按语言加载（`load_lexicons(language=...)`），产物记录实际用到的 release 指纹（`toolchain.lexicon_releases` / `lexicons_by_language`）。
 
 ## 测试
 
 ```bash
-cd ~/.claude/skills && uv run pytest paper-metrics/scripts -q
+cd ~/.claude/skills && uv run pytest paper-metrics/scripts -q   # 610 tests
 ```
+
+- 分句层冻结用例（可单独跑、无需外部语料）：`uv run pytest paper-metrics/scripts/test_clause_layer.py -q`；
+- 导入器（退稿/返修稿件入语料）：`uv run pytest paper-metrics/scripts/test_canonical_import.py -q`；
 
 ## 语料登记与结果审计
 
@@ -292,7 +304,7 @@ uv run python paper-metrics/scripts/audit_corpus.py --name ycgl-zh --out /tmp/au
 - 登记表：`data/test-corpora.json`（机器可读）+ `references/test-corpora.md`（获取方式与已知缺陷）；
 - 审计比对三样：**corpus_id**（输入内容哈希）、**expected_metrics**（语料均值）、**recorded_with**（profiler / schema / 指标层 / 词表 release 版本与指纹）；
 - 退出码 0 = 逐项 match，1 = drift，并给出归因：`inputs_changed`（输入变了，旧结论作废）/ `code_or_word_list_changed`（语料没变，版本或词表变了，数值移动可解释）/ **`unexplained_drift`（都没变数值却变了 → 确定性被破坏，必须查）**；
-- 当前状态：英文 **22/22 match**、中文 **23/23 match**；
+- 当前状态（2026-09-15，issue #22 重登记后）：英文 **52/52 match**（含 4 条新指标的 null 断言）、中文 **57/57 match**（含 4 条新指标的实测值）；两语料 `corpus_id` 均未变——**13 条冻结英文指标在 v1.5 上逐位不变**，`code_or_word_list_changed` 归因成立。
 - `toolchain.text_metrics_version` 记录指标层版本（此前缺失，数字无法归属版本）；非英文语料的词表 release 记录在 `toolchain.lexicon_releases[lang]`，注意 `toolchain.lexicon_version` 这个历史字段记的**是英文 release**。
 
 ## 文件
@@ -303,10 +315,12 @@ paper-metrics/
 ├── scripts/                     # profile_papers / text_metrics / lexicon_loader / build_contract
 │                                # validate_draft / baseline_eval / run_pipeline / pas_spotcheck
 │                                # lexicon_calibration（词表校准+效度）/ audit_corpus（语料审计）
+│                                # canonical_import（退稿/返修稿件入语料，issue #22 配套）
 ├── data/
 │   ├── lexicons/v1/             # 英文 8 个冻结词表（release 1.1）
 │   ├── lexicons/v2-zh/          # 中文 8 个冻结词表（release 2.1-zh，策展）
-│   └── test-corpora.json        # 测试语料登记表（审计入口）
+│   ├── test-corpora.json        # 测试语料登记表（审计入口）
+│   └── clause_spec_cases.json   # 分句层冻结用例（issue #22，人工核对）
 ├── references/
 │   ├── metric-definitions.md    # 指标定义/口径/证据坐标系/不能推断什么
 │   └── test-corpora.md          # 语料获取方式、已知缺陷、复现命令
