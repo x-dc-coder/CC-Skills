@@ -56,6 +56,25 @@ PDF ──paper-reader──▶ paper-analysis/（Canonical Document）
 | `_corpus_summary.json` | 语料级聚合（可由 jsonl 机械重算） | ✅ |
 | `_run_meta.json` | 时间戳/主机/路径/耗时（**不参与指纹**） | ❌ |
 
+## 图画像与图目录（Figure Profile，issue #1 MVP）
+
+`figure_profile.py` 把语料里的图（MinerU `type ∈ {image, chart}` 块）做成两张独立产物，
+**纯 stdlib、零视觉**（不做视觉识别，那些是 issue #1 Phase 1/4/5）：
+
+```bash
+cd ~/.claude/skills
+uv run python paper-metrics/scripts/figure_profile.py --corpus <paper-analysis> --out <out>
+```
+
+- `_figure_profile.json`：逐图记录——稳定 `figure_id`（`fig-<stem>-<page>-<block_index>`，
+  同输入必同 ID）、题注原文、`width`/`height`/`aspect_ratio`/`width_usable_for_print`
+  （只读 PNG/JPEG/GIF 文件头，阈值 **800 px 与 S-SIZ-04 同阈值同口径**）、`section` 与
+  `type_guess`（**INFERRED**，仅章节位置启发，带 `confidence`+`basis`）。
+- `_figure_summary.json`：语料级尺寸/宽高比/题注长度分位与达标率；**读不了的图不计入分母并逐条列出**（与 S-SIZ-04 一致）。
+- 视觉/语义字段（chart_type/panel_count/axis/legend/颜色/字体/线宽/caption 语义角色）一律
+  `null` + `status: NOT_IMPLEMENTED` 占位。
+- **字段来源、置信度语义、「不得把 INFERRED 当事实」红线见 `references/figure-profile-schema.md`**。
+
 ## 快速开始
 
 ```bash
