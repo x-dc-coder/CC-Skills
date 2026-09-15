@@ -99,6 +99,43 @@ FORMULA_NUMBER_RE = re.compile(r"\\tag\{\s*(\d+)-(\d+)\s*\}|(?:\\?\()\s*(\d+)-(\
 FORMULA_IMG_KEYWORDS_RE = re.compile(r"公式|equation|formula", re.IGNORECASE)
 
 
+# ---- 引用 ↔ 文献表交叉核验（issue #21） ----
+# 正文数字引用表达式：单编号 / 区间 / 列表；支持全角括号、全角逗号与常见连接符。
+CITATION_EXPR_RE = re.compile(r"[\[［]\s*(\d+(?:\s*[-–—,，]\s*\d+)*)\s*[\]］]")
+# 触发"文献表区域"的一级标题（中英文）。
+REFERENCE_HEADINGS = frozenset({"参考文献", "references", "bibliography"})
+# 单段区间展开上限：超过该数量则整段丢弃并说明（对齐 paper-metrics 的 _REF_RANGE_CAP）。
+CITATION_RANGE_CAP = 50
+
+
+def _expand_citation_expr(expr: str) -> tuple[list[int], list[str]]:
+    """展开一个正文引用表达式的内文（如 "3-5" / "1,2" / "42"）为编号列表。
+
+    返回 (numbers, dropped)：dropped 为单段区间超过 CITATION_RANGE_CAP 而整段丢弃的
+    段（"宁可少计且可见"，对齐 paper-metrics 的 _expand_ref_expr 思路）。负数与 0
+    编号由调用方依据文献表条目数判定是否为数学区间，本函数只做展开。
+    """
+    parts = [p.strip() for p in re.split(r"[，,]", expr) if p.strip()]
+    numbers: list[int] = []
+    dropped: list[str] = []
+    for part in parts:
+        rng = re.fullmatch(r"(\d+)\s*[-–—]\s*(\d+)", part)
+        if rng:
+            start = int(rng.group(1))
+            end = int(rng.group(2))
+            if start > end:
+                start, end = end, start
+            if end - start + 1 > CITATION_RANGE_CAP:
+                dropped.append(part)
+                continue
+            numbers.extend(range(start, end + 1))
+        elif part.isdigit():
+            numbers.append(int(part))
+        else:
+            dropped.append(part)
+    return numbers, dropped
+
+
 # ---------------------------------------------------------------------------
 # 辅助函数（保持原样）
 # ---------------------------------------------------------------------------
@@ -244,6 +281,13 @@ class MarkdownChecker:
         self._images: list[tuple[int, str, str | None]] = []
         self._refs: list[tuple[int, int]] = []
         self._formula_seq: dict[int, int] = {}
+
+        # ---- 引用 ↔ 文献表交叉核验状态（issue #21） ----
+        self._citation_exprs: list[tuple[int, str]] = []  # (line_no, 引用表达式内文)
+        self._numeric_citation_count = 0  # 正文数字引用表达式计数（风格判定，含区间/列表）
+        self._author_year_count = 0        # 正文作者-年份计数（风格判定）
+        self._has_reference_section = False
+        self._reference_section_line: int | None = None
 
     # ---- 公开 API ----
 
@@ -438,8 +482,10 @@ class MarkdownChecker:
         self._prev_level = level
 
         # 参考文献区域边界
-        if level == 1 and title == "参考文献":
+        if level == 1 and title in REFERENCE_HEADINGS:
             self._in_references = True
+            self._has_reference_section = True
+            self._reference_section_line = idx
         elif level == 1 and self._in_references:
             self._in_references = False
 
@@ -767,11 +813,20 @@ class MarkdownChecker:
     # ---- 引用检查 ----
 
     def _check_citations(self, idx: int, line: str) -> None:
-        if "[" not in line or "]" not in line:
+        if ("[" not in line or "]" not in line) and ("［" not in line or "］" not in line):
             return
         for m in CITATION_RE.finditer(line):
             if int(m.group(1)) <= 0:
                 self._add("WARN", idx, "CITATION_INVALID", "引用编号应为正整数")
+        if self._in_references:
+            return  # 文献表自身 [N] 不计为正文引用
+        for m in CITATION_EXPR_RE.finditer(line):
+            self._citation_exprs.append((idx, m.group(1)))
+        self._numeric_citation_count += len(CITATION_EXPR_RE.findall(line))
+        self._author_year_count += (
+            len(self._CITATION_RE_AUTHOR_YEAR.findall(line))
+            + len(self._CITATION_RE_NARRATIVE.findall(line))
+        )
 
     # ---- 行内验证 ----
 
@@ -842,6 +897,7 @@ class MarkdownChecker:
         self._check_merge_table_syntax()
         self._check_table_column_consistency()
         self._check_reference_continuity()
+        self._check_citation_crosslink()
         if self.mode == "journal":
             self._check_citation_density_journal()
 
@@ -1116,6 +1172,50 @@ class MarkdownChecker:
                 if n != prev_n + 1:
                     self._add("ERROR", line_no, "REF_NUMBER_DISCONTINUITY",
                               f"参考文献编号不连续：前一条为 [{prev_n}]，当前为 [{n}]，期望 [{prev_n + 1}]")
+
+    def _check_citation_crosslink(self) -> None:
+        """正文数字引用 ↔ 文献表条目号 双向核验（issue #21，对齐 paper-metrics M-REFLINK-54）。
+
+        能力感知（issue #13 规矩）：无 References 段、条目格式不可识别、或作者-年份制
+        时，跳过本 gate 并在 findings 里说明原因，不判失败（INFO 级别，不参与 ERROR/WARN 计数）。
+        """
+        if not self._has_reference_section:
+            self._add("INFO", 1, "CITATION_CROSSLINK_SKIPPED",
+                      "跳过正文引用↔文献表交叉核验：未检测到 References/参考文献 章节")
+            return
+        if not self._refs:
+            self._add("INFO", self._reference_section_line or 1, "CITATION_CROSSLINK_SKIPPED",
+                      "跳过正文引用↔文献表交叉核验：文献表存在但未识别出 [N] 条目格式")
+            return
+        if self._numeric_citation_count == 0 or self._author_year_count > self._numeric_citation_count:
+            self._add("INFO", self._reference_section_line or 1, "CITATION_STYLE_NOT_NUMERIC",
+                      "检测到作者-年份制引文（或正文无数字引用），跳过数字引用↔文献表交叉核验，"
+                      "避免误报 100% 未引用")
+            return
+        ref_numbers: set[int] = {n for _ln, n in self._refs}
+        ref_lines: dict[int, int] = {n: ln for ln, n in self._refs}
+        cited: dict[int, list[int]] = {}
+        for line_no, expr in self._citation_exprs:
+            numbers, dropped = _expand_citation_expr(expr)
+            if dropped:
+                self.notes.append(
+                    f"L{line_no} 引用表达式 [{expr}] 含超上限/不可展开段，整段跳过交叉核验")
+                continue
+            if len(numbers) == 1:
+                if numbers[0] >= 1:
+                    cited.setdefault(numbers[0], []).append(line_no)
+            elif numbers and all(n >= 1 for n in numbers):
+                for n in numbers:
+                    cited.setdefault(n, []).append(line_no)
+            # 多编号且含 0（如 [0,1]）→ 数学区间，不算引用
+        for n in sorted(cited):
+            if n not in ref_numbers:
+                self._add("ERROR", cited[n][0], "DANGLING_CITATION",
+                          f"正文引用了文献编号 [{n}]，但参考文献表中不存在该条目")
+        for n in sorted(ref_numbers):
+            if n not in cited:
+                self._add("WARN", ref_lines[n], "UNCITED_REFERENCE",
+                          f"参考文献条目 [{n}] 在正文中从未被引用")
 
     _CITATION_DENSITY_MIN_WORDS = 500
     _CITATION_RE_NUMERIC = re.compile(r"\[\d+\]")

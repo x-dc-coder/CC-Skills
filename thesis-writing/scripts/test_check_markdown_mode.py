@@ -238,3 +238,154 @@ def test_invalid_mode_rejected(tmp_path: Path) -> None:
     proc = subprocess.run(cmd, capture_output=True, text=True)
     assert proc.returncode != 0
     assert "invalid choice" in proc.stderr or "invalid choice" in proc.stdout
+
+# ---------------------------------------------------------------------------
+# issue #21: 正文数字引用 ↔ 文献表条目号 双向核验
+# ---------------------------------------------------------------------------
+
+def test_dangling_citation_reported(tmp_path: Path) -> None:
+    """正文引用 [42] 而文献表只有 1..2 → DANGLING_CITATION（ERROR）。"""
+    md = """# Abstract
+
+We propose a method [1] and cite a missing entry [42].
+
+# References
+
+[1] Author A. One[J]. J, 2020.
+
+[2] Author B. Two[J]. J, 2021.
+"""
+    code, out = run_checker(md, mode="journal", tmp_path=tmp_path)
+    codes = _codes(out)
+    assert "DANGLING_CITATION" in codes, f"Expected DANGLING_CITATION, got: {codes}\n{out}"
+    assert "42" in out
+
+
+def test_uncited_reference_warned(tmp_path: Path) -> None:
+    """文献表有 [1][2]，但正文只引用 [1] → UNCITED_REFERENCE（WARN）。"""
+    md = """# Abstract
+
+We cite [1].
+
+# References
+
+[1] Author A. One[J]. J, 2020.
+
+[2] Author B. Two[J]. J, 2021.
+"""
+    code, out = run_checker(md, mode="journal", tmp_path=tmp_path)
+    codes = _codes(out)
+    assert "UNCITED_REFERENCE" in codes, f"Expected UNCITED_REFERENCE, got: {codes}\n{out}"
+    assert "DANGLING_CITATION" not in codes, f"Unexpected DANGLING_CITATION: {out}"
+
+
+def test_math_interval_not_a_citation(tmp_path: Path) -> None:
+    """[0,1] 是数学区间，不算引用（不报 dangling）。"""
+    md = """# Abstract
+
+The closed interval [0,1] is common in this domain.
+
+# References
+
+[1] Author A. One[J]. J, 2020.
+
+[2] Author B. Two[J]. J, 2021.
+"""
+    code, out = run_checker(md, mode="journal", tmp_path=tmp_path)
+    codes = _codes(out)
+    assert "DANGLING_CITATION" not in codes, f"[0,1] 不应触发 DANGLING_CITATION: {codes}\n{out}"
+
+
+def test_range_within_list_is_valid(tmp_path: Path) -> None:
+    """[3-5] 在 N=5 时是合法引用（无 dangling / uncited）。"""
+    md = """# Abstract
+
+See [1][2] and [3-5].
+
+# References
+
+[1] A[J]. J, 2020.
+
+[2] B[J]. J, 2021.
+
+[3] C[J]. J, 2022.
+
+[4] D[J]. J, 2023.
+
+[5] E[J]. J, 2024.
+"""
+    code, out = run_checker(md, mode="journal", tmp_path=tmp_path)
+    codes = _codes(out)
+    assert "DANGLING_CITATION" not in codes, f"[3-5]@N=5 不应 dangling: {codes}\n{out}"
+    assert "UNCITED_REFERENCE" not in codes, f"[3-5]@N=5 不应 uncited: {codes}\n{out}"
+
+
+def test_range_out_of_bounds_is_dangling(tmp_path: Path) -> None:
+    """[3-5] 在 N=3 时越界 → 4、5 报 DANGLING_CITATION。"""
+    md = """# Abstract
+
+See [3-5].
+
+# References
+
+[1] A[J]. J, 2020.
+
+[2] B[J]. J, 2021.
+
+[3] C[J]. J, 2022.
+"""
+    code, out = run_checker(md, mode="journal", tmp_path=tmp_path)
+    codes = _codes(out)
+    assert "DANGLING_CITATION" in codes, f"[3-5]@N=3 应报 dangling: {codes}\n{out}"
+
+
+def test_author_year_style_skipped(tmp_path: Path) -> None:
+    """作者-年份制草稿跳过数字交叉核验（不报假的 100% 未引用）。"""
+    md = """# Abstract
+
+Smith (2020) proposed a method. See also Jones and Brown (2019).
+
+# References
+
+[1] Author A. One[J]. J, 2020.
+
+[2] Author B. Two[J]. J, 2021.
+"""
+    code, out = run_checker(md, mode="journal", tmp_path=tmp_path)
+    codes = _codes(out)
+    assert "CITATION_STYLE_NOT_NUMERIC" in out, f"应给出 CITATION_STYLE_NOT_NUMERIC 说明: {out}"
+    assert "DANGLING_CITATION" not in codes, f"作者-年份制不应报 dangling: {codes}\n{out}"
+    assert "UNCITED_REFERENCE" not in codes, f"作者-年份制不应报 uncited: {codes}\n{out}"
+
+
+def test_no_reference_section_skipped(tmp_path: Path) -> None:
+    """无 References 段时跳过交叉核验并说明原因，不判失败。"""
+    md = """# Abstract
+
+We propose a method [1].
+"""
+    code, out = run_checker(md, mode="journal", tmp_path=tmp_path)
+    codes = _codes(out)
+    assert "CITATION_CROSSLINK_SKIPPED" in out, f"应说明跳过原因: {out}"
+    assert "DANGLING_CITATION" not in codes, f"无文献表不应报 dangling: {codes}\n{out}"
+    assert "UNCITED_REFERENCE" not in codes, f"无文献表不应报 uncited: {codes}\n{out}"
+
+
+def test_unparseable_reference_entries_skipped(tmp_path: Path) -> None:
+    """References 段存在但条目不是 [N] 格式 → 跳过并说明，不判失败。"""
+    md = """# Abstract
+
+We propose a method [1].
+
+# References
+
+Smith, J. (2020). Title one. Journal.
+
+Jones, K. (2021). Title two. Journal.
+"""
+    code, out = run_checker(md, mode="journal", tmp_path=tmp_path)
+    codes = _codes(out)
+    assert "CITATION_CROSSLINK_SKIPPED" in out, f"应说明跳过原因: {out}"
+    assert "DANGLING_CITATION" not in codes, f"条目不可识别不应报 dangling: {codes}\n{out}"
+    assert "UNCITED_REFERENCE" not in codes, f"条目不可识别不应报 uncited: {codes}\n{out}"
+
