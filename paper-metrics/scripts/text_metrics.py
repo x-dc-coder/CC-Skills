@@ -184,6 +184,12 @@ METRIC_IDS = (
     "M-STNC-41",
     "M-STNC-42",
     "M-STNC-43",
+    # Sentence-pattern layer (issue #23): deterministic punctuation/
+    # structure statistics over split_clauses_zh output. No annotation
+    # needed - the patterns are syntactic counts, not semantic labels.
+    "M-SPAT-44",
+    "M-SPAT-45",
+    "M-SPAT-46",
 )
 
 #: A text is treated as Chinese (and therefore outside the validated language of
@@ -237,6 +243,11 @@ _METRIC_LANGUAGE_CAPABILITY: dict[str, tuple[str, ...]] = {
     "M-STNC-41": ("zh",),
     "M-STNC-42": ("zh",),
     "M-STNC-43": ("zh",),
+    # Sentence-pattern layer (issue #23): zh-only, computed from the Chinese
+    # clause splitter; the English path has no clause layer to build on.
+    "M-SPAT-44": ("zh",),
+    "M-SPAT-45": ("zh",),
+    "M-SPAT-46": ("zh",),
 }
 _DEFAULT_METRIC_LANGUAGES: tuple[str, ...] = ("en",)
 #: Distinct from LANGUAGE_NOT_SUPPORTED: the language is measurable, this
@@ -336,6 +347,10 @@ _METRIC_UNITS = {
     "M-STNC-41": _UNIT_RATIO,
     "M-STNC-42": _UNIT_RATIO,
     "M-STNC-43": _UNIT_RATIO,
+    # Sentence-pattern layer (issue #23): structural counts, OBSERVED.
+    "M-SPAT-44": _UNIT_CLAUSES_PER_SENTENCE,
+    "M-SPAT-45": _UNIT_RATIO,
+    "M-SPAT-46": _UNIT_RATIO,
 }
 
 #: Frozen per-metric evidence sampling rules (see module docstring rule 5).
@@ -363,6 +378,9 @@ _EVIDENCE_RULES = {
     "M-STNC-41": "unit=sentence_span|filter=stance==hedging|rule=booster_minus_hedge_presence" + _EVIDENCE_SUFFIX,
     "M-STNC-42": "unit=sentence_span|filter=stance==boosting|rule=booster_minus_hedge_presence" + _EVIDENCE_SUFFIX,
     "M-STNC-43": "unit=sentence_span|filter=stance==assertive|rule=booster_minus_hedge_presence" + _EVIDENCE_SUFFIX,
+    "M-SPAT-44": "unit=sentence_span|filter=all_sentences|count=clauses" + _EVIDENCE_SUFFIX,
+    "M-SPAT-45": "unit=sentence_span|filter=multi_clause_sentences" + _EVIDENCE_SUFFIX,
+    "M-SPAT-46": "unit=clause_span|filter=clauses_starting_with_a_connector" + _EVIDENCE_SUFFIX,
 }
 _EVIDENCE_RULE_DEFAULT = "unit=span" + _EVIDENCE_SUFFIX
 
@@ -1726,6 +1744,136 @@ def _not_implemented_metric(metric_spec: str, language: dict[str, Any]):
     return record
 
 
+def _sentence_pattern_stats(text: str, sentences: Sequence[Span],
+                            clauses: Sequence[ClauseSpan],
+                            connector_groups: Mapping[str, Sequence[str]]
+                            ) -> tuple[list[str], list[bool], list[bool]]:
+    """Per-sentence pattern classification (issue #23), deterministic.
+
+    Returns three parallel lists aligned with `sentences`: the pattern name
+    of each sentence, whether it is multi-clause, and whether its first
+    clause opens with a discourse connector. The patterns are syntactic
+    counts - no annotation, no model - so they are OBSERVED, not INFERRED.
+    """
+    # Clause membership: a clause belongs to the sentence whose span contains
+    # it. Both are sorted by start, so a single sweep assigns every clause.
+    clauses_per: list[int] = [0] * len(sentences)
+    si = 0
+    for clause in clauses:
+        while si < len(sentences) and sentences[si].end < clause.start:
+            si += 1
+        if si < len(sentences) and sentences[si].start <= clause.start:
+            clauses_per[si] += 1
+    # A sentence is multi-clause when it splits into more than one clause.
+    multi = [c > 1 for c in clauses_per]
+    # A clause opens with a connector when its first characters match one.
+    all_connectors: set[str] = set()
+    for entries in connector_groups.values():
+        all_connectors.update(entries)
+    min_len = min((len(w) for w in all_connectors), default=0)
+    opens = []
+    for sentence, n_clauses in zip(sentences, clauses_per):
+        if not n_clauses or not all_connectors:
+            opens.append(False)
+            continue
+        first = text[sentence.start:sentence.end].lstrip()
+        opens.append(any(first.startswith(w) for w in all_connectors
+                         if len(w) >= min_len))
+    # Pattern name: the coarse structural shape of the sentence.
+    patterns = []
+    for n_clauses, is_multi, opens_conn in zip(clauses_per, multi, opens):
+        if n_clauses == 0:
+            patterns.append("unsplit")
+        elif is_multi and opens_conn:
+            patterns.append("multi_clause_connective_open")
+        elif is_multi:
+            patterns.append("multi_clause_plain")
+        elif opens_conn:
+            patterns.append("single_clause_connective_open")
+        else:
+            patterns.append("single_clause_plain")
+    return patterns, multi, opens
+
+
+def _metric_spat44(text: str, sentences: Sequence[Span],
+                   clauses: Sequence[ClauseSpan]) -> dict[str, Any]:
+    """M-SPAT-44: mean distinct clause-start markers per sentence.
+
+    Complements M-CLS-31 (clauses per sentence) with the writer's habit of
+    opening a sentence with a discourse connector - 然而/因此/同时 - which is
+    the visible scaffolding of an argument. A high value is heavy explicit
+    connective framing; a low value is parataxis.
+    """
+    marked_sentences = [s for s in sentences
+                       if any(ch in text[s.start:s.end]
+                              for ch in _CLAUSE_SEPARATORS)]
+    n_markers = sum(sum(1 for ch in text[s.start:s.end]
+                        if ch in _CLAUSE_SEPARATORS)
+                     for s in marked_sentences)
+    n_sentences = len(sentences)
+    evidence = _evidence([(s.start, s.end) for s in marked_sentences], text,
+                         len(marked_sentences))
+    if n_sentences == 0:
+        return _metric(
+            "M-SPAT-44", value=None, n=0, denominator=0,
+            unit=_UNIT_CLAUSES_PER_SENTENCE, evidence=evidence,
+            warnings=["M-SPAT-44: no sentence detected; value is undefined"])
+    # n is the number of clause-bearing sentences (the unit the rule
+    # describes), so evidence count and n agree; the rate itself divides the
+    # marker total by every sentence.
+    return _rate("M-SPAT-44", n_markers, n_sentences,
+                 _UNIT_CLAUSES_PER_SENTENCE, evidence,
+                 denominator_unit="sentences",
+                 separator_chars=list(_CLAUSE_SEPARATORS))
+
+
+def _metric_spat45(text: str, sentences: Sequence[Span],
+                    patterns: list[str]) -> dict[str, Any]:
+    """M-SPAT-45: share of multi-clause sentences (，；： inside).
+
+    The writer's preference for complex, comma-chained sentences. It is the
+    sentence-level view of M-LSF-16: the same long-sentence phenomenon, seen
+    from the structure side rather than the length side.
+    """
+    n_multi = sum(1 for p in patterns if p.startswith("multi_clause"))
+    n_sentences = len(sentences)
+    spans = [(s.start, s.end) for s, p in zip(sentences, patterns)
+             if p.startswith("multi_clause")]
+    evidence = _evidence(spans, text, n_multi)
+    if n_sentences == 0:
+        return _metric(
+            "M-SPAT-45", value=None, n=0, denominator=0,
+            unit=_UNIT_RATIO, evidence=evidence,
+            warnings=["M-SPAT-45: no sentence detected; value is undefined"])
+    return _rate("M-SPAT-45", n_multi, n_sentences, _UNIT_RATIO, evidence,
+                 denominator_unit="sentences")
+
+
+def _metric_spat46(text: str, sentences: Sequence[Span],
+                    opens: list[bool],
+                    connector_groups: Mapping[str, Sequence[str]]) -> dict[str, Any]:
+    """M-SPAT-46: share of sentences opening with a discourse connector.
+
+    A connective-open sentence hands the reader the logical relation first.
+    High values read as heavily signposted argument; very low values read as
+    unmarked juxtaposition, which is where a reviewer loses the thread.
+    """
+    n_open = sum(1 for o in opens if o)
+    n_sentences = len(sentences)
+    spans = [(s.start, s.end) for s, o in zip(sentences, opens) if o]
+    evidence = _evidence(spans, text, n_open)
+    if n_sentences == 0:
+        return _metric(
+            "M-SPAT-46", value=None, n=0, denominator=0,
+            unit=_UNIT_RATIO, evidence=evidence,
+            warnings=["M-SPAT-46: no sentence detected; value is undefined"])
+    total_connectors = sum(len(v) for v in connector_groups.values())
+    return _rate("M-SPAT-46", n_open, n_sentences, _UNIT_RATIO, evidence,
+                 denominator_unit="sentences",
+                 n_connector_entries=total_connectors,
+                 connector_groups=sorted(connector_groups))
+
+
 def _classify_sentence_stance(sentence_text: str,
                              hedge_entries: Sequence[str],
                              booster_entries: Sequence[str]) -> str:
@@ -2173,6 +2321,18 @@ def _zh_metrics(text: str, sentences: Sequence[Span], language: dict[str, Any],
         "M-STNC-42", "boosting", sentences, stance_labels, text)
     computed["M-STNC-43"] = _metric_stnc(
         "M-STNC-43", "assertive", sentences, stance_labels, text)
+
+    # Sentence-pattern layer (issue #23): deterministic structural counts over
+    # the same clause/sentence spans. OBSERVED (syntactic counts, no model).
+    all_group_entries = {group: _connector_entries(bundle, group)
+                         for group in ("contrastive", "causal", "result",
+                                       "temporal", "condition")}
+    spat_patterns, spat_multi, spat_open = _sentence_pattern_stats(
+        text, sentences, clauses, all_group_entries)
+    computed["M-SPAT-44"] = _metric_spat44(text, sentences, clauses)
+    computed["M-SPAT-45"] = _metric_spat45(text, sentences, spat_patterns)
+    computed["M-SPAT-46"] = _metric_spat46(text, sentences, spat_open,
+                                           all_group_entries)
 
     for metric_id, record in computed.items():
         record["language"] = language["language"]

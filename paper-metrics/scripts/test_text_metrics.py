@@ -393,7 +393,7 @@ def test_mtld_pinned_parameters_are_frozen():
 def test_every_metric_id_is_present_with_contract_fields():
     metrics = tm.compute_text_metrics(SAMPLE_TEXT, BUNDLE)
     assert set(metrics) == set(tm.METRIC_IDS)
-    assert len(tm.METRIC_IDS) == 22  # 13 frozen + 4 clause (#22) + 3 stance (#23) + 2 PDTB connectors (#23)
+    assert len(tm.METRIC_IDS) == 25  # 13 frozen + 4 clause (#22) + 3 stance + 2 PDTB + 3 sentence-pattern (#23)
     for metric_id, record in metrics.items():
         assert REQUIRED_FIELDS <= set(record), metric_id
         assert record["metric_spec"] == metric_id
@@ -731,6 +731,10 @@ ENGLISH_GOLDEN = {
     # PDTB temporal/condition (#23): zh-only, so English is suppressed.
     "M-CONN-30t": [None, 0, 0],
     "M-CONN-30q": [None, 0, 0],
+    # Sentence-pattern layer (#23): zh-only structural counts.
+    "M-SPAT-44": [None, 0, 0],
+    "M-SPAT-45": [None, 0, 0],
+    "M-SPAT-46": [None, 0, 0],
 }
 
 
@@ -995,6 +999,39 @@ def test_pdtb_connectors_never_leak_into_conn30():
         "M-CONN-30c", "M-CONN-30k", "M-CONN-30r"}, \
         "components must list the frozen three only"
     assert "M-CONN-30t" not in metrics["M-CONN-30"]["components"]
+
+def test_sentence_pattern_counts_are_deterministic_and_traceable():
+    """M-SPAT-44/45/46 are OBSERVED structural counts (issue #23)."""
+    loader = pytest.importorskip("lexicon_loader")
+    try:
+        zh = loader.load_lexicons(language="zh")
+    except Exception as exc:
+        pytest.skip("zh lexicon release unavailable: %s: %s" % (type(exc).__name__, exc))
+    text = ("然而，本文提出一种方法。该方法包含三个步骤，且每步都重要。"
+            "如果约束满足，则求解可行。简单的单句。因此，该框架有效。")
+    metrics = tm.compute_text_metrics(text, zh)
+    for m in ("M-SPAT-44", "M-SPAT-45", "M-SPAT-46"):
+        rec = metrics[m]
+        assert rec["state"] == "OBSERVED", m
+        assert rec["method"] == "rule", m
+        assert rec["value"] is not None and 0.0 <= rec["value"] <= 1.0, m
+        assert rec["evidence"]["count"] == rec["n"], m
+        for item in rec["evidence"]["sample"]:
+            assert item["excerpt"] in text, m
+    # 5 sentences. 4 carry a clause separator; 3 of them split into multiple
+    # clauses (the short one does not); 3 open with a connector.
+    assert metrics["M-SPAT-44"]["denominator"] == 5
+    assert metrics["M-SPAT-44"]["n"] == 4
+    assert metrics["M-SPAT-45"]["n"] == 3
+    assert metrics["M-SPAT-46"]["n"] == 3
+
+
+def test_sentence_patterns_never_fabricate_without_sentences():
+    """No sentence -> null + a named cause, never 0."""
+    empty = tm.compute_text_metrics("   ", BUNDLE)
+    for m in ("M-SPAT-44", "M-SPAT-45", "M-SPAT-46"):
+        assert empty[m]["value"] is None, m
+        assert empty[m]["warnings"] == ["CAPABILITY_NOT_SUPPORTED"], m
 
 # ---------------------------------------------------------------------------
 # Stance layer (issue #23): INFERRED, calibrated on the frozen annotation set.
