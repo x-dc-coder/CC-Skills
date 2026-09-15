@@ -1372,11 +1372,6 @@ _META_LINE_RE = re.compile(
     re.IGNORECASE,
 )
 
-_MARKER_ONLY_RE = re.compile(
-    r"^(Email addresses|Corresponding author|<sup>|Received|Accepted)",
-    re.IGNORECASE,
-)
-
 _OCR_FIXES = {
     "ofspring": "offspring", "diferent": "different", "eficiency": "efficiency",
     "efective": "effective", "efectively": "effectively", "efectiveness": "effectiveness",
@@ -1513,8 +1508,7 @@ def make_diff(marker_md: Path | None, mineru_md: Path | None,
         "#         +   \n",
         f"- Marker: {len(m_paras)} ",
         f"- MinerU: {len(u_paras)} ",
-        f"-   : {similarity_threshold}（        ）",
-        f"-  : {time.strftime('%Y-%m-%d %H:%M:%S')}",
+        f"- similarity: {similarity_threshold}",
         "",
         " ：",
         "  [SAME]          >=   （      ）",
@@ -1711,10 +1705,12 @@ def _extract_metadata(md_text: str, stem: str) -> dict:
                 in_abstract = False
             elif stripped and not stripped.startswith("<!--") and not stripped.startswith("---"):
                 abstract = (abstract + " " + stripped).strip()
-        m = re.match(r"^(#{1,6})\s+(\d+(?:\.\d+)*)\s+(.+)$", stripped)
+        m = re.match(r"^(#{1,6})\s+(\d+(?:\.\d+)*\.?)\s+(.+)$", stripped)
         if m:
             sections.append({
-                "level": len(m.group(1)), "num": m.group(2), "title": m.group(3),
+                "level": len(m.group(1)),
+                "num": m.group(2).rstrip("."),
+                "title": m.group(3).lstrip("| -").strip(),
             })
 
     return {
@@ -1725,6 +1721,315 @@ def _extract_metadata(md_text: str, stem: str) -> dict:
         "section_count": len(sections),
         "total_lines": len(lines),
     }
+
+
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+_HTML_TABLE_OPEN_RE = re.compile(r"<table\b", re.IGNORECASE)
+
+
+@dataclass
+class _Block:
+    kind: str
+    raw: str
+    norm: str
+
+
+def _norm_line(s: str) -> str:
+    s = _SUPERSCRIPT_RE.sub(r"^\1^", s)
+    s = _LATEX_INLINE_RE.sub(r"\1", s)
+    s = _IMAGE_RE.sub("[IMAGE]", s)
+    s = _LIST_BULLET_RE.sub("", s)
+    s = _HTML_TABLE_RE.sub("[TABLE]", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _heading_norm(s: str) -> str:
+    return "## " + re.sub(r"^#{1,6}\s+", "", s).strip()
+
+
+def _formula_norm(raw: str) -> str:
+    return "$$ " + re.sub(r"\s+", " ", raw).strip() + " $$"
+
+
+def _table_norm(raw: str) -> str:
+    cells: list[str] = []
+    for ln in raw.splitlines():
+        cells.extend(c.strip() for c in ln.strip().strip("|").split("|"))
+    return "[TABLE] " + " ".join(c for c in cells if c)
+
+
+def _image_norm(s: str) -> str:
+    m = re.match(r"!\[([^\]]*)\]", s)
+    alt = m.group(1) if m else ""
+    return "[IMAGE] " + re.sub(r"\s+", " ", alt).strip()
+
+
+def _text_norm(raw: str) -> str:
+    return _norm_line(re.sub(r"\s+", " ", raw))
+
+
+def _split_blocks(text: str) -> list[_Block]:
+    """Split raw markdown into structural blocks, keeping each block's verbatim
+    text so the merge can emit it without flattening lists or multi-line formulas."""
+    text = text.replace("\u2019", "'").replace("\u2018", "'")
+    text = text.replace("\u201c", '"').replace("\u201d", '"')
+    lines = text.splitlines()
+    n = len(lines)
+    blocks: list[_Block] = []
+    i = 0
+    while i < n:
+        line = lines[i]
+        s = line.strip()
+        if not s:
+            i += 1
+            continue
+        if s.startswith("<!--"):
+            raw_lines = []
+            while i < n:
+                raw_lines.append(lines[i])
+                if "-->" in lines[i]:
+                    i += 1
+                    break
+                i += 1
+            blocks.append(_Block("comment", "\n".join(raw_lines), ""))
+            continue
+        if _HEADING_RE.match(s):
+            blocks.append(_Block("heading", line, _heading_norm(s)))
+            i += 1
+            continue
+        if s.startswith("$$"):
+            raw_lines = [line]
+            if not (s.endswith("$$") and len(s) > 2):
+                j = i + 1
+                while j < n:
+                    raw_lines.append(lines[j])
+                    nxt = lines[j].strip()
+                    if nxt == "$$" or nxt.endswith("$$"):
+                        j += 1
+                        break
+                    j += 1
+                i = j
+            else:
+                i += 1
+            raw = "\n".join(raw_lines)
+            blocks.append(_Block("formula", raw, _formula_norm(raw)))
+            continue
+        if _MD_TABLE_ROW_RE.match(s):
+            raw_lines = []
+            while i < n and _MD_TABLE_ROW_RE.match(lines[i].strip()):
+                raw_lines.append(lines[i])
+                i += 1
+            raw = "\n".join(raw_lines)
+            blocks.append(_Block("table", raw, _table_norm(raw)))
+            continue
+        if _HTML_TABLE_OPEN_RE.search(s):
+            raw_lines = []
+            while i < n:
+                raw_lines.append(lines[i])
+                if "</table>" in lines[i].lower():
+                    i += 1
+                    break
+                i += 1
+            raw = "\n".join(raw_lines)
+            blocks.append(_Block("table", raw, _table_norm(raw)))
+            continue
+        if _IMAGE_RE.fullmatch(s):
+            blocks.append(_Block("image", line, _image_norm(s)))
+            i += 1
+            continue
+        if _META_LINE_RE.match(_norm_line(s)):
+            blocks.append(_Block("meta", line, ""))
+            i += 1
+            continue
+        raw_lines = []
+        while i < n:
+            cur = lines[i].strip()
+            if not cur:
+                break
+            if (_HEADING_RE.match(cur) or cur.startswith("$$")
+                    or _MD_TABLE_ROW_RE.match(cur) or _HTML_TABLE_OPEN_RE.search(cur)
+                    or _IMAGE_RE.fullmatch(cur) or cur.startswith("<!--")
+                    or _META_LINE_RE.match(_norm_line(cur))):
+                break
+            raw_lines.append(lines[i])
+            i += 1
+        raw = "\n".join(raw_lines)
+        blocks.append(_Block("text", raw, _text_norm(raw)))
+    return blocks
+
+
+def _content_digits(text: str) -> int:
+    return sum(1 for c in _HTML_TAG_RE.sub("", text) if c.isdigit())
+
+
+def _info_score(text: str) -> tuple[int, int, int, int]:
+    """Lexicographic info score: digits > formula markers > non-ASCII > length.
+
+    Recomputed from the raw text so a conflict's preferred variant is reproducible."""
+    digits = _content_digits(text)
+    formulas = text.count("$$") // 2 + len(_LATEX_INLINE_RE.findall(text))
+    non_ascii = sum(1 for c in text if ord(c) > 127)
+    return (digits, formulas, non_ascii, len(text))
+
+
+def _info_class_counts(text: str) -> dict[str, int]:
+    """Six info classes used by the lossless-merge regression check.
+
+    images counts every ![](...) marker; digits counts digit characters in
+    content blocks (text/heading/formula/table), not image paths or boilerplate."""
+    blocks = _split_blocks(text)
+    counts = {
+        "headings": 0, "paragraphs": 0, "tables": 0,
+        "display_formulas": 0, "images": 0, "digits": 0,
+    }
+    for b in blocks:
+        if b.kind == "heading":
+            counts["headings"] += 1
+        elif b.kind == "table":
+            counts["tables"] += 1
+        elif b.kind == "formula":
+            counts["display_formulas"] += 1
+        elif b.kind == "text":
+            counts["paragraphs"] += 1
+        if b.kind in ("text", "heading", "formula", "table"):
+            counts["digits"] += _content_digits(b.raw)
+    counts["images"] = len(_IMAGE_RE.findall(text))
+    return counts
+
+
+def _merge_bodies(m_raw: str, u_raw: str) -> tuple[str, dict]:
+    """Lossless merge of two raw markdown bodies; returns (body_text, report).
+
+    Every content block appears at least once: equal/near-equal blocks collapse to
+    the higher-info variant (tie -> MinerU), conflict blocks (0.3 <= ratio < 0.85)
+    keep BOTH variants tagged by source, and only meta boilerplate is dropped (and
+    counted in the report)."""
+    m_all = _split_blocks(m_raw)
+    u_all = _split_blocks(u_raw)
+    m_blocks = [b for b in m_all if b.kind != "meta"]
+    u_blocks = [b for b in u_all if b.kind != "meta"]
+    m_norms = [b.norm for b in m_blocks]
+    u_norms = [b.norm for b in u_blocks]
+
+    sm = difflib.SequenceMatcher(a=m_norms, b=u_norms, autojunk=False)
+
+    parts: list[str] = []
+    report = {
+        "dropped_meta": {"marker": 0, "mineru": 0},
+        "supplement_count": 0,
+        "kept_both": 0,
+        "conflicts": [],
+    }
+
+    def emit(b: _Block) -> None:
+        parts.append(b.raw)
+
+    def emit_conflict(mb: _Block, ub: _Block, ratio: float) -> None:
+        ms = _info_score(mb.raw)
+        us = _info_score(ub.raw)
+        preferred = "mineru" if us >= ms else "marker"
+        parts.append(
+            f"<!-- MERGE-CONFLICT ratio={ratio:.2f} preferred={preferred} "
+            f"score_marker={ms[0]}/{ms[1]}/{ms[2]}/{ms[3]} "
+            f"score_mineru={us[0]}/{us[1]}/{us[2]}/{us[3]} -->"
+        )
+        parts.append("**Marker**")
+        parts.append("")
+        parts.append(mb.raw)
+        parts.append("")
+        parts.append("**MinerU**")
+        parts.append("")
+        parts.append(ub.raw)
+        report["kept_both"] += 1
+        report["conflicts"].append({
+            "ratio": round(ratio, 4),
+            "preferred": preferred,
+            "score_marker": list(ms),
+            "score_mineru": list(us),
+            "marker_norm": mb.norm[:120],
+            "mineru_norm": ub.norm[:120],
+        })
+
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        if tag == "equal":
+            for idx in range(j1, j2):
+                emit(u_blocks[idx])
+            continue
+        m_blk = m_blocks[i1:i2]
+        u_blk = u_blocks[j1:j2]
+        if not m_blk:
+            for b in u_blk:
+                emit(b)
+            continue
+        if not u_blk:
+            for b in m_blk:
+                emit(b)
+            report["supplement_count"] += len(m_blk)
+            continue
+        local_used: set[int] = set()
+        for mb in m_blk:
+            best = -1
+            best_ratio = 0.0
+            for ui, ub in enumerate(u_blk):
+                if ui in local_used:
+                    continue
+                ratio = difflib.SequenceMatcher(None, mb.norm, ub.norm).ratio()
+                if ratio > best_ratio:
+                    best_ratio = ratio
+                    best = ui
+            if best < 0:
+                emit(mb)
+                report["supplement_count"] += 1
+                continue
+            local_used.add(best)
+            ub = u_blk[best]
+            if best_ratio >= 0.85:
+                ms = _info_score(mb.raw)
+                us = _info_score(ub.raw)
+                emit(mb if ms > us else ub)
+            elif best_ratio < 0.3:
+                emit(mb)
+                emit(ub)
+            else:
+                emit_conflict(mb, ub, best_ratio)
+        for ui, ub in enumerate(u_blk):
+            if ui not in local_used:
+                emit(ub)
+
+    report["dropped_meta"]["marker"] = sum(1 for b in m_all if b.kind == "meta")
+    report["dropped_meta"]["mineru"] = sum(1 for b in u_all if b.kind == "meta")
+
+    body = "\n\n".join(parts)
+    body = _fix_html_tables(body)
+    body = _fix_ocr_errors(body)
+    body = _fix_latex_spacing(body)
+    report["body_segments"] = len(parts)
+    return body, report
+
+
+def _render_merge_report(report: dict) -> str:
+    lines = ["## Merge Report", ""]
+    dm = report["dropped_meta"]
+    lines.append(
+        f"- Dropped meta lines (reason: front-matter boilerplate "
+        f"DOI/URL/email/Received/Accepted): marker {dm['marker']}, "
+        f"mineru {dm['mineru']}"
+    )
+    lines.append(f"- Marker-only blocks added: {report['supplement_count']}")
+    lines.append(f"- Kept-both conflicts (source-tagged in body): {report['kept_both']}")
+    if report["conflicts"]:
+        lines.append("")
+        lines.append("Conflict decisions (preferred = higher info score, "
+                     "digits > formulas > non-ASCII > length):")
+        for c in report["conflicts"][:50]:
+            lines.append(
+                f"- ratio={c['ratio']:.2f} preferred={c['preferred']} "
+                f"marker=({','.join(map(str, c['score_marker']))}) "
+                f"mineru=({','.join(map(str, c['score_mineru']))})"
+            )
+        if len(report["conflicts"]) > 50:
+            lines.append(f"- ... and {len(report['conflicts']) - 50} more")
+    return "\n".join(lines)
 
 
 def merge_md(marker_md: Path | None, mineru_md: Path | None,
@@ -1741,99 +2046,11 @@ def merge_md(marker_md: Path | None, mineru_md: Path | None,
 
     m_raw = marker_md.read_text(encoding="utf-8", errors="replace")
     u_raw = mineru_md.read_text(encoding="utf-8", errors="replace")
-    m_paras = _normalize_for_diff(m_raw)
-    u_paras = _normalize_for_diff(u_raw)
-    m_raw_lines = m_raw.splitlines()
-    u_raw_lines = u_raw.splitlines()
 
-    sm = difflib.SequenceMatcher(a=m_paras, b=u_paras, autojunk=False)
-
-    merged_paragraphs: list[str] = []
-    supplement_count = 0
-    used_u: set[int] = set()
-
-    for tag, i1, i2, j1, j2 in sm.get_opcodes():
-        if tag == "equal":
-            for idx in range(j1, j2):
-                if idx not in used_u:
-                    merged_paragraphs.append(u_paras[idx])
-                    used_u.add(idx)
-            continue
-
-        m_block = m_paras[i1:i2] if i1 < i2 else []
-        u_block = u_paras[j1:j2] if j1 < j2 else []
-
-        if not m_block and u_block:
-            for para in u_block:
-                if not _META_LINE_RE.match(para) and para != "[IMAGE]":
-                    merged_paragraphs.append(para)
-            continue
-
-        if m_block and not u_block:
-            for para in m_block:
-                if _MARKER_ONLY_RE.match(para) or para == "[IMAGE]" or para.startswith("## "):
-                    merged_paragraphs.append(para)
-                    supplement_count += 1
-            continue
-
-        local_used: set[int] = set()
-        for m_p in m_block:
-            best_u_idx = -1
-            best_ratio = 0.0
-            for u_idx, u_p in enumerate(u_block):
-                if u_idx in local_used:
-                    continue
-                ratio = difflib.SequenceMatcher(None, m_p, u_p).ratio()
-                if ratio > best_ratio:
-                    best_ratio = ratio
-                    best_u_idx = u_idx
-
-            if best_u_idx < 0:
-                if _MARKER_ONLY_RE.match(m_p) or m_p.startswith("## "):
-                    merged_paragraphs.append(m_p)
-                    supplement_count += 1
-                continue
-
-            local_used.add(best_u_idx)
-            used_u.add(j1 + best_u_idx)
-            u_p = u_block[best_u_idx]
-
-            if best_ratio >= 0.85:
-                merged_paragraphs.append(m_p)
-            elif best_ratio < 0.3:
-                if _MARKER_ONLY_RE.match(m_p) or m_p.startswith("## "):
-                    merged_paragraphs.append(m_p)
-                    supplement_count += 1
-                if u_p and not _META_LINE_RE.match(u_p):
-                    merged_paragraphs.append(u_p)
-            else:
-                merged_paragraphs.append(u_p)
-
-        for u_idx, u_p in enumerate(u_block):
-            if u_idx not in local_used:
-                if not _META_LINE_RE.match(u_p):
-                    merged_paragraphs.append(u_p)
-
-    merged_text = "\n\n".join(merged_paragraphs)
-
-    marker_tables = re.findall(r"((?:\|[^\n]+\|\s*\n){2,})", m_raw)
-    table_idx = 0
-
-    def replace_table(m):
-        nonlocal table_idx
-        if table_idx < len(marker_tables):
-            t = marker_tables[table_idx].rstrip()
-            table_idx += 1
-            return t
-        return m.group(0)
-
-    merged_text = re.sub(r"\[TABLE\]", replace_table, merged_text)
-    merged_text = _fix_ocr_errors(merged_text)
-    merged_text = _fix_latex_spacing(merged_text)
-    merged_text = _fix_html_tables(merged_text)
+    body_text, report = _merge_bodies(m_raw, u_raw)
 
     stem = (mineru_md or marker_md).stem
-    meta = _extract_metadata(merged_text, stem)
+    meta = _extract_metadata(body_text, stem)
 
     title = meta["title"] or stem
     authors = meta["authors"] or ""
@@ -1841,13 +2058,12 @@ def merge_md(marker_md: Path | None, mineru_md: Path | None,
 
     header_lines = [
         "---",
-        f"title: |",
+        "title: |",
         f"  {title}",
-        f"authors: |",
+        "authors: |",
         f"  {authors}",
         f'source_pdf: "{stem}"',
-        f'merged_at: {time.strftime("%Y-%m-%d %H:%M:%S")}',
-        "engines: MinerU(  ) + Marker(  )",
+        "engines: MinerU + Marker",
         f'sections: {meta["section_count"]}',
         f'total_lines: {meta["total_lines"]}',
         "---",
@@ -1873,34 +2089,31 @@ def merge_md(marker_md: Path | None, mineru_md: Path | None,
     header_lines.append("---")
     header_lines.append("")
 
-    final_text = "\n".join(header_lines) + "\n" + merged_text
+    final_text = "\n".join(header_lines) + "\n" + body_text
 
     image_list: list[str] = []
     for img_pattern, source in [(m_raw, "Marker"), (u_raw, "MinerU")]:
         for match in re.finditer(r"!\[([^\]]*)\]\(([^)]+)\)", img_pattern):
             alt, path = match.group(1), match.group(2)
-            image_list.append(
-                f"- {source}: `{path}`" + (f" (alt: {alt})" if alt else "")
-            )
+            image_list.append(f"- {source}: {path}" + (f" (alt: {alt})" if alt else ""))
 
     if image_list:
         seen = set()
         unique_images = []
         for img in image_list:
-            path_part = img.split("`")[1] if "`" in img else img
+            path_part = img.split(": ")[1] if ": " in img else img
             if path_part not in seen:
                 seen.add(path_part)
                 unique_images.append(img)
         final_text += "\n\n---\n\n## Images Index\n\n"
-        final_text += (
-            f"  {len(unique_images)}  "
-            f"（Marker {len(m_raw_lines)} , MinerU {len(u_raw_lines)} ）\n\n"
-        )
+        final_text += f"  {len(unique_images)} images (Marker + MinerU)\n\n"
         for img in unique_images:
             final_text += img + "\n"
 
+    final_text += "\n\n---\n\n" + _render_merge_report(report) + "\n"
+
     out_path.write_text(final_text, encoding="utf-8")
-    return len(u_paras), supplement_count
+    return report["body_segments"], report["supplement_count"]
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

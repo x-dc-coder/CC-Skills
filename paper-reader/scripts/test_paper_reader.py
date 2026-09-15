@@ -1178,3 +1178,58 @@ def test_cli_help_exits_zero_and_documents_backfill() -> None:
     assert proc.returncode == 0
     assert "--backfill-meta" in proc.stdout
 
+
+
+# ── Lossless merge (issue #15) ────────────────────────────────────────────────
+
+_MERGE_MARKER = (
+    "# Title\n\nShort intro.\n\n"
+    "We evaluate the method on twelve benchmark instances and report the mean accuracy over five seeds.\n\n"
+    "$$a = 1$$\n\n| A | B |\n|---|---|\n| 1 | 7 |\n\n![fig1](images/1.png)\n"
+)
+_MERGE_MINERU = (
+    "# Title\n\nShort intro.\n\n"
+    "We evaluate the method on twelve benchmark instances and report the average precision across five random seeds.\n\n"
+    "$$a = 2$$\n\n| A | B |\n|---|---|\n| 2 | 8 |\n\n![fig2](images/2.png)\n"
+)
+
+
+def _merge(tmp_path: Path, marker: str, mineru: str) -> str:
+    m = tmp_path / "marker.md"
+    u = tmp_path / "mineru.md"
+    m.write_text(marker, encoding="utf-8")
+    u.write_text(mineru, encoding="utf-8")
+    pr.merge_md(m, u, tmp_path / "MERGED.md")
+    return (tmp_path / "MERGED.md").read_text(encoding="utf-8")
+
+
+def test_merged_never_loses_an_info_class(tmp_path: Path) -> None:
+    """Issue #15: the merge used to be lossy (merged smaller than either engine on
+    digits).  The contract is "merged >= the better engine per info class"; a
+    regression in the conflict rule breaks it silently, which is why this is the
+    regression test the issue asks for."""
+    merged = _merge(tmp_path, _MERGE_MARKER, _MERGE_MINERU)
+    got = pr._info_class_counts(merged)
+    marker = pr._info_class_counts(_MERGE_MARKER)
+    mineru = pr._info_class_counts(_MERGE_MINERU)
+    for klass in ("headings", "paragraphs", "tables", "display_formulas", "images", "digits"):
+        assert got[klass] >= max(marker[klass], mineru[klass]), klass
+
+
+def test_merge_is_byte_identical_across_runs_and_carries_no_timestamp(tmp_path: Path) -> None:
+    """Acceptance 2: a wall-clock merged_at in the header made two runs of the same
+    inputs differ, so the merged product could never be the one canonical deliverable."""
+    first = _merge(tmp_path, _MERGE_MARKER, _MERGE_MINERU)
+    second = _merge(tmp_path, _MERGE_MARKER, _MERGE_MINERU)
+    assert first == second
+    assert "merged_at" not in first
+
+
+def test_conflict_blocks_keep_both_variants_and_report_their_scores(tmp_path: Path) -> None:
+    """Acceptance 3+4: nothing is dropped silently - a conflict keeps BOTH variants with
+    a recomputable reason (ratio + per-engine info scores + which one was preferred)."""
+    merged = _merge(tmp_path, _MERGE_MARKER, _MERGE_MINERU)
+    assert "MERGE-CONFLICT" in merged, merged[-2000:]
+    assert "**Marker**" in merged and "**MinerU**" in merged
+    assert "preferred=" in merged and "score_marker=" in merged and "score_mineru=" in merged
+    assert "conflict" in merged[-4000:].lower() or "merge" in merged[-4000:].lower()
