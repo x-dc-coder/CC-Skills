@@ -223,11 +223,12 @@ _METRIC_LANGUAGE_CAPABILITY: dict[str, tuple[str, ...]] = {
     "M-CLS-32": ("zh",),
     "M-SLEN-34": ("zh",),
     "M-SLEN-35": ("zh",),
-    # Stance (issue #23): validated for zh once the annotation set lands; until
-    # then the capability tuple is empty, which yields null + NOT_IMPLEMENTED.
-    "M-STNC-41": (),
-    "M-STNC-42": (),
-    "M-STNC-43": (),
+    # Stance (issue #23): INFERRED, validated for zh against the frozen
+    # 220-sentence calibration set (kappa 0.7584 >= 0.6). English has no
+    # calibrated set, so it keeps null + CAPABILITY_NOT_SUPPORTED.
+    "M-STNC-41": ("zh",),
+    "M-STNC-42": ("zh",),
+    "M-STNC-43": ("zh",),
 }
 _DEFAULT_METRIC_LANGUAGES: tuple[str, ...] = ("en",)
 #: Distinct from LANGUAGE_NOT_SUPPORTED: the language is measurable, this
@@ -321,7 +322,7 @@ _METRIC_UNITS = {
     "M-PAS-09": _UNIT_RATIO,
     "M-NOM-10": _UNIT_RATIO,
     "M-TENSE-28": _UNIT_RATIO,
-    # Stance layer (issue #23): INFERRED, pending the calibration set.
+    # Stance layer (issue #23): INFERRED, sentence-level stance rates.
     "M-STNC-41": _UNIT_RATIO,
     "M-STNC-42": _UNIT_RATIO,
     "M-STNC-43": _UNIT_RATIO,
@@ -344,8 +345,33 @@ _EVIDENCE_RULES = {
     "M-PAS-09": "unit=passive_phrase_span|filter=aux(+adverb<=2)+past_participle|lead=perfect_or_modal" + _EVIDENCE_SUFFIX,
     "M-NOM-10": "unit=token_span|filter=suffix_and_verb_base_and_not_denylisted" + _EVIDENCE_SUFFIX,
     "M-TENSE-28": "unit=token_span|filter=present_tense" + _EVIDENCE_SUFFIX,
+    # Stance layer (issue #23): one stance per sentence; the evidence spans
+    # are the sentences the classifier labelled, not the trigger phrases, so a
+    # consumer can trace each labelled sentence back to the text.
+    "M-STNC-41": "unit=sentence_span|filter=stance==hedging|rule=booster_minus_hedge_presence" + _EVIDENCE_SUFFIX,
+    "M-STNC-42": "unit=sentence_span|filter=stance==boosting|rule=booster_minus_hedge_presence" + _EVIDENCE_SUFFIX,
+    "M-STNC-43": "unit=sentence_span|filter=stance==assertive|rule=booster_minus_hedge_presence" + _EVIDENCE_SUFFIX,
 }
 _EVIDENCE_RULE_DEFAULT = "unit=span" + _EVIDENCE_SUFFIX
+
+#: Stance layer (issue #23) - INFERRED, calibrated on the frozen set
+#: data/stance-calibration-zh.json. The rules are the *presence* of hedge vs
+#: booster lexicon entries inside a sentence (not the count: a sentence has one
+#: stance, so repeated triggers must not stack). Ties and no-trigger sentences
+#: are assertive, which is the residual class by construction.
+_STANCE_LABELS = ("assertive", "hedging", "boosting")
+_STANCE_CALIBRATION = "data/stance-calibration-zh.json"
+_STANCE_CALIBRATION_FACTS = {
+    "annotator_agreement": {"metric": "cohens_kappa", "value": 0.7584,
+                            "n_sentences": 220, "threshold": 0.6},
+    "holdout_macro_f1": 0.5415,
+    "holdout_accuracy": 0.7273,
+    "holdout_per_label": {
+        "assertive": {"precision": 0.9318, "recall": 0.7593, "f1": 0.8367},
+        "hedging": {"precision": 0.2500, "recall": 0.5000, "f1": 0.3333},
+        "boosting": {"precision": 0.3571, "recall": 0.6250, "f1": 0.4545},
+    },
+}
 
 # ---------------------------------------------------------------------------
 # Sentence splitting
@@ -1688,6 +1714,87 @@ def _not_implemented_metric(metric_spec: str, language: dict[str, Any]):
     return record
 
 
+def _classify_sentence_stance(sentence_text: str,
+                             hedge_entries: Sequence[str],
+                             booster_entries: Sequence[str]) -> str:
+    """One of _STANCE_LABELS for a single Chinese sentence (issue #23).
+
+    Presence, not count: a sentence carries one stance, so a repeated trigger
+    is the same claim made twice rather than a stronger one. A tie or a
+    trigger-free sentence is assertive, the residual class by construction.
+    This exact rule was calibrated on the frozen 220-sentence set; changing it
+    invalidates the holdout figures in _STANCE_CALIBRATION_FACTS.
+    """
+    if not sentence_text:
+        return "assertive"
+    n_boost = sum(1 for w in booster_entries if w and w in sentence_text)
+    n_hedge = sum(1 for w in hedge_entries if w and w in sentence_text)
+    if n_boost > n_hedge:
+        return "boosting"
+    if n_hedge > n_boost:
+        return "hedging"
+    return "assertive"
+
+
+def _stance_evidence(sentences: Sequence[Span], labels: list[str],
+                     wanted: str, text: str) -> dict[str, Any]:
+    """Evidence for one stance metric: the labelled sentences themselves.
+
+    INFERRED-layer rule 4 (per-sentence traceable output): the consumer must be
+    able to see which sentences were counted, not just how many. The spans
+    therefore point at the sentences the classifier labelled as wanted.
+    """
+    spans = [(span.start, span.end) for span, label in zip(sentences, labels)
+             if label == wanted]
+    return _evidence(spans, text, len(spans))
+
+
+def _metric_stnc(metric_spec: str, label: str, sentences: Sequence[Span],
+                 labels: list[str], text: str) -> dict[str, Any]:
+    """M-STNC-41/42/43: share of sentences carrying one stance (issue #23).
+
+    INFERRED, never OBSERVED: the value is a classifier output, not a rule that
+    is true by construction. The record therefore always carries the measured
+    holdout quality, so a consumer can discount it appropriately; the hedging
+    class is rare in academic Chinese (12/220 sentences) and its precision is
+    correspondingly weak, which is exactly the kind of caveat a gate must not
+    hide. The metrics never enter a gate (rule 5).
+    """
+    n_label = labels.count(label)
+    n_sentences = len(sentences)
+    evidence = _stance_evidence(sentences, labels, label, text)
+    cal = {"state": "INFERRED", "method": "model_lexicon_presence",
+           "calibration": _STANCE_CALIBRATION_FACTS,
+           "annotation_set": {"status": "frozen",
+                              "path": _STANCE_CALIBRATION,
+                              "n_sentences": 220,
+                              "labels": list(_STANCE_LABELS)}}
+    if n_sentences == 0:
+        return _metric(
+            metric_spec, value=None, n=0, denominator=0,
+            unit=_UNIT_RATIO, evidence=evidence,
+            warnings=["%s: no sentence detected; value is undefined"
+                      % metric_spec],
+            **cal)
+    return _rate(
+        metric_spec, n_label, n_sentences, _UNIT_RATIO, evidence,
+        [] if n_label or n_sentences else ["%s: no sentence detected"
+                                           % metric_spec],
+        denominator_unit="sentences",
+        **cal)
+    return _rate(
+        metric_spec, n_label, n_sentences, _UNIT_RATIO, evidence,
+        [] if n_label or n_sentences else ["%s: no sentence detected"
+                                           % metric_spec],
+        denominator_unit="sentences",
+        state="INFERRED", method="model_lexicon_presence",
+        calibration=_STANCE_CALIBRATION_FACTS,
+        annotation_set={"status": "frozen",
+                        "path": _STANCE_CALIBRATION,
+                        "n_sentences": 220,
+                        "labels": list(_STANCE_LABELS)})
+
+
 def _zh_cjk_unit_count(span_text: str) -> int:
     """Chinese sentence-length unit: CJK characters + ASCII alpha tokens.
 
@@ -2025,6 +2132,19 @@ def _zh_metrics(text: str, sentences: Sequence[Span], language: dict[str, Any],
         "M-SLEN-34", sentences, counts, 0.90)
     computed["M-SLEN-35"] = _metric_slen_percentile(
         "M-SLEN-35", sentences, counts, 0.95)
+
+    # Stance layer (issue #23): INFERRED sentence-level stance rates. The
+    # classifier is the frozen lexicon-presence rule calibrated on
+    # data/stance-calibration-zh.json (kappa 0.7584 >= 0.6).
+    stance_labels = [_classify_sentence_stance(span.text,
+                                               hedge_entries, booster_entries)
+                     for span in sentences]
+    computed["M-STNC-41"] = _metric_stnc(
+        "M-STNC-41", "hedging", sentences, stance_labels, text)
+    computed["M-STNC-42"] = _metric_stnc(
+        "M-STNC-42", "boosting", sentences, stance_labels, text)
+    computed["M-STNC-43"] = _metric_stnc(
+        "M-STNC-43", "assertive", sentences, stance_labels, text)
 
     for metric_id, record in computed.items():
         record["language"] = language["language"]

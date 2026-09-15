@@ -20,6 +20,7 @@ the unit tests is the local FakeBundle below.
 from __future__ import annotations
 
 import json
+from collections import Counter
 import math
 import sys
 from dataclasses import dataclass
@@ -813,13 +814,19 @@ def test_chinese_measures_the_supported_subset_and_names_the_rest():
     # (#23) is INFERRED and stays null + NOT_IMPLEMENTED until its calibration
     # set lands, so it is excluded from the measured set by capability, not by
     # language.
-    _STANCE_PLACEHOLDERS = {"M-STNC-41", "M-STNC-42", "M-STNC-43"}
-    assert set(measured) == set(tm.METRIC_IDS) - {"M-TENSE-28"} - _STANCE_PLACEHOLDERS
-    for placeholder in _STANCE_PLACEHOLDERS:
-        record = metrics[placeholder]
-        assert record["state"] == "INFERRED", placeholder
-        assert record["value"] is None and record["n"] == 0, placeholder
-        assert record["warnings"] == ["NOT_IMPLEMENTED"], placeholder
+    _STANCE = {"M-STNC-41", "M-STNC-42", "M-STNC-43"}
+    assert set(measured) == set(tm.METRIC_IDS) - {"M-TENSE-28"}
+    for mid in _STANCE:
+        record = metrics[mid]
+        assert record["state"] == "INFERRED", mid
+        assert record["method"] == "model_lexicon_presence", mid
+        assert record["value"] is not None and record["denominator"] > 0, mid
+        # admission evidence travels with the record, never in a gate
+        cal = record["calibration"]
+        assert cal["annotator_agreement"]["value"] >= 0.6, mid
+        assert cal["holdout_macro_f1"] > 0.0 and cal["holdout_accuracy"] > 0.0, mid
+        assert record["annotation_set"]["status"] == "frozen", mid
+        assert set(record["annotation_set"]["labels"]) == set(tm._STANCE_LABELS), mid
     assert metrics["M-NOM-10"]["variant"] == "cjk-abstract-noun-suffix"
     assert metrics["M-NOM-10"]["unit"] == tm._UNIT_PER_1000_CJK_UNITS
     assert "化" in metrics["M-NOM-10"]["excluded_suffixes"]
@@ -955,6 +962,124 @@ def test_real_corpus_excerpt_if_available():
     assert all(0.0 <= metrics[m]["value"] <= 1.0
                for m in ("M-HED-14", "M-BOO-15", "M-AWR-03", "M-NOM-10", "M-PAS-09", "M-TENSE-28"))
     print(f"corpus excerpt: {path.name} chars={len(text)}")
+
+
+# ---------------------------------------------------------------------------
+# Stance layer (issue #23): INFERRED, calibrated on the frozen annotation set.
+# The tests below lock the admission rules - a change to either the frozen
+# file or the classifier invalidates them loudly rather than silently
+# degrading an INFERRED number.
+# ---------------------------------------------------------------------------
+
+STANCE_CALIBRATION = (Path(__file__).resolve().parent.parent / "data"
+                      / "stance-calibration-zh.json")
+
+
+def test_stance_calibration_set_is_frozen_and_consistent():
+    """The INFERRED admission rules: labels, kappa >= 0.6, >= 200 sentences."""
+    if not STANCE_CALIBRATION.is_file():
+        pytest.skip("stance calibration set not shipped")
+    data = json.loads(STANCE_CALIBRATION.read_text(encoding="utf-8"))
+    assert data["labels"] == list(tm._STANCE_LABELS)
+    n = len(data["sentences"])
+    assert n >= 200, "INFERRED admission requires >= 200 annotated sentences"
+    agreement = data["annotation_protocol"]["agreement"]
+    assert agreement["metric"] == "cohens_kappa"
+    assert agreement["value"] >= agreement["threshold"] >= 0.6
+    assert agreement["n_sentences"] == n
+    by_split = Counter(s["split"] for s in data["sentences"])
+    assert by_split["train"] + by_split["holdout"] == n
+    assert all(s["label"] in tm._STANCE_LABELS for s in data["sentences"])
+    assert all(s["source"] in ("agreed", "adjudicated")
+               for s in data["sentences"])
+
+
+def test_stance_calibration_facts_match_the_frozen_set():
+    """The shipped constants must be re-derivable from the frozen file."""
+    if not STANCE_CALIBRATION.is_file():
+        pytest.skip("stance calibration set not shipped")
+    data = json.loads(STANCE_CALIBRATION.read_text(encoding="utf-8"))
+    facts = tm._STANCE_CALIBRATION_FACTS
+    assert facts["annotator_agreement"]["value"] == pytest.approx(
+        data["annotation_protocol"]["agreement"]["value"])
+    assert facts["annotator_agreement"]["n_sentences"] == len(
+        data["sentences"])
+    # The shipped classifier runs against the real zh release; the English
+    # FakeBundle has empty hedge/booster lists and would mis-score everything.
+    loader = pytest.importorskip("lexicon_loader")
+    try:
+        zh = loader.load_lexicons(language="zh")
+    except Exception as exc:
+        pytest.skip("zh lexicon release unavailable: %s: %s" % (type(exc).__name__, exc))
+    hold = [s for s in data["sentences"] if s["split"] == "holdout"]
+    hedge = zh.hedge.entries
+    boost = zh.booster.entries
+    tp, fp, fn = Counter(), Counter(), Counter()
+    for s in hold:
+        pred = tm._classify_sentence_stance(s["text"], hedge, boost)
+        if pred == s["label"]:
+            tp[pred] += 1
+        else:
+            fp[pred] += 1
+            fn[s["label"]] += 1
+    f1s = []
+    for label in tm._STANCE_LABELS:
+        want = facts["holdout_per_label"][label]
+        precision = tp[label] / max(1, tp[label] + fp[label])
+        recall = tp[label] / max(1, tp[label] + fn[label])
+        assert want["precision"] == pytest.approx(precision, abs=2e-3), label
+        assert want["recall"] == pytest.approx(recall, abs=2e-3), label
+        f1 = 2 * precision * recall / max(1e-9, precision + recall)
+        f1s.append(f1)
+    assert facts["holdout_macro_f1"] == pytest.approx(sum(f1s) / len(f1s),
+                                                       abs=2e-3)
+    assert facts["holdout_accuracy"] == pytest.approx(
+        sum(tp.values()) / len(hold), abs=2e-3)
+
+
+def test_stance_labels_partition_the_sentences():
+    """The three rates sum to 1: every sentence gets exactly one stance."""
+    text = ("本文提出一种方法。该方法显著优于基线。这可能是因为约束更紧。"
+            "实验表明结果可靠。定义1给出形式化描述。")
+    metrics = tm.compute_text_metrics(text, BUNDLE)
+    rates = [metrics[m]["value"] for m in
+             ("M-STNC-41", "M-STNC-42", "M-STNC-43")]
+    assert sum(rates) == pytest.approx(1.0)
+    total = sum(metrics[m]["n"] for m in ("M-STNC-41", "M-STNC-42", "M-STNC-43"))
+    assert total == metrics["M-STNC-41"]["denominator"]
+
+
+def test_stance_never_fabricates_on_empty_or_english_text():
+    """Unmeasurable cases name their cause and never fabricate a 0."""
+    # A single trigger-free Chinese sentence is a legitimate assertive
+    # sentence: hedging/boosting are honestly 0/1, not fabricated, and the
+    # record still carries the INFERRED state with its calibration caveat.
+    plain = tm.compute_text_metrics("无终止符的标题式短语", BUNDLE)
+    assert plain["M-STNC-41"]["value"] == 0.0  # no hedge present
+    assert plain["M-STNC-43"]["value"] == 1.0  # the sentence is assertive
+    assert plain["M-STNC-41"]["state"] == "INFERRED"
+    # English has no calibrated set -> CAPABILITY_NOT_SUPPORTED, and the
+    # NOT_IMPLEMENTED placeholder must not resurface on the en path.
+    for text in ("", SAMPLE_TEXT):
+        en = tm.compute_text_metrics(text, None)
+        for m in ("M-STNC-41", "M-STNC-42", "M-STNC-43"):
+            assert en[m]["value"] is None, m
+            assert en[m]["warnings"] == ["CAPABILITY_NOT_SUPPORTED"], m
+            assert "calibration" not in en[m], m
+
+
+def test_stance_evidence_is_per_sentence_traceable():
+    """INFERRED rule 4: the counted sentences must be recoverable."""
+    text = "本文方法显著优于基线。这可能是因为约束。实验表明可靠。"
+    metrics = tm.compute_text_metrics(text, BUNDLE)
+    for m in ("M-STNC-41", "M-STNC-42", "M-STNC-43"):
+        rec = metrics[m]
+        sample = rec["evidence"]["sample"]
+        assert rec["evidence"]["count"] == rec["n"], m
+        for item in sample:
+            excerpt = item["excerpt"]
+            assert excerpt and excerpt in text, m
+            assert excerpt.rstrip()[-1:] in tm._CJK_TERMINATORS, m
 
 
 # ---------------------------------------------------------------------------
