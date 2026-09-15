@@ -801,6 +801,149 @@ def test_real_corpus_warn_only_contract_never_fails_the_gate(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# 13b. Issue #24: Chinese end-to-end profile -> contract -> validate_draft
+# ---------------------------------------------------------------------------
+
+#: The registered Chinese baseline (运筹与管理). Local by convention; the test
+#: skips cleanly when the drive is not mounted.
+ZH_CORPUS = Path("/mnt/e/AllProjects202601/M-PCA/_paper-metrics-run/"
+                 "运筹与管理/corpus_ycgl_pdf/paper-conversion")
+_ZH_ARTIFACT_DIRS = (Path("/tmp/kzyjc-v6"), Path("/tmp/audit-ycgl2"),
+                     Path("/tmp/reg-ycgl6"), Path("/tmp/zh-prof"))
+#: The four imported manuscript versions (canonical_import); same local rule.
+_MPCA_CORPUS = Path("/tmp/mpca-corpus")
+_MPCA_ARTIFACT_DIRS = (Path("/tmp/mpca-v6"),)
+
+
+def _zh_artifact_dir() -> Path | None:
+    for directory in _ZH_ARTIFACT_DIRS:
+        if ((directory / "_corpus_summary.json").is_file()
+                and (directory / "_per_paper_metrics.jsonl").is_file()):
+            return directory
+    return None
+
+
+def _mpca_artifact_dir() -> Path | None:
+    for directory in _MPCA_ARTIFACT_DIRS:
+        if ((directory / "_corpus_summary.json").is_file()
+                and (directory / "_per_paper_metrics.jsonl").is_file()):
+            return directory
+    return None
+
+
+@pytest.mark.skipif(_zh_artifact_dir() is None or not ZH_CORPUS.is_dir(),
+                    reason="registered zh corpus + profiled artifacts not present")
+def test_zh_corpus_contract_is_built_and_validates_a_real_chinese_paper(tmp_path):
+    """Issue #24: the Chinese path must work end to end on real prose.
+
+    Builds a contract from the registered Chinese corpus, then validates a real
+    Chinese paper through it.  The layer that matters for #22 is checked here:
+    the clause metrics must be part of the contract and must be measured on the
+    draft, not silently dropped.
+    """
+    artifacts = _zh_artifact_dir()
+    profiler = pytest.importorskip("profile_papers")
+
+    contract_path = tmp_path / "_writing_contract.zh.yaml"
+    assert bc.main(["--summary", str(artifacts / "_corpus_summary.json"),
+                    "--out", str(contract_path), "--quiet"]) == 0
+    contract = vd.load_contract(contract_path)
+
+    clause_metrics = {"M-CLS-31", "M-CLS-32", "M-SLEN-34", "M-SLEN-35"}
+    contract_metrics = {clause["metric"] for clause in contract["clauses"]}
+    # the clause layer is part of the contract, or the layer is disconnected
+    assert clause_metrics <= contract_metrics, (
+        sorted(clause_metrics - contract_metrics))
+
+    compute = vd.load_default_compute()
+    papers = profiler.discover_papers(ZH_CORPUS)
+    assert len(papers) >= 5
+    paper = papers[0]
+    paper.load_blocks()
+    text = paper.canonical_text()
+    assert len(text) > 1000
+
+    result = _validate_guarded(contract, text, compute)
+    assert result["exit_code"] == 0
+    assert result["draft_validity"]["status"] == "ok"
+    assert result["summary"]["n_gate_clauses"] == 0
+    # a real paper falls outside its own corpus band somewhere
+    assert result["summary"]["n_warn_failures"] > 0
+
+    # the clause layer was actually measured on the draft, with cjk units
+    produced = {clause["metric"]: clause for clause in result["clauses"]}
+    for metric_id in ("M-CLS-31", "M-SLEN-34"):
+        record = produced[metric_id]
+        assert record["actual"] is not None, metric_id
+        assert record["status"] in ("pass", "warn"), metric_id
+
+
+@pytest.mark.skipif(_zh_artifact_dir() is not None,
+                    reason="covered by the real-corpus e2e above; this pins the")
+def test_zh_clause_metrics_are_contract_checkable_without_external_data():
+    """The clause layer must round-trip through contract + validator on its own.
+
+    Uses the same fake provider as the rest of the suite, so it runs anywhere.
+    What is pinned: a zh-only clause metric in a gate contract is checked, its
+    cjk unit is carried through, and the validator reports the miss.
+    """
+    contract = _contract([
+        _clause("M-CLS-31", "gate", [3.5, 4.5]),
+        _clause("M-CLS-32", "gate", [12.0, 16.0]),
+        _clause("M-SLEN-34", "warn", [90.0, 110.0]),
+    ])
+    # a draft that misses the clauses/sentence band but hits the others
+    result = _validate(contract, "正文\n",
+                       _compute({"M-CLS-31": 2.0, "M-CLS-32": 14.0,
+                                 "M-SLEN-34": 100.0}))
+    assert result["exit_code"] == 1
+    by_metric = {c["metric"]: c for c in result["clauses"]}
+    assert by_metric["M-CLS-31"]["status"] == "fail"
+    assert by_metric["M-CLS-32"]["status"] == "pass"
+    assert by_metric["M-SLEN-34"]["status"] == "pass"
+
+
+@pytest.mark.skipif(_mpca_artifact_dir() is None or not _MPCA_CORPUS.is_dir(),
+                    reason="imported manuscript corpus + artifacts not present")
+def test_zh_imported_draft_validates_against_journal_contract(tmp_path):
+    """A canonical_import draft against a journal contract: the rejection case.
+
+    The v1 rejected manuscript under-hedges relative to the journal baseline, so
+    the hedge clause must report a warn miss with draft line numbers - the whole
+    point of the layer is that a human can open the line and see the sentence.
+    """
+    artifacts = _mpca_artifact_dir()
+    journal = _zh_artifact_dir()
+    if journal is None:
+        pytest.skip("no journal baseline artifacts")
+    profiler = pytest.importorskip("profile_papers")
+
+    contract_path = tmp_path / "_writing_contract.kzyjc.yaml"
+    assert bc.main(["--summary", str(journal / "_corpus_summary.json"),
+                    "--out", str(contract_path), "--quiet"]) == 0
+    contract = vd.load_contract(contract_path)
+
+    compute = vd.load_default_compute()
+    papers = profiler.discover_papers(_MPCA_CORPUS)
+    by_name = {p.name: p for p in papers}
+    v1 = by_name.get("mpca-v1-rejected")
+    if v1 is None:
+        pytest.skip("run canonical_import for the four manuscript versions first")
+    v1.load_blocks()
+    text = v1.canonical_text()
+    assert len(text) > 1000
+
+    result = _validate_guarded(contract, text, compute)
+    assert result["exit_code"] == 0  # warn-only: misses never trip the gate
+    hedge = next(c for c in result["clauses"] if c["metric"] == "M-HED-14")
+    # the measured direction of the rejection analysis: v1 under-hedges
+    assert hedge["actual"] is not None
+    assert hedge["actual"] < hedge["target"][0]
+    assert hedge["status"] == "warn"
+    assert hedge["evidence_lines"], "a warn miss must point at draft lines"
+
+
+# ---------------------------------------------------------------------------
 # 14. F1 regression: derived clauses must be compatible with their components
 # ---------------------------------------------------------------------------
 

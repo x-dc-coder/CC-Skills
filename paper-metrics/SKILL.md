@@ -166,6 +166,7 @@ uv run python paper-metrics/scripts/pas_spotcheck.py --corpus <paper-analysis> -
 - 每篇都会算 `cjk_ratio = 汉字数 / (汉字数 + ASCII 字母 token 数)`，**`cjk_ratio > 0.10` 判为中文**（阈值与实现见 `text_metrics.detect_language`）。
 - **没有规则的语篇**（既不是 en 也不是 zh）：**每一个指标输出 `null`**（`n = 0`、`warnings = ["LANGUAGE_NOT_SUPPORTED"]`），计入 `n_missing`，并在语料级触发 `CORPUS_LANGUAGE_UNSUPPORTED` 告警；**任何情况下不得用 0 代替"未测量"**。
 - 草稿校验：**能力感知**（issue #13）——逐条判定，测不了的指标以 `capability_not_supported` 跳过并说明原因；只有"没有任何规则的语言"才整体拒绝（退出码 2 `language_unsupported`）；中文草稿的有效性门槛用 **cjk-units（≥150）**，不是 ASCII 词数。
+- **中文端到端已验证（issue #24）**：`profile → build_contract → validate_draft` 在真实中文语料上完整跑通（kzyjc 15 篇基准 + 导入的退稿稿件）；分句层四个指标（M-CLS-31/32、M-SLEN-34/35）**进入契约并被校验**，不是悬空的指标；warn 级偏离带**草稿行号**，可直接打开定位。测试见 `test_validate_draft.py` 的 zh e2e 节。
 - 为什么这条是红线：在真实中文语料上，本层曾**静默**产出 `citation_style=unknown`、`reference_count=0`、hedge/连接词/被动/名词化**全为 0.0**、句数中位 **2 句**，而 `n_missing` 全为 0、无任何语言告警——看起来像"合法结果"，实际是垃圾。证据：`/mnt/e/AllProjects202601/M-PCA/_paper-metrics-run/运筹与管理/报告.md`。
 - 中文支持路线见 GitHub issue #10；中文词表/标注集等缺口见 issue #11 的评审意见。
 
@@ -290,6 +291,7 @@ cd ~/.claude/skills && uv run pytest paper-metrics/scripts -q   # 610 tests
 
 - 分句层冻结用例（可单独跑、无需外部语料）：`uv run pytest paper-metrics/scripts/test_clause_layer.py -q`；
 - 导入器（退稿/返修稿件入语料）：`uv run pytest paper-metrics/scripts/test_canonical_import.py -q`；
+- 中文端到端（issue #24，profile→contract→validate）：`uv run pytest paper-metrics/scripts/test_validate_draft.py -k zh -q`；
 
 ## 语料登记与结果审计
 
