@@ -479,6 +479,63 @@ text_metrics.compute_text_metrics(text, bundle) 的返回值为 {metric_id: metr
 - **已知失效场景**：① 表格单元格内的逗号（表格走 `table_body` 流，不进正文，本指标不读）；② 未闭合括号后的切分（已按可预测方式降级）；③ 极短文本（无句子时 `M-CLS-31` 为 `null` + 原因码，绝不报 0）。
 - **复算路径**：`cd ~/.claude/skills && uv run python -m pytest paper-metrics/scripts/test_clause_layer.py -q` 跑冻结用例；或对任意文本调 `split_clauses_zh` 手工核对每条跨度。
 
+### 3.12 issue #23 五层：stance / PDTB 连接词 / 句式模式 / 术语一致性
+
+issue #23 的八条新指标分为两类：**一条 INFERRED**（stance，需要标注集）与**三条 OBSERVED**（PDTB 连接词、句式模式、术语一致性——纯结构/串距统计，**无需任何标注**）。全部**仅中文**，英文记录一律 `null` + `CAPABILITY_NOT_SUPPORTED`（键集对称）。
+
+#### 3.12.1 `M-STNC-41` / `M-STNC-42` / `M-STNC-43`（stance，**INFERRED**）
+
+| 指标 | 定义 | 分子 n | 分母 | 单位 |
+|---|---|---|---|---|
+| `M-STNC-41` | hedging 句占比 | hedging 句数 | 句数 | `ratio` |
+| `M-STNC-42` | boosting 句占比 | boosting 句数 | 句数 | `ratio` |
+| `M-STNC-43` | assertive 句占比 | assertive 句数 | 句数 | `ratio` |
+
+三者构成 1.0 的划分（每句恰好一个标签）。
+
+- **分类器**：词表**存在性**规则——统计句中 hedge / booster 词表条目的**出现种类数**（不是次数：一句一个立场，重复触发是同一主张说两遍，不是更强）。boosting > hedging → boosting；反之 → hedging；并列或无触发 → **assertive**（残差类）。此规则在冻结标注集上调优，改动会作废记录里的留出集数字。
+- **INFERRED 准入（本层独有的硬门槛）**：① 标签集仓库内冻结（`assertive` / `hedging` / `boosting`）；② **220 句双标注者独立标注，Cohen κ=0.7584 ≥ 0.6**（角色互斥提示词：词表规则标注者 vs 审稿人角色标注者；15 处分歧由第三轮裁决）；③ 66 句分层留出集的 **P/R/F1 随记录下发**（macro-F1 0.5415，accuracy 0.7273；assertive F1=0.837、boosting 0.455、hedging 0.333）；④ 逐句可追溯（evidence 的跨度就是被判定的句子本身）；⑤ **永不进入 gate**，也不自报置信度。
+- **诚实报告弱类**：学术中文里 hedging 句极少（220 句中仅 12 句），其 precision 仅 0.25。记录里的 calibration 块**不隐藏**这一点——消费者据此判断该信多少。这也是 INFERRED 与 OBSERVED 的本质区别：OBSERVED 的零是事实，INFERRED 的值是模型输出，必须自带质量标签。
+- **不能推断什么**：不能推断"hedging 低 = 论文差"。stance 只是断言强度的指纹；审稿人感受到的"过度断言"是断言与证据强度**不匹配**的结果，这个匹配需要人判断。本层只做方向性提示（如"v1→v4 的 boosting 句占比从 19.8% 降到 13.4%"这种**差值**用法，比绝对值可信得多）。
+
+#### 3.12.2 `M-CONN-30t` / `M-CONN-30q`（PDTB 时序/条件连接词，OBSERVED）
+
+| 指标 | 定义 | 分子 n | 分母 | 单位 |
+|---|---|---|---|---|
+| `M-CONN-30t` | temporal 连接词密度 | temporal 命中数 | cjk-units×1000 | `per-1000-cjk-units` |
+| `M-CONN-30q` | condition 连接词密度 | condition 命中数 | cjk-units×1000 | `per-1000-cjk-units` |
+
+词表是 `connectors.json` 的 temporal / condition 组（PDTB 2.0 Annotation Manual Appendix A 的 temporal / condition sense 对应中文连接词）。与三组在**同一趟互斥匹配**里跑（最长匹配、不跨句），但**不进入 `M-CONN-30` 的并集**——`M-CONN-30 = 30c + 30k + 30r` 的恒等式严格保持，`components` 块也只列冻结三组。一条 temporal 命中永远不会悄悄抬高 `M-CONN-30`（有测试钉死）。
+
+#### 3.12.3 `M-SPAT-44` / `M-SPAT-45` / `M-SPAT-46`（句式模式，OBSERVED）
+
+| 指标 | 定义 | 分子 n | 分母 | 单位 |
+|---|---|---|---|---|
+| `M-SPAT-44` | 分句起始标点/句 | 带标点的分句起始符总数 | 句数 | `clauses/sentence` |
+| `M-SPAT-45` | 多分句句占比 | 多分句句数 | 句数 | `ratio` |
+| `M-SPAT-46` | 连接词开头句占比 | 以连接词开头的句数 | 句数 | `ratio` |
+
+全部在 `split_clauses_zh` 的输出上算，确定性、无模型。`M-SPAT-45` 是 `M-LSF-16` 的**结构侧孪生**（同一长句现象，一个从长度看、一个从形状看）；`M-SPAT-46` 量化论证的显式标注程度（高 = 读者被时刻告知逻辑关系；低 = 平铺并列，读者要自己理因果）。
+
+#### 3.12.4 `M-TERM-47` / `M-TERM-48`（术语一致性，OBSERVED）
+
+| 指标 | 定义 | 分子 n | 分母 | 单位 |
+|---|---|---|---|---|
+| `M-TERM-47` | 变体簇内术语出现占比 | 非规范写法的出现次数 | recurring 术语总出现数 | `ratio` |
+| `M-TERM-48` | 需统一术语数 | 变体簇内不同写法总数 | 同左 | `index` |
+
+- **聚类规则**：2–8 字 CJK 子串，出现 ≥2 次的为候选；**只保留 maximal 候选**（是另一 recurring 词的子串者丢弃——滑窗会把同一拼写按更长词的片段重复产出）；共享前缀 ≥3 字的候选聚为一簇，规范形取最长者。检出"多仓库路径优化 / 多仓储路径优化"这类同义写法分歧，`clusters_found` 里列出规范形 + 全部变体 + 各自频次。
+- **阈值为什么是 2 而不是 3**：变体**天然稀有**——同一概念两种写法把出现次数对半分，要求每种 3 次恰好抹掉本层要找的信号。2 次/拼写是"作者两种都用过"的最低证据。
+- **不能推断什么**：不能推断"变体多 = 论文差"。它给的是**统一清单**（哪些术语需要全文统一），不是质量评分；同一术语的多种写法在某些期刊风格里甚至是可接受的。
+
+#### 3.12.5 复算路径
+
+```bash
+cd ~/.claude/skills && uv run python -m pytest paper-metrics/scripts/test_text_metrics.py -q -k 'stance or pdtb or sentence_pattern or terminology'
+```
+
+校准集自检（κ 与留出集 P/R/F1 从冻结文件**重算**，与代码内常数必须一致）：`-k 'calibration'`。对任意文本手算可用 `tm._classify_sentence_stance` / `tm._term_clusters`。
+
 ## 4. 复用类指标（profile 级，非 text_metrics 产出）
 
 本节 5 条由 `profile_papers.py` 直接在语料块序列上计算（**零新增开发**，只修遥测字段与已知缺陷），输出落在 `_domain_profile.json`。

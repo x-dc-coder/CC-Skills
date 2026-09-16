@@ -149,7 +149,11 @@ uv run python paper-metrics/scripts/pas_spotcheck.py --corpus <paper-analysis> -
 - **英文（en）**：14 条指标全部可测，词表用 `data/lexicons/v1/`。
 - **中文（zh）是逐指标能力，不是一刀切门禁（2026-09-13，issue #13）**：
   - **已可测 13/14 条**：`M-SLEN-01`、`M-LSF-16`、`M-MTLD-02`、`M-HED-14`、`M-BOO-15`、`M-CONN-30(c/k/r)`、`M-AWR-03`、`M-PAS-09`、`M-PCNT-25`、`M-NOM-10`（词表用 `data/lexicons/v2-zh/`）；
-  - **新增分句层 4 条（2026-09-15，issue #22，随 `TEXT_METRICS_VERSION 1.5` 冻结）**：`M-CLS-31`（clauses/sentence）、`M-CLS-32`（cjk-units/clause）、`M-SLEN-34`/`M-SLEN-35`（句长 P90/P95）；规则见 〈3.11〉，冻结用例 `data/clause_spec_cases.json`；分词用 jieba（工具链版本入指纹，与词表同机制）；
+  - **新增分句层 4 条（2026-09-15，issue #22）**：`M-CLS-31`（clauses/sentence）、`M-CLS-32`（cjk-units/clause）、`M-SLEN-34`/`M-SLEN-35`（句长 P90/P95）；规则见 〈3.11〉，冻结用例 `data/clause_spec_cases.json`；分词用 jieba（工具链版本入指纹，与词表同机制）；
+  - **新增 stance 层 3 条（2026-09-15，issue #23，INFERRED）**：`M-STNC-41`/`M-STNC-42`/`M-STNC-43`（hedging / boosting / assertive 句占比，三者构成 1.0 划分）。**唯一一层 INFERRED**：220 句冻结标注集（`data/stance-calibration-zh.json`）、双标注者 Cohen κ=0.7584≥0.6、66 句留出集 P/R/F1 **随记录下发**（macro-F1 0.5415；assertive F1=0.837，hedging rare 且 precision 0.25）。分类器是词表存在性规则（一句一个立场，并列/无触发→assertive）。**永不进入 gate**，只做方向性提示；
+  - **新增 PDTB 连接词 2 条（2026-09-15，issue #23）**：`M-CONN-30t`（temporal，首先/随后/最终…）、`M-CONN-30q`（condition，如果/除非/只有…），每千 cjk-unit 计数；词表在 `connectors.json` 的 temporal/condition 组（PDTB 2.0 sense 对应）。与三组**同一趟互斥匹配**，但 `M-CONN-30 = 30c + 30k + 30r` 的恒等式**严格不变**；
+  - **新增句式模式 3 条（2026-09-15，issue #23，OBSERVED）**：`M-SPAT-44`（分句起始标点/句，即 ，；： 密度）、`M-SPAT-45`（多分句句占比——M-LSF-16 的结构侧孪生）、`M-SPAT-46`（以连接词开头的句占比，即论证显式标注程度）。确定性结构统计，**无需标注**；
+  - **新增术语一致性 2 条（2026-09-15，issue #23，OBSERVED）**：`M-TERM-47`（变体簇内的术语出现占比）、`M-TERM-48`（需统一术语数，index）。共享前缀 ≥3 字符的最大 recurring 词聚类（变体天然稀有，阈值 2 次/拼写），检出"多仓库/多仓储"这类同义写法分歧。**无需标注**——变体检测是串距，不是语义；
   - **尚不可测 1 条**：`M-TENSE-28`（**中文没有时态**，给数字就是编造）→ `null` + **`CAPABILITY_NOT_SUPPORTED`**（`LANGUAGE_NOT_SUPPORTED` 的逐指标版本；**仍然不是 0**）；
   - **两个"同槽不同量"的指标要特别小心**：`M-MTLD-02` 中文是**字符级**、`M-NOM-10` 中文是**抽象名词后缀（性/度/率）密度**——与英文同名指标**不是同一个统计量**，记录里带 `tokenization` / `variant` 标记，禁止跨语言比较；
   - **中文口径（与英文不可混用，跨语言不可比）**：句长单位 **`cjk-units/sentence`**（汉字数 + ASCII 字母 token，混合句不漏计）；长句阈值 **80 单位**（不是英文的 40 词）；密度类分母为 **cjk-units**、连接词单位 **`per-1000-cjk-units`**；段落单位 **`cjk-units/paragraph`**（下限 40 单位）；`M-MTLD-02` 是 **字符级**（`tokenization=cjk-char+ascii-token`，与英文词级值不可比）；
