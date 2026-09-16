@@ -137,6 +137,7 @@ from __future__ import annotations
 import math
 import re
 import statistics
+from collections import defaultdict
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Iterable, Mapping, Sequence
 
@@ -2362,6 +2363,14 @@ def _zh_metrics(text: str, sentences: Sequence[Span], language: dict[str, Any],
                  entries: Sequence[str]) -> dict[str, Any]:
         warnings = [] if entries else [
             f"{spec}: Chinese lexicon is empty; the metric is 0 by construction"]
+        # Check for local hedge stacking (>=3 hedge hits within a single sentence)
+        if spec == "M-HED-14" and hits:
+            sent_counts: dict[int, int] = defaultdict(int)
+            for _, _, s_idx in hits:
+                sent_counts[s_idx] += 1
+            stacking_sents = [s_idx for s_idx, cnt in sent_counts.items() if cnt >= 3]
+            if stacking_sents:
+                warnings.append(f"M-HED-14: HEDGE_STACKING_DETECTED (同一句内出现 >= 3 个模糊限制语，存在机械堆砌对冲嫌疑)")
         return _rate(spec, len(hits), n_units, _UNIT_RATIO,
                      _evidence(hits, text, len(hits)), warnings,
                      n_lexicon_entries=len(entries), denominator_unit="cjk-units")

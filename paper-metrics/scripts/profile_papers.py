@@ -1526,6 +1526,69 @@ def compute_section_metrics(paper: Paper, bundles, text_metrics_mod,
     return out
 
 
+def compute_section_divergence(paper: Paper, bundles, text_metrics_mod) -> dict:
+    """Compute abstract vs body stance/assertion divergence.
+
+    Catches the classic overclaiming pattern: abstract has high booster and low hedge
+    compared to the body text.
+    """
+    sec_texts = paper.section_texts()
+    abstract_text = sec_texts.get("abstract", "").strip()
+    if not abstract_text:
+        return {
+            "abstract_found": False,
+            "abstract_booster": None,
+            "body_booster": None,
+            "abstract_hedge": None,
+            "body_hedge": None,
+            "booster_divergence_ratio": None,
+            "hedge_divergence_ratio": None,
+            "status": "abstract_not_found",
+        }
+    body_parts = [text for sec, text in sec_texts.items() if sec not in ("abstract", "references", "appendix")]
+    body_text = "\n\n".join(body_parts).strip()
+    if not body_text:
+        return {
+            "abstract_found": True,
+            "abstract_booster": None,
+            "body_booster": None,
+            "abstract_hedge": None,
+            "body_hedge": None,
+            "booster_divergence_ratio": None,
+            "hedge_divergence_ratio": None,
+            "status": "insufficient_body_text",
+        }
+
+    lang = text_metrics_mod.detect_language(abstract_text)["language"]
+    bundle = _bundle_for(bundles, lang)
+    comp_abs = text_metrics_mod.compute_text_metrics(abstract_text, bundle)
+    comp_body = text_metrics_mod.compute_text_metrics(body_text, bundle)
+
+    abs_boo = comp_abs.get("M-BOO-15", {}).get("value")
+    body_boo = comp_body.get("M-BOO-15", {}).get("value")
+    abs_hed = comp_abs.get("M-HED-14", {}).get("value")
+    body_hed = comp_body.get("M-HED-14", {}).get("value")
+
+    boo_ratio = None
+    if abs_boo is not None and body_boo is not None:
+        boo_ratio = round(abs_boo / body_boo, 4) if body_boo > 0 else (1.0 if abs_boo == 0 else 999.0)
+
+    hed_ratio = None
+    if abs_hed is not None and body_hed is not None:
+        hed_ratio = round(abs_hed / body_hed, 4) if body_hed > 0 else (1.0 if abs_hed == 0 else 0.0)
+
+    return {
+        "abstract_found": True,
+        "abstract_booster": abs_boo,
+        "body_booster": body_boo,
+        "abstract_hedge": abs_hed,
+        "body_hedge": body_hed,
+        "booster_divergence_ratio": boo_ratio,
+        "hedge_divergence_ratio": hed_ratio,
+        "status": "ok",
+    }
+
+
 # ---------------------------------------------------------------------------
 # Corpus aggregation
 # ---------------------------------------------------------------------------
@@ -2226,6 +2289,7 @@ def run_profile(corpus_dir: Path, out_dir: Path,
             if include_section_metrics else {}
         )
         text = paper.canonical_text()
+        section_divergence = compute_section_divergence(paper, bundles, text_metrics_mod)
         record: dict = {
             "paper_key": paper.paper_key,
             "non_prose_dropped": paper.non_prose_dropped,
@@ -2234,6 +2298,7 @@ def run_profile(corpus_dir: Path, out_dir: Path,
             "n_tokens": len(text_metrics_mod.tokenize(text)),
             "metrics": metrics,
             "section_metrics": section_metrics,
+            "section_divergence": section_divergence,
             "upstream": paper.upstream,
             "warnings": list(paper.warnings),
         }
@@ -2335,6 +2400,8 @@ def _render_md(profile: dict) -> str:
     lines: list[str] = []
     meta = profile["meta"]
     lines.append("# 领域写作规范摘要 (Domain Profile)")
+    lines.append("")
+    lines.append("> **声明**：本画像指标仅表示目标语料可测特征的实证常模分布，不构成对论文科学创新性、实验充分性与学术质量的裁判。")
     lines.append("")
     lines.append(f"- 论文数量: {meta['paper_count']}")
     lines.append(f"- Profiler 版本: {meta['profiler_version']}")

@@ -272,11 +272,60 @@ def _gif_size(data: bytes) -> tuple[int, int] | None:
     return (width, height) if width and height else None
 
 
+def _svg_size(path: Path) -> tuple[int, int] | None:
+    """Parse SVG viewBox or width/height attributes using xml.etree.ElementTree.
+
+    SVG vector images are infinitely scalable for print; we assign (3000, 3000) or
+    parsed viewBox dimensions (>= 800px usable).
+    """
+    import xml.etree.ElementTree as ET
+    try:
+        # Read first 8KB to avoid large file parsing
+        with path.open("rb") as handle:
+            head = handle.read(8192)
+        if b"<svg" not in head.lower():
+            return None
+        # Parse xml
+        tree = ET.fromstring(head.decode("utf-8", errors="ignore") + "</svg>" if not head.rstrip().endswith(b"</svg>") else head.decode("utf-8", errors="ignore"))
+        # Check viewBox
+        vb = tree.attrib.get("viewBox") or tree.attrib.get("viewbox")
+        if vb:
+            parts = [float(p) for p in vb.replace(",", " ").split() if p]
+            if len(parts) == 4 and parts[2] > 0 and parts[3] > 0:
+                # Scale viewBox proportionally up to vector print standard
+                w, h = parts[2], parts[3]
+                scale = max(1.0, 3000.0 / max(w, h))
+                return (int(round(w * scale)), int(round(h * scale)))
+        # Check width / height
+        w_str = tree.attrib.get("width")
+        h_str = tree.attrib.get("height")
+        if w_str and h_str:
+            w_m = re.match(r"^([0-9.]+)", w_str)
+            h_m = re.match(r"^([0-9.]+)", h_str)
+            if w_m and h_m:
+                w, h = float(w_m.group(1)), float(h_m.group(1))
+                if w > 0 and h > 0:
+                    scale = max(1.0, 3000.0 / max(w, h))
+                    return (int(round(w * scale)), int(round(h * scale)))
+        # Default high-res vector representation for valid SVG
+        return (3000, 3000)
+    except Exception:
+        # If it has <svg tag, treat as valid vector graphic (3000, 3000)
+        try:
+            with path.open("rb") as handle:
+                snippet = handle.read(1024).lower()
+                if b"<svg" in snippet:
+                    return (3000, 3000)
+        except OSError:
+            pass
+        return None
+
+
 def image_size(path: Path) -> tuple[int, int] | None:
     """(width, height) from the file's own header, or None when unreadable/unknown.
 
-    Headers only — no decoder, no third-party dependency.  PNG / JPEG / GIF are
-    recognised; anything else (WebP, a vector export) returns None and the caller
+    Headers only — no decoder, no third-party dependency.  PNG / JPEG / GIF / SVG are
+    recognised; anything else returns None and the caller
     reports it as unreadable rather than guessing.
     """
     try:
@@ -288,6 +337,9 @@ def image_size(path: Path) -> tuple[int, int] | None:
         size = reader(data)
         if size is not None:
             return size
+    # Check SVG vector format
+    if path.suffix.lower() == ".svg" or b"<svg" in data.lower():
+        return _svg_size(path)
     return None
 
 
@@ -563,6 +615,8 @@ def _figures_of_paper(corpus_dir: Path, paper: Paper,
         else:
             section_basis = "该图之前无 level-2 标题，按位置归为 front_matter"
 
+        subfigures = re.findall(r"[(（]([a-zA-Z0-9])[)）]", caption)
+        has_subfigures = bool(subfigures)
         figures.append({
             "figure_id": figure_id(stem, page_value, block_index),
             "paper": paper.name,
@@ -576,6 +630,8 @@ def _figures_of_paper(corpus_dir: Path, paper: Paper,
             "caption": caption,
             "caption_chars": len(caption),
             "caption_has_number": caption_has_number(caption),
+            "has_subfigures": has_subfigures,
+            "subfigures": sorted(set(subfigures)) if has_subfigures else [],
             "readable": readable,
             "width": width,
             "height": height,

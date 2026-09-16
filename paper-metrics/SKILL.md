@@ -14,19 +14,38 @@ version: 1.0.0
 **一句话**：把"论文的写作特征"变成**可复现、可验证、可解释**的数字，再把数字变成可执行的写作契约与草稿校验。
 **本技能只测量，不生成文本。**
 
-## 何时使用（必须用）
+## 适用场景与定位（核心前置认知）
 
-- 用户要求"提取这篇/这批论文的写作特征指标""期刊风格画像""语料指标基线"
-- 用户要求"按目标期刊的指标区间写" → 先用本技能生成 `_writing_contract.yaml`
+> **一句话定位**：本技能是学术论文投稿前的**“形式规范校准器”与“提交前排雷安检门”**，而非评价科学创新性的“裁判官”。
+
+### 1. 适用前提（前置门禁）
+- **前提条件**：**论文实验扎实、论点明确、核心学术创新成立**。
+- **作用机制**：本技能无法凭空制造科学创新，也无法挽救缺乏实质证据支撑的空洞研究；它的核心作用是**系统性消灭“因修辞表达、文风失衡与排版硬伤导致的非实质性退稿/大修阻力（Avoidable Rejection Friction）”**。
+- **为什么能提高投稿成功率**：大量高水平期刊退稿并非源于实验失败，而是因为审稿人极其反感的写作硬伤——如**“摘要过度吹捧/断言过强而数据不支撑”（Overclaiming）、“论证厚度不够/句式碎片化”、“图表孤立无正文讨论”、“幽灵引文/格式混乱”、“充满大模型机械套话（AI Slop）”**。本技能通过确定性量化指标在投稿前精准排雷，使论文的语言形式和排版规范高度契合目标期刊已发表论文的常模。
+
+### 2. 四大核心适用场景
+
+| 场景 | 典型痛点 / 需求 | paper-metrics 的实操作用 |
+|---|---|---|
+| **① 投稿前终审排雷 (Pre-submission Sanity Check)** | 论文已写完初稿，担心存在被审稿人挑刺的表层缺陷与格式盲区。 | 运行 `validate_draft.py`，逐项对照期刊契约，输出精确物理行号，一次性排查断言过载、孤立表格（`S-REF-14`）、幽灵引用（`M-REFLINK-54`）及低清图片（`S-SIZ-04`）。 |
+| **② 退稿/大修诊断救亡 (Post-Rejection Diagnosis & Revision)** | 论文被拒或收到严厉审稿意见：“摘要结论夸大”、“论述生硬”、“文风不合本刊规范”。 | 通过 `canonical_import.py` 导入退稿初稿，对照目标期刊语料提取对比画像，量化定位断言失衡与结构短板，并追踪 v1→v4 返修收敛过程（如 M-PCA 案例）。 |
+| **③ 大模型写作“去 AI 腔”滤网 (Anti-AI Slop & Tone Calibration)** | 使用 LLM 辅助撰写或润色后，文本充斥空洞套话、句式节奏机械、绝对化夸大词泛滥。 | 利用 `M-BOO-15`（强势断言）、`M-HED-14`（模糊对冲）、`HEDGE_STACKING_DETECTED`（局部堆砌）及 `M-MTLD-02`（词汇多样性）建立客观拦截网，逼退机械刷分。 |
+| **④ 跨学科/换刊文风转译 (Target Venue Adaptation)** | 论文从顶会改投顶刊，或从 CS 跨投运筹、控制、管理等不同学科期刊。 | 汲取目标期刊 10~20 篇代表作生成 `_writing_contract.yaml`，指导作者或下游 `thesis-writing` Mode B 精确仿写该刊特有的长句配比、被动语态与连词习惯。 |
+
+### 3. 何时不适用（边界红线）
+
+- **不可用于**：试图掩盖实验缺陷或伪造研究结论（“指标全绿”绝不等于“论文质量好”）；
+- **不可用于**：直接生成论文大纲或正文初稿（生成任务归 `thesis-writing`）；
+- **不可用于**：追求将指标刷到某一单一极大值（目标是落在 `[p25, p75]` 常模带内，过度迎合反成病态）。
+
+## 何时使用（命令路由速查）
+
+- 用户要求"提取这篇/这批论文的写作特征指标""期刊风格画像""语料指标基线" → `profile_papers.py`
+- 用户要求"按目标期刊的指标区间写" → 先用 `build_contract.py` 生成 `_writing_contract.yaml`
 - 用户要求"校验我的草稿是否符合期刊风格/指标区间" → `validate_draft.py`
+- 用户要求"分析退稿稿件的文风缺陷 / 追踪返修版本演进" → `canonical_import.py` + `profile_papers.py`
 - 用户或第三方要求"复核这些指标数值能不能复算" → `baseline_eval.py` / `profile_papers.py --verify`
 - 需要从 PDF 一路跑到指标 → `run_pipeline.py`（内部调用 paper-reader）
-
-**不要用此 skill**：
-
-- 只想把 PDF 转成 Markdown → 用 `paper-reader`
-- 写论文正文/大纲/初稿 → 用 `thesis-writing`
-- 只做术语一致性检查 → 用 `thesis-ref-check`
 
 ## 上下游衔接（事实源边界）
 
@@ -71,8 +90,9 @@ uv run python paper-metrics/scripts/figure_profile.py --corpus <paper-analysis> 
 
 - `_figure_profile.json`：逐图记录——稳定 `figure_id`（`fig-<stem>-<page>-<block_index>`，
   同输入必同 ID）、题注原文、`width`/`height`/`aspect_ratio`/`width_usable_for_print`
-  （只读 PNG/JPEG/GIF 文件头，阈值 **800 px 与 S-SIZ-04 同阈值同口径**）、`section` 与
-  `type_guess`（**INFERRED**，仅章节位置启发，带 `confidence`+`basis`）。
+  （纯 stdlib 解析 PNG/JPEG/GIF 头及 SVG 矢量图，阈值 **800 px 与 S-SIZ-04 同阈值同口径**）、
+  复合子图识别（识别题注中的 `(a)-(d)` 嵌套编号，携带 `has_subfigures` 与 `subfigures` 列表）、
+  `section` 与 `type_guess`（**INFERRED**，仅章节位置启发，带 `confidence`+`basis`）。
 - `_figure_summary.json`：语料级尺寸/宽高比/题注长度分位与达标率；**读不了的图不计入分母并逐条列出**（与 S-SIZ-04 一致）。
 - 视觉/语义字段（chart_type/panel_count/axis/legend/颜色/字体/线宽/caption 语义角色）一律
   `null` + `status: NOT_IMPLEMENTED` 占位。
@@ -97,8 +117,9 @@ uv run python paper-metrics/scripts/run_pipeline.py \
   --papers <papers_dir> --out <output_dir> [--analysis-dir DIR] [--skip-convert] [--dry-run]
 
 # 3) 由语料分位生成写作契约（区间 = p25/p75，而非人工设定）
+#    小样本冷启动（n < 5）可加 --adaptive-widening 启用自适应宽放与 CONTRACT_LOW_SAMPLE_WARNING 告警
 uv run python paper-metrics/scripts/build_contract.py \
-  --summary <out>/_corpus_summary.json --out <out>/_writing_contract.yaml
+  --summary <out>/_corpus_summary.json --out <out>/_writing_contract.yaml [--adaptive-widening]
 
 # 4) 用同一套指标校验草稿（任一 gate 失败 → 退出码 1）
 uv run python paper-metrics/scripts/validate_draft.py \

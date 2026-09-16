@@ -1229,3 +1229,18 @@ def test_detect_language_matches_paper_reader_shared_spec():
         assert record["cjk_ratio"] == expected["cjk_ratio"], case["id"]
         assert record["cjk_chars"] == expected["cjk_chars"], case["id"]
         assert record["ascii_alpha_tokens"] == expected["ascii_alpha_tokens"], case["id"]
+
+
+def test_hedge_stacking_detection_warning() -> None:
+    """Local hedge stacking (>=3 hedges in one sentence) triggers warning."""
+    loader = pytest.importorskip("lexicon_loader")
+    try:
+        zh = loader.load_lexicons(language="zh")
+    except Exception as exc:
+        pytest.skip("zh lexicon release unavailable: %s: %s" % (type(exc).__name__, exc))
+    # In zh lexicon: 可能, 或许, 某种程度上 are real hedge entries
+    stacked_text = "该结果可能在某种程度上或许反映了模型的特性。"
+    metrics = tm.compute_text_metrics(stacked_text, zh)
+    rec = metrics["M-HED-14"]
+    warnings = rec.get("warnings", [])
+    assert any("HEDGE_STACKING_DETECTED" in w for w in warnings)

@@ -328,3 +328,19 @@ def test_cli_writes_both_products_and_returns_zero(tmp_path: Path) -> None:
 def test_cli_errors_when_corpus_missing(tmp_path: Path) -> None:
     assert fp.main(["--corpus", str(tmp_path / "nope"), "--out",
                     str(tmp_path / "out")]) == 1
+
+
+def test_svg_image_size_and_subfigures(tmp_path: Path) -> None:
+    svg_content = b'<svg viewBox="0 0 100 50" xmlns="http://www.w3.org/2000/svg"></svg>'
+    _write_corpus(tmp_path, [
+        _block("image", img_path="images/diag.svg", image_caption=["Figure 1: (a) overview, (b) details"],
+               page_idx=0),
+    ], images={"diag.svg": svg_content})
+    profile, _ = _collect(tmp_path)
+    figs = _figures(profile)
+    assert len(figs) == 1
+    f0 = figs[0]
+    assert f0["readable"] is True
+    assert f0["width_usable_for_print"] is True
+    assert f0["has_subfigures"] is True
+    assert f0["subfigures"] == ["a", "b"]

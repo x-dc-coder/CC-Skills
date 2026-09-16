@@ -733,3 +733,20 @@ def test_toolchain_defect_metrics_are_never_accepted_by_a_contract() -> None:
         "S-TBL-13", {"scope": ["prose"], "class": "toolchain_defect"})
     with pytest.raises(bc.BuildContractError):
         _build(summary, metrics=["S-TBL-13"])
+
+
+def test_adaptive_widening_for_low_sample_size() -> None:
+    summary = _summary({
+        "M-AWR-03": _metric_stats(n_valid=3, p25=0.012, p75=0.031, iqr=0.019),
+    })
+    contract_default = _build(summary, adaptive_widening=False)
+    assert contract_default["clauses"][0]["target"] == [0.012, 0.031]
+    assert not any(w["code"] == "CONTRACT_LOW_SAMPLE_WARNING" for w in contract_default["contract_warnings"])
+
+    contract_widened = _build(summary, adaptive_widening=True)
+    target = contract_widened["clauses"][0]["target"]
+    assert target is not None
+    # Widened band should be wider than original [0.012, 0.031]
+    assert target[0] <= 0.012
+    assert target[1] >= 0.031
+    assert any(w["code"] == "CONTRACT_LOW_SAMPLE_WARNING" for w in contract_widened["contract_warnings"])
