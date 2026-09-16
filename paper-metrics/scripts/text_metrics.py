@@ -190,6 +190,11 @@ METRIC_IDS = (
     "M-SPAT-44",
     "M-SPAT-45",
     "M-SPAT-46",
+    # Terminology consistency (issue #23): deterministic shared-prefix
+    # clustering of recurring multi-character terms. No annotation needed -
+    # variant detection is string distance, not semantics.
+    "M-TERM-47",
+    "M-TERM-48",
 )
 
 #: A text is treated as Chinese (and therefore outside the validated language of
@@ -248,6 +253,11 @@ _METRIC_LANGUAGE_CAPABILITY: dict[str, tuple[str, ...]] = {
     "M-SPAT-44": ("zh",),
     "M-SPAT-45": ("zh",),
     "M-SPAT-46": ("zh",),
+    # Terminology consistency (issue #23): the shared-prefix clustering rule is
+    # tuned for CJK term shapes (2-8 chars, no spaces); English terms are
+    # space-separated and would need a different matcher.
+    "M-TERM-47": ("zh",),
+    "M-TERM-48": ("zh",),
 }
 _DEFAULT_METRIC_LANGUAGES: tuple[str, ...] = ("en",)
 #: Distinct from LANGUAGE_NOT_SUPPORTED: the language is measurable, this
@@ -351,6 +361,9 @@ _METRIC_UNITS = {
     "M-SPAT-44": _UNIT_CLAUSES_PER_SENTENCE,
     "M-SPAT-45": _UNIT_RATIO,
     "M-SPAT-46": _UNIT_RATIO,
+    # Terminology consistency (issue #23).
+    "M-TERM-47": _UNIT_RATIO,
+    "M-TERM-48": _UNIT_INDEX,
 }
 
 #: Frozen per-metric evidence sampling rules (see module docstring rule 5).
@@ -381,6 +394,8 @@ _EVIDENCE_RULES = {
     "M-SPAT-44": "unit=sentence_span|filter=all_sentences|count=clauses" + _EVIDENCE_SUFFIX,
     "M-SPAT-45": "unit=sentence_span|filter=multi_clause_sentences" + _EVIDENCE_SUFFIX,
     "M-SPAT-46": "unit=clause_span|filter=clauses_starting_with_a_connector" + _EVIDENCE_SUFFIX,
+    "M-TERM-47": "unit=phrase_span|match=longest_nonoverlapping|cluster=shared_prefix|frequency>=3" + _EVIDENCE_SUFFIX,
+    "M-TERM-48": "unit=token_span|filter=recurring_terms|sort=by_frequency_desc" + _EVIDENCE_SUFFIX,
 }
 _EVIDENCE_RULE_DEFAULT = "unit=span" + _EVIDENCE_SUFFIX
 
@@ -1744,6 +1759,126 @@ def _not_implemented_metric(metric_spec: str, language: dict[str, Any]):
     return record
 
 
+_TERM_MIN_LEN = 2
+_TERM_MAX_LEN = 8
+#: A variant is rare by definition: the same concept spelled two ways splits
+#: its occurrences in half, so requiring 3 hits each would erase the very
+#: signal the metric exists to find. Two occurrences of each spelling is the
+#: minimum that says the writer used both deliberately.
+_TERM_MIN_FREQ = 2
+_TERM_PREFIX_MIN = 3
+_TERM_PREFIX_MIN = 2
+
+
+def _term_clusters(text: str) -> dict[str, list[tuple[str, int]]]:
+    """Recurring CJK terms grouped by shared prefix (issue #23).
+
+    Deterministic: candidates are literal substrings in the 2-8 character CJK
+    range that occur at least _TERM_MIN_FREQ times; two candidates cluster
+    when they share a prefix of at least _TERM_PREFIX_MIN characters. This is
+    string distance, not semantics, so no annotation or model is involved and
+    the layer is OBSERVED. The classic failure it detects: one paper calling
+    the same thing 多仓库路径优化, 多仓储路径优化 and 多库路径优化.
+    """
+    cjk = _CJK_CHAR_RE.findall(text)
+    joined = "".join(cjk)
+    if len(joined) < _TERM_MIN_LEN:
+        return {}
+    freq: dict[str, int] = {}
+    for size in range(_TERM_MIN_LEN, _TERM_MAX_LEN + 1):
+        for pos in range(0, max(0, len(joined) - size + 1)):
+            piece = joined[pos:pos + size]
+            freq[piece] = freq.get(piece, 0) + 1
+    recurring = {w: n for w, n in freq.items() if n >= _TERM_MIN_FREQ}
+    if not recurring:
+        return {}
+    # Maximal candidates only: drop any term that is a proper substring of
+    # another recurring term, because the sliding window produces the same
+    # spelling many times over as fragments of a longer recurring term. What
+    # remains are the spellings the text actually repeats.
+    words = sorted(recurring, key=lambda w: (-len(w), w))
+    maximal = [w for w in words
+               if not any(w != other and w in other
+                          for other in words)]
+    maximal_set = set(maximal)
+    # Cluster maximal terms that share a long-enough prefix. Two spellings
+    # like 多仓库路径优化 / 多仓储路径优化 share 多仓, and the divergence after
+    # it is exactly the 库/储 synonym the metric exists to surface. A term
+    # that is a fragment of another is already gone, so a cluster with more
+    # than one distinct spelling is a genuine harmonisation need.
+    clusters: dict[str, list[tuple[str, int]]] = {}
+    for word in maximal:
+        placed = False
+        for seed in clusters:
+            common = 0
+            for a, b in zip(seed, word):
+                if a != b:
+                    break
+                common += 1
+            if common >= _TERM_PREFIX_MIN:
+                clusters[seed].append((word, recurring[word]))
+                placed = True
+                break
+        if not placed:
+            clusters[word] = [(word, recurring[word])]
+    return {seed: members for seed, members in clusters.items()
+            if len({w for w, _ in members}) > 1}
+
+
+def _metric_term47(text: str, clusters: dict[str, list[tuple[str, int]]],
+                   n_units: int) -> dict[str, Any]:
+    """M-TERM-47: share of recurring-term occurrences in a variant cluster."""
+    if not clusters:
+        return _metric(
+            "M-TERM-47", value=0.0, n=0, denominator=max(0, n_units),
+            unit=_UNIT_RATIO, evidence={"count": 0, "sample": []},
+            warnings=[] if n_units else [
+                "M-TERM-47: no cjk-unit in the input; denominator is 0"],
+            clusters_found=[], denominator_unit="cjk-units")
+    in_cluster = 0
+    total = 0
+    sample: list[dict[str, Any]] = []
+    for seed, members in sorted(clusters.items()):
+        for word, count in members:
+            total += count
+            if word != seed:
+                in_cluster += count
+                if len(sample) < _EVIDENCE_SAMPLE_MAX:
+                    pos = text.find(word)
+                    sample.append({
+                        "term": word, "canonical": seed,
+                        "frequency": count,
+                        "excerpt": text[max(0, pos - _EXCERPT_MAX // 2):
+                                         pos + _EXCERPT_MAX // 2],
+                    })
+    denominator = max(total, 1)
+    return _rate(
+        "M-TERM-47", in_cluster, denominator, _UNIT_RATIO,
+        {"count": len(sample), "sample": sample},
+        denominator_unit="recurring-term-occurrences",
+        clusters_found=[{"canonical": seed,
+                         "variants": sorted(w for w, _ in members),
+                         "frequencies": {w: n for w, n in members}}
+                        for seed, members in sorted(clusters.items())],
+        min_term_length=_TERM_MIN_LEN, max_term_length=_TERM_MAX_LEN,
+        min_frequency=_TERM_MIN_FREQ, min_prefix=_TERM_PREFIX_MIN)
+
+
+def _metric_term48(clusters: dict[str, list[tuple[str, int]]]) -> dict[str, Any]:
+    """M-TERM-48: count of distinct terms needing harmonisation."""
+    n_terms = sum(len({w for w, _ in members})
+                  for members in clusters.values())
+    sample = [{"canonical": seed,
+               "variants": sorted(w for w, _ in members)}
+              for seed, members in sorted(clusters.items())]
+    return _metric(
+        "M-TERM-48", value=n_terms, n=n_terms, denominator=n_terms,
+        unit=_UNIT_INDEX,
+        evidence={"count": len(sample), "sample": sample[:_EVIDENCE_SAMPLE_MAX]},
+        warnings=[],
+        clusters=[s["canonical"] for s in sample])
+
+
 def _sentence_pattern_stats(text: str, sentences: Sequence[Span],
                             clauses: Sequence[ClauseSpan],
                             connector_groups: Mapping[str, Sequence[str]]
@@ -2333,6 +2468,12 @@ def _zh_metrics(text: str, sentences: Sequence[Span], language: dict[str, Any],
     computed["M-SPAT-45"] = _metric_spat45(text, sentences, spat_patterns)
     computed["M-SPAT-46"] = _metric_spat46(text, sentences, spat_open,
                                            all_group_entries)
+
+    # Terminology consistency (issue #23): deterministic shared-prefix
+    # clustering of recurring CJK terms. OBSERVED, no annotation needed.
+    term_clusters = _term_clusters(text)
+    computed["M-TERM-47"] = _metric_term47(text, term_clusters, n_units)
+    computed["M-TERM-48"] = _metric_term48(term_clusters)
 
     for metric_id, record in computed.items():
         record["language"] = language["language"]

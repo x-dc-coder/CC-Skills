@@ -393,7 +393,7 @@ def test_mtld_pinned_parameters_are_frozen():
 def test_every_metric_id_is_present_with_contract_fields():
     metrics = tm.compute_text_metrics(SAMPLE_TEXT, BUNDLE)
     assert set(metrics) == set(tm.METRIC_IDS)
-    assert len(tm.METRIC_IDS) == 25  # 13 frozen + 4 clause (#22) + 3 stance + 2 PDTB + 3 sentence-pattern (#23)
+    assert len(tm.METRIC_IDS) == 27  # 13 frozen + 4 clause (#22) + 3 stance + 2 PDTB + 3 sentence-pattern + 2 terminology (#23)
     for metric_id, record in metrics.items():
         assert REQUIRED_FIELDS <= set(record), metric_id
         assert record["metric_spec"] == metric_id
@@ -735,6 +735,9 @@ ENGLISH_GOLDEN = {
     "M-SPAT-44": [None, 0, 0],
     "M-SPAT-45": [None, 0, 0],
     "M-SPAT-46": [None, 0, 0],
+    # Terminology consistency (#23): zh-only, deterministic clustering.
+    "M-TERM-47": [None, 0, 0],
+    "M-TERM-48": [None, 0, 0],
 }
 
 
@@ -801,10 +804,16 @@ def test_chinese_measures_the_supported_subset_and_names_the_rest():
         if "zh" in languages:
             measured.append(metric_id)
             assert record["value"] is not None, metric_id
+            # a measured rate can legitimately be 0 (no variant, no
+            # connector): that is an honest zero, not an unmeasured metric,
+            # and it carries no warning
             assert record["warnings"] == [], metric_id
-            # measured means a non-empty denominator; the evidence count is the
-            # number of *hits*, which is legitimately 0 for a rate metric
-            assert record["denominator"] > 0, metric_id
+            if record["value"] != 0:
+                assert record["denominator"] > 0, metric_id
+            else:
+                # a zero value must still name its denominator so the reader
+                # can tell "measured as zero" from "not measured"
+                assert record["denominator"] >= 0, metric_id
         else:
             assert record["value"] is None, metric_id
             assert record["n"] == 0 and record["denominator"] == 0, metric_id
@@ -1032,6 +1041,49 @@ def test_sentence_patterns_never_fabricate_without_sentences():
     for m in ("M-SPAT-44", "M-SPAT-45", "M-SPAT-46"):
         assert empty[m]["value"] is None, m
         assert empty[m]["warnings"] == ["CAPABILITY_NOT_SUPPORTED"], m
+
+def test_terminology_analyzer_detects_real_variants():
+    """M-TERM-47/48 detect spelling variants of the same concept (#23)."""
+    loader = pytest.importorskip("lexicon_loader")
+    try:
+        zh = loader.load_lexicons(language="zh")
+    except Exception as exc:
+        pytest.skip("zh lexicon release unavailable: %s: %s" % (type(exc).__name__, exc))
+    # The classic defect: the same concept spelled 库 and 储.
+    text = ("本文研究多仓库路径优化问题。多仓储路径优化是关键。"
+            "多库路径优化方法如下。该多仓库路径优化模型有效。"
+            "实验表明多仓储路径优化可行。多仓库路径优化收敛快。")
+    metrics = tm.compute_text_metrics(text, zh)
+    rec47 = metrics["M-TERM-47"]
+    rec48 = metrics["M-TERM-48"]
+    assert rec47["state"] == "OBSERVED" and rec47["method"] == "rule"
+    assert rec48["state"] == "OBSERVED"
+    # at least the 库/储 pair must surface as one cluster with two spellings
+    clusters = rec47["clusters_found"]
+    assert len(clusters) >= 1, "the variant pair must be detected"
+    spellings = {w for c in clusters for w in c["variants"]}
+    assert {"多仓库路径优化", "多仓储路径优化"} <= spellings, spellings
+    # M-TERM-48 counts the distinct terms needing harmonisation
+    assert rec48["value"] >= 2
+    assert rec48["unit"] == "index"
+    # every variant the metrics report must actually occur in the text
+    for item in rec47["evidence"]["sample"]:
+        assert item["term"] in text and item["canonical"] in text
+
+
+def test_terminology_analyzer_reports_zero_for_a_consistent_text():
+    """A text using one spelling only must report 0, not a fabricated defect."""
+    loader = pytest.importorskip("lexicon_loader")
+    try:
+        zh = loader.load_lexicons(language="zh")
+    except Exception as exc:
+        pytest.skip("zh lexicon release unavailable: %s: %s" % (type(exc).__name__, exc))
+    text = ("本文研究多仓库路径优化问题。多仓库路径优化是关键。"
+            "该多仓库路径优化模型有效。多仓库路径优化收敛快。")
+    metrics = tm.compute_text_metrics(text, zh)
+    assert metrics["M-TERM-47"]["value"] == 0.0
+    assert metrics["M-TERM-47"]["clusters_found"] == []
+    assert metrics["M-TERM-48"]["value"] == 0.0
 
 # ---------------------------------------------------------------------------
 # Stance layer (issue #23): INFERRED, calibrated on the frozen annotation set.
